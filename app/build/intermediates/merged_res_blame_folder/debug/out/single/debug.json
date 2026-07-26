@@ -1,0 +1,10 @@
+[
+    {
+        "merged": "com.wallpaperswitcher.app-merged_res-62:/xml_live_wallpaper.xml.flat",
+        "source": "com.wallpaperswitcher.app-main-64:/xml/live_wallpaper.xml"
+    },
+    {
+        "merged": "com.wallpaperswitcher.app-merged_res-62:/drawable_ic_wallpaper_thumb.xml.flat",
+        "source": "com.wallpaperswitcher.app-main-64:/drawable/ic_wallpaper_thumb.xml"
+    }
+]

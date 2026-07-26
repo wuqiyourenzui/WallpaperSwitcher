@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">壁纸切换</string>
+    <string name="live_wallpaper_desc">自动切换壁纸的动态壁纸服务</string>
+    <string name="live_wallpaper_name">动态壁纸切换</string>
+    <string name="notification_channel_desc">壁纸自动切换后台服务通知</string>
+    <string name="notification_channel_name">壁纸切换服务</string>
+    <string name="notification_text">点击管理壁纸设置</string>
+    <string name="notification_title">壁纸切换运行中</string>
+    <style name="Theme.WallpaperSwitcher" parent="android:Theme.Material.Light.NoActionBar"/>
+</resources>
