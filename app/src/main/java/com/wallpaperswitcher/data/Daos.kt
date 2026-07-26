@@ -130,3 +130,40 @@ suspend fun SettingsDao.setBool(key: String, value: Boolean) {
 suspend fun SettingsDao.setLong(key: String, value: Long) {
     setSetting(AppSettings(key, value.toString()))
 }
+@Dao
+interface SettingsDao {
+
+    @Query("SELECT value FROM app_settings WHERE `key` = :key")
+    suspend fun getValue(key: String): String?
+
+    @Query("SELECT value FROM app_settings WHERE `key` = :key")
+    fun getValueFlow(key: String): Flow<String?>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun setSetting(setting: AppSettings)
+
+    // 直接写在接口里作为默认实现，Room 会跳过这些方法
+    suspend fun getString(key: String, default: String = ""): String {
+        return getValue(key) ?: default
+    }
+
+    suspend fun getBool(key: String, default: Boolean = false): Boolean {
+        return getValue(key)?.toBooleanStrictOrNull() ?: default
+    }
+
+    suspend fun getLong(key: String, default: Long = 0L): Long {
+        return getValue(key)?.toLongOrNull() ?: default
+    }
+
+    suspend fun setString(key: String, value: String) {
+        setSetting(AppSettings(key, value))
+    }
+
+    suspend fun setBool(key: String, value: Boolean) {
+        setSetting(AppSettings(key, value.toString()))
+    }
+
+    suspend fun setLong(key: String, value: Long) {
+        setSetting(AppSettings(key, value.toString()))
+    }
+}
