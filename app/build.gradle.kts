@@ -43,10 +43,15 @@ android {
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.5"
     }
+
+    packaging {
+        resources {
+            excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+    }
 }
 
 dependencies {
-    // Compose BOM
     val composeBom = platform("androidx.compose:compose-bom:2024.01.00")
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
@@ -59,25 +64,19 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")
     implementation("androidx.navigation:navigation-compose:2.7.6")
 
-    // Room
     val roomVersion = "2.6.1"
     implementation("androidx.room:room-runtime:$roomVersion")
     implementation("androidx.room:room-ktx:$roomVersion")
     ksp("androidx.room:room-compiler:$roomVersion")
 
-    // WorkManager
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
-    // Coil for image loading
     implementation("io.coil-kt:coil-compose:2.5.0")
-    implementation("io.coil-kt:coil-video:2.5.0")
 
-    // Core
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
 
-    // Shimmer effect for loading
-    implementation("com.valentinilk.shimmer:compose-shimmer:1.3.0")
+    implementation("androidx.documentfile:documentfile:1.0.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
