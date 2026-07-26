@@ -104,28 +104,29 @@ interface SettingsDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun setSetting(setting: AppSettings)
+}
 
-    suspend fun getString(key: String, default: String = ""): String {
-        return getValue(key) ?: default
-    }
+// 便捷扩展函数，不放在 DAO 接口里（避免 Room 代码生成问题）
+suspend fun SettingsDao.getString(key: String, default: String = ""): String {
+    return getValue(key) ?: default
+}
 
-    suspend fun getBool(key: String, default: Boolean = false): Boolean {
-        return getValue(key)?.toBooleanStrictOrNull() ?: default
-    }
+suspend fun SettingsDao.getBool(key: String, default: Boolean = false): Boolean {
+    return getValue(key)?.toBooleanStrictOrNull() ?: default
+}
 
-    suspend fun getLong(key: String, default: Long = 0L): Long {
-        return getValue(key)?.toLongOrNull() ?: default
-    }
+suspend fun SettingsDao.getLong(key: String, default: Long = 0L): Long {
+    return getValue(key)?.toLongOrNull() ?: default
+}
 
-    suspend fun setString(key: String, value: String) {
-        setSetting(AppSettings(key, value))
-    }
+suspend fun SettingsDao.setString(key: String, value: String) {
+    setSetting(AppSettings(key, value))
+}
 
-    suspend fun setBool(key: String, value: Boolean) {
-        setSetting(AppSettings(key, value.toString()))
-    }
+suspend fun SettingsDao.setBool(key: String, value: Boolean) {
+    setSetting(AppSettings(key, value.toString()))
+}
 
-    suspend fun setLong(key: String, value: Long) {
-        setSetting(AppSettings(key, value.toString()))
-    }
+suspend fun SettingsDao.setLong(key: String, value: Long) {
+    setSetting(AppSettings(key, value.toString()))
 }
