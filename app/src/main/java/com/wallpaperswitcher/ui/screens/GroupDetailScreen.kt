@@ -502,6 +502,7 @@ fun AddWallpaperDialog(
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GroupSettingsDialog(
     group: WallpaperGroup,
@@ -552,7 +553,7 @@ fun GroupSettingsDialog(
                     }
                 }
 
-                HorizontalDivider()
+                Divider()
 
                 // 切换模式
                 Text("切换模式", style = MaterialTheme.typography.labelLarge)
@@ -574,7 +575,7 @@ fun GroupSettingsDialog(
                     }
                 }
 
-                HorizontalDivider()
+                Divider()
 
                 // 缩放模式
                 Text("图片适配", style = MaterialTheme.typography.labelLarge)

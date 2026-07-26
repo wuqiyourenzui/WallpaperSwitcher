@@ -54,7 +54,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 onCheckedChange = { viewModel.toggleDoubleTap(it) }
             )
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
             SettingsSwitchItem(
                 icon = Icons.Outlined.LockOpen,
@@ -80,7 +80,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 }
             )
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
             SettingsInfoItem(
                 icon = Icons.Outlined.Battery1Bar,
