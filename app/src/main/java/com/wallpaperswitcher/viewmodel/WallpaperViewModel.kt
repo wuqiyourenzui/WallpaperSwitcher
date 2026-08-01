@@ -8,7 +8,6 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.wallpaperswitcher.WallpaperSwitcherApp
 import com.wallpaperswitcher.data.*
-import com.wallpaperswitcher.service.GestureOverlayService
 import com.wallpaperswitcher.service.WallpaperSwitchService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
@@ -77,11 +76,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleDoubleTap(enabled: Boolean) {
         viewModelScope.launch {
             settingsDao.setBool(SettingsKeys.DOUBLE_TAP_ENABLED, enabled)
-            if (enabled) {
-                GestureOverlayService.start(getApplication())
-            } else {
-                GestureOverlayService.stop(getApplication())
-            }
         }
     }
 

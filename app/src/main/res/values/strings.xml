@@ -7,4 +7,5 @@
     <string name="notification_channel_desc">壁纸自动切换后台服务通知</string>
     <string name="notification_title">壁纸切换运行中</string>
     <string name="notification_text">点击管理壁纸设置</string>
+    <string name="accessibility_service_description">检测双击屏幕手势来切换壁纸。此服务不收集任何数据，仅用于检测双击手势。</string>
 </resources>

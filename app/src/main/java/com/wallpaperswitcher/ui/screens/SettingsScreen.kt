@@ -1,7 +1,6 @@
 package com.wallpaperswitcher.ui.screens
 
 import android.content.Intent
-import android.net.Uri
 import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -20,6 +19,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.wallpaperswitcher.service.DoubleTapAccessibilityService
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
 @Composable
@@ -28,7 +28,11 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
     val serviceEnabled by viewModel.serviceEnabled.collectAsStateWithLifecycle()
     val doubleTapEnabled by viewModel.doubleTapEnabled.collectAsStateWithLifecycle()
     val unlockSwitchEnabled by viewModel.unlockSwitchEnabled.collectAsStateWithLifecycle()
-    var showOverlayPermissionDialog by remember { mutableStateOf(false) }
+    var showA11yDialog by remember { mutableStateOf(false) }
+    // 实时检查无障碍服务状态
+    var a11yEnabled by remember { mutableStateOf(DoubleTapAccessibilityService.isEnabled(context)) }
+    // 每次进入页面重新检查
+    LaunchedEffect(Unit) { a11yEnabled = DoubleTapAccessibilityService.isEnabled(context) }
 
     Column(
         modifier = Modifier
@@ -55,15 +59,15 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
             SettingsSwitchItem(
                 icon = Icons.Outlined.TouchApp,
                 title = "双击切换",
-                subtitle = "双击屏幕任意位置切换壁纸（需悬浮窗权限）",
-                checked = doubleTapEnabled,
+                subtitle = if (a11yEnabled) "双击屏幕任意位置切换壁纸" else "需开启无障碍服务（不影响触摸）",
+                checked = doubleTapEnabled && a11yEnabled,
                 onCheckedChange = { enabled ->
                     if (enabled) {
-                        // 检查悬浮窗权限
-                        if (Settings.canDrawOverlays(context)) {
+                        if (DoubleTapAccessibilityService.isEnabled(context)) {
                             viewModel.toggleDoubleTap(true)
+                            a11yEnabled = true
                         } else {
-                            showOverlayPermissionDialog = true
+                            showA11yDialog = true
                         }
                     } else {
                         viewModel.toggleDoubleTap(false)
@@ -120,26 +124,35 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
         Spacer(modifier = Modifier.height(80.dp))
     }
 
-    // 悬浮窗权限提示对话框
-    if (showOverlayPermissionDialog) {
+    // 无障碍服务提示对话框
+    if (showA11yDialog) {
         AlertDialog(
-            onDismissRequest = { showOverlayPermissionDialog = false },
-            title = { Text("需要悬浮窗权限") },
-            text = { Text("双击切换壁纸需要「显示在其他应用上层」权限。\n\n请在接下来的设置页面中找到本应用，打开权限开关。") },
+            onDismissRequest = { showA11yDialog = false },
+            title = { Text("开启无障碍服务") },
+            text = {
+                Text(
+                    buildString {
+                        appendLine("双击切换壁纸需要开启无障碍服务。")
+                        appendLine("")
+                        appendLine("在接下来的设置页面中：")
+                        appendLine("1. 找到「壁纸切换」")
+                        appendLine("2. 打开开关")
+                        appendLine("3. 确认授权")
+                        appendLine("")
+                        appendLine("此服务仅检测双击手势，不读取屏幕内容，不影响触摸操作。")
+                    }
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
-                    showOverlayPermissionDialog = false
-                    val intent = Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:${context.packageName}")
-                    )
-                    context.startActivity(intent)
+                    showA11yDialog = false
+                    DoubleTapAccessibilityService.openSettings(context)
                 }) {
                     Text("去设置")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showOverlayPermissionDialog = false }) {
+                TextButton(onClick = { showA11yDialog = false }) {
                     Text("取消")
                 }
             }

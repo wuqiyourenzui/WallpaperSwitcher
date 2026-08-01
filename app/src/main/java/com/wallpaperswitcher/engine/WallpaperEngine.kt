@@ -11,15 +11,31 @@ import android.view.WindowManager
 import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.InputStream
 
 /**
  * 壁纸引擎核心 - 负责加载、缩放、设置壁纸
+ * 性能优化：RGB_565、激进降采样、直接流式写入
  */
 class WallpaperEngine(private val context: Context) {
 
     private val wallpaperManager = WallpaperManager.getInstance(context)
     private val db = AppDatabase.getInstance(context)
+
+    // 缓存屏幕尺寸，避免每次获取
+    private var cachedScreenW = 0
+    private var cachedScreenH = 0
+
+    private fun getScreenSize(): Pair<Int, Int> {
+        if (cachedScreenW == 0 || cachedScreenH == 0) {
+            val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val metrics = DisplayMetrics()
+            @Suppress("DEPRECATION")
+            wm.defaultDisplay.getRealMetrics(metrics)
+            cachedScreenW = metrics.widthPixels
+            cachedScreenH = metrics.heightPixels
+        }
+        return Pair(cachedScreenW, cachedScreenH)
+    }
 
     /**
      * 切换到下一张壁纸
@@ -29,27 +45,18 @@ class WallpaperEngine(private val context: Context) {
             val settingsDao = db.settingsDao()
             val imageDao = db.wallpaperImageDao()
 
-            // 获取启用的分组
             val enabledGroups = db.wallpaperGroupDao().getEnabledGroupsSync()
             if (enabledGroups.isEmpty()) {
-                Log.w(TAG, "没有启用的分组")
                 return@withContext false
             }
 
-            // 确定切换模式（取第一个启用分组的模式）
             val primaryGroup = enabledGroups.first()
             val lastImageId = settingsDao.getLong(SettingsKeys.LAST_IMAGE_ID)
 
             val nextImage = when (primaryGroup.switchMode) {
-                SwitchMode.RANDOM -> {
-                    imageDao.getRandomImageExcluding(lastImageId)
-                }
-                SwitchMode.SEQUENTIAL -> {
-                    getNextSequential(imageDao, settingsDao)
-                }
-                SwitchMode.SHUFFLE -> {
-                    getNextShuffle(imageDao, settingsDao, lastImageId)
-                }
+                SwitchMode.RANDOM -> imageDao.getRandomImageExcluding(lastImageId)
+                SwitchMode.SEQUENTIAL -> getNextSequential(imageDao, settingsDao)
+                SwitchMode.SHUFFLE -> getNextShuffle(imageDao, settingsDao, lastImageId)
             }
 
             if (nextImage == null) {
@@ -57,22 +64,9 @@ class WallpaperEngine(private val context: Context) {
                 return@withContext false
             }
 
-            // 获取缩放模式
-            val scaleMode = try {
-                ScaleMode.valueOf(
-                    settingsDao.getString(SettingsKeys.SERVICE_ENABLED, ScaleMode.FIT.name)
-                )
-            } catch (_: Exception) {
-                ScaleMode.FIT
-            }
-            // 实际取分组的 scaleMode
-            val actualScaleMode = primaryGroup.scaleMode
-
-            // 设置壁纸
-            val success = setWallpaper(nextImage.uri, actualScaleMode)
+            val success = setWallpaperFast(nextImage.uri, primaryGroup.scaleMode)
             if (success) {
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
-                Log.d(TAG, "壁纸切换成功: ${nextImage.displayName}")
             }
             success
         } catch (e: Exception) {
@@ -81,63 +75,50 @@ class WallpaperEngine(private val context: Context) {
         }
     }
 
-    /**
-     * 顺序获取下一张
-     */
     private suspend fun getNextSequential(
         imageDao: WallpaperImageDao,
         settingsDao: SettingsDao
     ): WallpaperImage? {
         val images = imageDao.getSequentialImages()
         if (images.isEmpty()) return null
-
         val currentIndex = settingsDao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
         val nextIndex = (currentIndex + 1) % images.size
         settingsDao.setLong(SettingsKeys.SEQUENTIAL_INDEX, nextIndex.toLong())
         return images[nextIndex]
     }
 
-    /**
-     * 洗牌模式 - 随机不重复
-     */
     private suspend fun getNextShuffle(
         imageDao: WallpaperImageDao,
         settingsDao: SettingsDao,
         excludeId: Long
     ): WallpaperImage? {
-        val image = imageDao.getRandomImageExcluding(excludeId)
-        if (image == null) {
-            // 所有图片都用过了，重置
-            return imageDao.getRandomImage()
-        }
-        return image
+        return imageDao.getRandomImageExcluding(excludeId) ?: imageDao.getRandomImage()
     }
 
     /**
-     * 设置壁纸，支持缩放模式
+     * 快速设置壁纸
+     * FIT 模式：直接流式写入，零内存开销
+     * FILL/STRETCH 模式：低质量快速解码缩放
      */
-    private fun setWallpaper(uriString: String, scaleMode: ScaleMode): Boolean {
+    private fun setWallpaperFast(uriString: String, scaleMode: ScaleMode): Boolean {
         return try {
             val uri = Uri.parse(uriString)
 
-            when (scaleMode) {
-                ScaleMode.FIT -> {
-                    // 适应 - 直接设置，系统默认行为
+            if (scaleMode == ScaleMode.FIT) {
+                // 最快路径：直接流式写入，系统处理缩放
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    wallpaperManager.setStream(stream)
+                }
+            } else {
+                // FILL/STRETCH：快速解码缩放
+                val bitmap = decodeFast(uri, scaleMode)
+                if (bitmap != null) {
+                    wallpaperManager.setBitmap(bitmap)
+                    bitmap.recycle()
+                } else {
+                    // 回退到直接流式
                     context.contentResolver.openInputStream(uri)?.use { stream ->
                         wallpaperManager.setStream(stream)
-                    }
-                }
-                ScaleMode.FILL, ScaleMode.STRETCH -> {
-                    // 需要先解码再缩放
-                    val scaled = decodeAndScale(uri, scaleMode)
-                    if (scaled != null) {
-                        wallpaperManager.setBitmap(scaled)
-                        scaled.recycle()
-                    } else {
-                        // fallback
-                        context.contentResolver.openInputStream(uri)?.use { stream ->
-                            wallpaperManager.setStream(stream)
-                        }
                     }
                 }
             }
@@ -149,70 +130,45 @@ class WallpaperEngine(private val context: Context) {
     }
 
     /**
-     * 解码并缩放图片
+     * 快速解码图片
+     * - RGB_565（无 alpha，内存减半）
+     * - 激进降采样（目标不超过屏幕 1.5 倍）
+     * - 直接裁剪/缩放到屏幕尺寸
      */
-    private fun decodeAndScale(uri: Uri, scaleMode: ScaleMode): Bitmap? {
+    private fun decodeFast(uri: Uri, scaleMode: ScaleMode): Bitmap? {
         return try {
-            val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val metrics = DisplayMetrics()
-            @Suppress("DEPRECATION")
-            wm.defaultDisplay.getRealMetrics(metrics)
-            val screenW = metrics.widthPixels
-            val screenH = metrics.heightPixels
+            val (screenW, screenH) = getScreenSize()
 
-            // 先获取图片尺寸
-            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            // 第一遍：只读尺寸
+            val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             context.contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, options)
+                BitmapFactory.decodeStream(it, null, boundsOptions)
             }
 
-            val imgW = options.outWidth
-            val imgH = options.outHeight
+            val imgW = boundsOptions.outWidth
+            val imgH = boundsOptions.outHeight
             if (imgW <= 0 || imgH <= 0) return null
 
-            // 计算 inSampleSize
+            // 激进降采样：目标不超过屏幕 1.5 倍
             var sampleSize = 1
-            while (imgW / sampleSize > screenW * 2 || imgH / sampleSize > screenH * 2) {
+            while (imgW / sampleSize > screenW * 3 / 2 || imgH / sampleSize > screenH * 3 / 2) {
                 sampleSize *= 2
             }
 
+            // 第二遍：解码
             val decodeOptions = BitmapFactory.Options().apply {
                 inSampleSize = sampleSize
+                inPreferredConfig = Bitmap.Config.RGB_565 // 内存减半，壁纸不需要 alpha
             }
 
             val decoded = context.contentResolver.openInputStream(uri)?.use {
                 BitmapFactory.decodeStream(it, null, decodeOptions)
             } ?: return null
 
+            // 直接缩放到屏幕尺寸
             val result = when (scaleMode) {
-                ScaleMode.FILL -> {
-                    // 填充：裁剪填满屏幕，保持比例
-                    val imgRatio = decoded.width.toFloat() / decoded.height.toFloat()
-                    val screenRatio = screenW.toFloat() / screenH.toFloat()
-
-                    val cropW: Int
-                    val cropH: Int
-                    if (imgRatio > screenRatio) {
-                        // 图片更宽，裁剪宽度
-                        cropH = decoded.height
-                        cropW = (cropH * screenRatio).toInt()
-                    } else {
-                        // 图片更高，裁剪高度
-                        cropW = decoded.width
-                        cropH = (cropW / screenRatio).toInt()
-                    }
-
-                    val cropX = (decoded.width - cropW) / 2
-                    val cropY = (decoded.height - cropH) / 2
-
-                    val cropped = Bitmap.createBitmap(decoded, cropX, cropY, cropW, cropH)
-                    val scaled = Bitmap.createScaledBitmap(cropped, screenW, screenH, true)
-                    if (cropped !== scaled) cropped.recycle()
-                    if (decoded !== cropped) decoded.recycle()
-                    scaled
-                }
+                ScaleMode.FILL -> cropFill(decoded, screenW, screenH)
                 ScaleMode.STRETCH -> {
-                    // 拉伸：强制拉伸到屏幕尺寸
                     val scaled = Bitmap.createScaledBitmap(decoded, screenW, screenH, true)
                     if (decoded !== scaled) decoded.recycle()
                     scaled
@@ -222,9 +178,39 @@ class WallpaperEngine(private val context: Context) {
 
             result
         } catch (e: Exception) {
-            Log.e(TAG, "解码缩放图片失败", e)
+            Log.e(TAG, "快速解码失败", e)
             null
         }
+    }
+
+    /**
+     * 填充裁剪：居中裁剪后缩放到屏幕尺寸
+     */
+    private fun cropFill(src: Bitmap, screenW: Int, screenH: Int): Bitmap {
+        val imgRatio = src.width.toFloat() / src.height.toFloat()
+        val screenRatio = screenW.toFloat() / screenH.toFloat()
+
+        val cropW: Int
+        val cropH: Int
+        if (imgRatio > screenRatio) {
+            cropH = src.height
+            cropW = (cropH * screenRatio).toInt()
+        } else {
+            cropW = src.width
+            cropH = (cropW / screenRatio).toInt()
+        }
+
+        val cropX = ((src.width - cropW) / 2).coerceAtLeast(0)
+        val cropY = ((src.height - cropH) / 2).coerceAtLeast(0)
+
+        val safeCropW = cropW.coerceAtMost(src.width - cropX)
+        val safeCropH = cropH.coerceAtMost(src.height - cropY)
+
+        val cropped = Bitmap.createBitmap(src, cropX, cropY, safeCropW, safeCropH)
+        val scaled = Bitmap.createScaledBitmap(cropped, screenW, screenH, true)
+        if (cropped !== scaled) cropped.recycle()
+        if (src !== cropped) src.recycle()
+        return scaled
     }
 
     companion object {
