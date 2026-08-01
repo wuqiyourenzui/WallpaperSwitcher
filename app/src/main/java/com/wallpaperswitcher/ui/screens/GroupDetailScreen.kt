@@ -207,7 +207,8 @@ fun GroupDetailScreen(
                                     selectedImages + image.id
                             }
                         },
-                        onDelete = { viewModel.deleteImage(image) }
+                        onDelete = { viewModel.deleteImage(image) },
+                        onSetWallpaper = { viewModel.setImageAsWallpaper(image) }
                     )
                 }
             }
@@ -341,7 +342,8 @@ private fun ImageGridItem(
     isSelected: Boolean,
     selectionMode: Boolean,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onSetWallpaper: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -416,14 +418,14 @@ private fun ImageGridItem(
                     onDismissRequest = { showMenu = false }
                 ) {
                     DropdownMenuItem(
-                        text = { Text("删除") },
-                        onClick = {
-                            showMenu = false
-                            onDelete()
-                        },
-                        leadingIcon = {
-                            Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error)
-                        }
+                        text = { Text("Set as Wallpaper") },
+                        onClick = { showMenu = false; onSetWallpaper() },
+                        leadingIcon = { Icon(Icons.Filled.Wallpaper, null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete") },
+                        onClick = { showMenu = false; onDelete() },
+                        leadingIcon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) }
                     )
                 }
             }
