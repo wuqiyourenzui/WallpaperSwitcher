@@ -46,6 +46,9 @@ interface WallpaperImageDao {
     @Query("SELECT * FROM wallpaper_images WHERE id = :id")
     suspend fun getImageById(id: Long): WallpaperImage?
 
+    @Query("SELECT * FROM wallpaper_images LIMIT 1")
+    suspend fun getFirstImage(): WallpaperImage?
+
     @Query("""
         SELECT * FROM wallpaper_images
         WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
