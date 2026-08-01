@@ -2,6 +2,7 @@ package com.wallpaperswitcher.viewmodel
 
 import android.app.Application
 import android.net.Uri
+import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
