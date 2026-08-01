@@ -1,6 +1,5 @@
 package com.wallpaperswitcher.service
 
-import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
@@ -10,9 +9,6 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
-import android.view.GestureDetector
-import android.view.MotionEvent
-import android.view.View
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.wallpaperswitcher.R
@@ -28,29 +24,26 @@ import kotlinx.coroutines.launch
 
 /**
  * 手势覆盖层服务
- * 在屏幕上放置一个透明的全屏 View，用于检测双击手势
- * 不依赖动态壁纸模式，在任何壁纸模式下都能工作
+ * 使用 PassThroughGestureOverlayView 检测双击，
+ * 触摸事件不被消费，不影响正常操作
  */
 class GestureOverlayService : Service() {
 
     private var windowManager: WindowManager? = null
-    private var overlayView: View? = null
+    private var overlayView: PassThroughGestureOverlayView? = null
     private val scope = CoroutineScope(Dispatchers.IO)
 
     override fun onBind(intent: Intent?): IBinder? = null
 
-    @SuppressLint("ClickableViewAccessibility")
     override fun onCreate() {
         super.onCreate()
 
-        // 先启动前台（Android 8+ 必须在 5 秒内调用 startForeground）
         startForeground(NOTIFICATION_ID, createNotification())
 
         windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
 
-        // 创建透明全屏 View
-        overlayView = View(this).apply {
-            setBackgroundColor(0x00000000) // 完全透明
+        overlayView = PassThroughGestureOverlayView(this) {
+            onDoubleTapDetected()
         }
 
         val params = WindowManager.LayoutParams(
@@ -61,30 +54,12 @@ class GestureOverlayService : Service() {
             else
                 @Suppress("DEPRECATION")
                 WindowManager.LayoutParams.TYPE_PHONE,
+            // FLAG_NOT_FOCUSABLE: 不抢焦点
+            // FLAG_NOT_TOUCH_MODAL: 触摸事件可穿透到下层窗口
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
             PixelFormat.TRANSLUCENT
         )
-
-        val gestureDetector = GestureDetector(
-            this,
-            object : GestureDetector.SimpleOnGestureListener() {
-                override fun onDoubleTap(e: MotionEvent): Boolean {
-                    onDoubleTapDetected()
-                    return true
-                }
-
-                override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                    return false
-                }
-            }
-        )
-
-        overlayView?.setOnTouchListener { _, event ->
-            gestureDetector.onTouchEvent(event)
-            false // 不消费事件，让下层也能接收触摸
-        }
 
         try {
             windowManager?.addView(overlayView, params)

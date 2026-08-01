@@ -2,6 +2,7 @@ package com.wallpaperswitcher.viewmodel
 
 import android.app.Application
 import android.net.Uri
+import android.os.Build
 import android.provider.MediaStore
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -258,11 +259,22 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         val folderDisplayNames = mutableMapOf<String, String>()
         val contentResolver = getApplication<Application>().contentResolver
 
-        val projection = arrayOf(
-            MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.DISPLAY_NAME,
-            MediaStore.Images.Media.RELATIVE_PATH
-        )
+        // API 29+ 用 RELATIVE_PATH，旧版用 DATA
+        val useRelativePath = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+
+        val projection = if (useRelativePath) {
+            arrayOf(
+                MediaStore.Images.Media._ID,
+                MediaStore.Images.Media.DISPLAY_NAME,
+                MediaStore.Images.Media.RELATIVE_PATH
+            )
+        } else {
+            arrayOf(
+                MediaStore.Images.Media._ID,
+                MediaStore.Images.Media.DISPLAY_NAME,
+                MediaStore.Images.Media.DATA
+            )
+        }
 
         contentResolver.query(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -273,27 +285,33 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         )?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
-            val relPathCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH)
 
             while (cursor.moveToNext()) {
                 val id = cursor.getLong(idCol)
                 val name = cursor.getString(nameCol) ?: continue
-                val relPath = cursor.getString(relPathCol) ?: ""
 
                 val contentUri = Uri.withAppendedPath(
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                     id.toString()
                 )
 
-                // 用相对路径作为文件夹标识
-                val folderKey = relPath.trimEnd('/')
-                if (folderKey.isEmpty()) continue
+                // 获取文件夹路径
+                val folderKey = if (useRelativePath) {
+                    val relPath = cursor.getString(
+                        cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH)
+                    ) ?: ""
+                    relPath.trimEnd('/').ifEmpty { null } ?: continue
+                } else {
+                    val dataPath = cursor.getString(
+                        cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)
+                    ) ?: continue
+                    dataPath.substringBeforeLast('/').ifEmpty { null } ?: continue
+                }
 
                 folders.getOrPut(folderKey) { mutableListOf() }.add(contentUri.toString())
 
-                // 记录显示名（取最后一级目录名）
                 if (folderKey !in folderDisplayNames) {
-                    folderDisplayNames[folderKey] = folderKey.trimEnd('/').substringAfterLast('/').ifEmpty { "根目录" }
+                    folderDisplayNames[folderKey] = folderKey.substringAfterLast('/').ifEmpty { "根目录" }
                 }
             }
         }
