@@ -229,7 +229,24 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun switchNow() {
         WallpaperSwitchService.switchNow(getApplication())
-        viewModelScope.launch { _toastMessage.emit("正在切换壁纸...") }
+        viewModelScope.launch { _toastMessage.emit("Switching...") }
+    }
+
+    fun setImageAsWallpaper(image: WallpaperImage) {
+        viewModelScope.launch {
+            try {
+                val engine = com.wallpaperswitcher.engine.WallpaperEngine(getApplication())
+                settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
+                val result = engine.switchToNext()
+                if (result) {
+                    _toastMessage.emit("Wallpaper set!")
+                } else {
+                    _toastMessage.emit("Failed to set wallpaper")
+                }
+            } catch (e: Exception) {
+                _toastMessage.emit("Error: ${e.message}")
+            }
+        }
     }
 
     private fun isImageOrVideo(name: String): Boolean {
