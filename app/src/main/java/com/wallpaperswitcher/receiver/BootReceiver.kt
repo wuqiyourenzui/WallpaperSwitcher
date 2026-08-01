@@ -13,9 +13,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * 开机自启动接收器
- * 启动定时切换服务（根据设置）
- * 双击切换由无障碍服务自动启动，无需手动处理
+ * Boot completed receiver.
+ * Starts the wallpaper switch service if enabled.
  */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -30,7 +29,7 @@ class BootReceiver : BroadcastReceiver() {
                         WallpaperSwitchService.start(context)
                     }
                 } catch (e: Exception) {
-                    Log.e("BootReceiver", "开机启动失败", e)
+                    Log.e("BootReceiver", "Boot start failed", e)
                 } finally {
                     pendingResult.finish()
                 }
