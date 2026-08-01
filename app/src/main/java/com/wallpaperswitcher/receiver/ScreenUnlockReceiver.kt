@@ -8,11 +8,15 @@ import android.util.Log
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.getBool
-import com.wallpaperswitcher.engine.WallpaperEngine
+import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
+/**
+ * Unlock screen receiver.
+ * Sends ACTION_SWITCH broadcast to LiveWallpaperService.
+ */
 class ScreenUnlockReceiver : BroadcastReceiver() {
 
     companion object {
@@ -38,13 +42,13 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val db = AppDatabase.getInstance(context)
-                val unlockEnabled = db.settingsDao()
-                    .getBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, false)
-                Log.d(TAG, "unlockEnabled=$unlockEnabled")
-                if (unlockEnabled) {
-                    val engine = WallpaperEngine(context)
-                    val result = engine.switchToNext()
-                    Log.d(TAG, "Switch result: $result")
+                val enabled = db.settingsDao().getBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, false)
+                Log.d(TAG, "unlockEnabled=$enabled")
+                if (enabled) {
+                    val switchIntent = Intent(LiveWallpaperService.ACTION_SWITCH)
+                    switchIntent.setPackage(context.packageName)
+                    context.sendBroadcast(switchIntent)
+                    Log.d(TAG, "Switch broadcast sent")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Switch failed", e)
