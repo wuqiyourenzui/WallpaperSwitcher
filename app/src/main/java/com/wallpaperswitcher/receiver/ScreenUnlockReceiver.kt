@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
+import com.wallpaperswitcher.data.getBool
 import com.wallpaperswitcher.service.WallpaperSwitchService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers

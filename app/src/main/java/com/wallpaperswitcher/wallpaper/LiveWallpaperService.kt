@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
+import com.wallpaperswitcher.data.getBool
 import com.wallpaperswitcher.engine.WallpaperEngine
 import kotlinx.coroutines.*
 
