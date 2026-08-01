@@ -2,8 +2,8 @@ package com.wallpaperswitcher.viewmodel
 
 import android.app.Application
 import android.net.Uri
-import android.os.Build
 import android.provider.MediaStore
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.wallpaperswitcher.WallpaperSwitcherApp
@@ -22,6 +22,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     private val settingsDao = db.settingsDao()
 
     companion object {
+        private const val TAG = "WallpaperViewModel"
         private const val PAGE_SIZE = 50
     }
 
@@ -171,12 +172,20 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addImages(groupId: Long, uris: List<Uri>, names: List<String>) {
         viewModelScope.launch {
-            val images = uris.zip(names).map { (uri, name) ->
+            // Filter to images only
+            val imagePairs = uris.zip(names).filter { (uri, name) ->
+                isImageOnly(name) || uri.toString().contains("image")
+            }
+            val images = imagePairs.map { (uri, name) ->
                 WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = name)
             }
-            imageDao.insertAll(images)
-            refreshCount(groupId)
-            _toastMessage.emit("Added ${images.size} images")
+            if (images.isNotEmpty()) {
+                imageDao.insertAll(images)
+                refreshCount(groupId)
+                _toastMessage.emit("Added ${images.size} images")
+            } else {
+                _toastMessage.emit("No images found")
+            }
         }
     }
 
@@ -194,12 +203,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                         .fromTreeUri(getApplication(), folderUri) ?: return@withContext result
                     if (!docFile.isDirectory) return@withContext result
                     docFile.listFiles().forEach { file ->
-                        if (file.isFile && isImageOrVideo(file.name ?: "")) {
+                        if (file.isFile && isImageOnly(file.name ?: "")) {
                             result.add(WallpaperImage(
                                 groupId = groupId,
                                 uri = file.uri.toString(),
                                 displayName = file.name ?: "untitled",
-                                isVideo = isVideoFile(file.name ?: ""),
                                 isFromFolder = true,
                                 folderPath = folderUri.toString()
                             ))
@@ -258,92 +266,151 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     // ======== Folder scanning (background) ========
 
     /**
-     * Scan device folders via MediaStore. Returns folder name -> URI list.
-     * Much faster than scanning file system.
+     * Scan device image folders via MediaStore.
+     * Compatible with Xiaomi/MIUI devices.
+     * Only scans images (no videos).
      */
     suspend fun scanImageFolders(): List<ScannedFolder> = withContext(Dispatchers.IO) {
-        val folders = mutableMapOf<String, MutableList<String>>()
-        val folderNames = mutableMapOf<String, String>()
-        val contentResolver = getApplication<Application>().contentResolver
-        val useRelPath = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        try {
+            val folderCounts = mutableMapOf<String, Int>()
+            val folderSamples = mutableMapOf<String, MutableList<String>>() // only a few URIs per folder
+            val folderNames = mutableMapOf<String, String>()
+            val contentResolver = getApplication<Application>().contentResolver
 
-        val projection = if (useRelPath) {
-            arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.RELATIVE_PATH)
-        } else {
-            arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATA)
-        }
+            val projection = arrayOf(
+                MediaStore.Images.Media._ID,
+                MediaStore.Images.Media.RELATIVE_PATH,
+                MediaStore.Images.Media.DATA
+            )
 
-        contentResolver.query(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            projection, null, null,
-            "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
-        )?.use { cursor ->
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-            while (cursor.moveToNext()) {
-                val id = cursor.getLong(idCol)
-                val uri = Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
+            contentResolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                projection,
+                "${MediaStore.Images.Media.SIZE} > 0",
+                null,
+                "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                val relPathCol = cursor.getColumnIndex(MediaStore.Images.Media.RELATIVE_PATH)
+                val dataCol = cursor.getColumnIndex(MediaStore.Images.Media.DATA)
 
-                val folderKey = if (useRelPath) {
-                    cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH))
-                        ?.trimEnd('/')?.ifEmpty { null } ?: continue
-                } else {
-                    cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA))
-                        ?.substringBeforeLast('/')?.ifEmpty { null } ?: continue
+                while (cursor.moveToNext()) {
+                    try {
+                        val id = cursor.getLong(idCol)
+
+                        val folderKey = when {
+                            relPathCol >= 0 -> {
+                                val relPath = cursor.getString(relPathCol)
+                                if (!relPath.isNullOrBlank()) relPath.trimEnd('/') else null
+                            }
+                            dataCol >= 0 -> {
+                                val dataPath = cursor.getString(dataCol)
+                                if (!dataPath.isNullOrBlank()) dataPath.substringBeforeLast('/') else null
+                            }
+                            else -> null
+                        } ?: continue
+
+                        // Count images per folder
+                        folderCounts[folderKey] = (folderCounts[folderKey] ?: 0) + 1
+
+                        // Only store first 3 URIs per folder for preview
+                        val samples = folderSamples.getOrPut(folderKey) { mutableListOf() }
+                        if (samples.size < 3) {
+                            val uri = Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
+                            samples.add(uri.toString())
+                        }
+
+                        folderNames.putIfAbsent(folderKey, folderKey.substringAfterLast('/').ifEmpty { "Root" })
+                    } catch (_: Exception) { continue }
                 }
-
-                folders.getOrPut(folderKey) { mutableListOf() }.add(uri.toString())
-                folderNames.putIfAbsent(folderKey, folderKey.substringAfterLast('/').ifEmpty { "Root" })
             }
-        }
 
-        folders.map { (path, uris) ->
-            ScannedFolder(path = path, name = folderNames[path] ?: path, imageCount = uris.size, sampleUris = uris)
+            folderCounts.map { (path, count) ->
+                ScannedFolder(
+                    path = path,
+                    name = folderNames[path] ?: path,
+                    imageCount = count,
+                    sampleUris = folderSamples[path] ?: emptyList()
+                )
+            }
+                .filter { it.imageCount >= 2 }
+                .filter { f -> listOf("Android", ".thumbnails", ".cache", ".Trash", "obb").none { f.path.contains(it, ignoreCase = true) } }
+                .sortedByDescending { it.imageCount }
+        } catch (e: Exception) {
+            Log.e(TAG, "scanImageFolders failed", e)
+            emptyList()
         }
-            .filter { it.imageCount >= 2 }
-            .filter { f -> listOf("Android", ".thumbnails", ".cache", ".Trash").none { f.path.contains(it) } }
-            .sortedByDescending { it.imageCount }
     }
 
     /**
      * Import all images from a scanned folder (batch insert).
      */
+    /**
+     * Import all images from a scanned folder.
+     * Re-queries MediaStore to get all URIs (not just samples).
+     */
     fun importScannedFolder(groupId: Long, folder: ScannedFolder) {
         viewModelScope.launch {
             try {
-                _toastMessage.emit("Importing ${folder.imageCount} images...")
+                _toastMessage.emit("Importing images from '${folder.name}'...")
                 val images = withContext(Dispatchers.IO) {
-                    folder.sampleUris.map { uriStr ->
-                        WallpaperImage(
-                            groupId = groupId,
-                            uri = uriStr,
-                            displayName = Uri.parse(uriStr).lastPathSegment ?: "untitled",
-                            isFromFolder = true,
-                            folderPath = folder.path
-                        )
+                    val result = mutableListOf<WallpaperImage>()
+                    val contentResolver = getApplication<Application>().contentResolver
+                    val projection = arrayOf(
+                        MediaStore.Images.Media._ID,
+                        MediaStore.Images.Media.DISPLAY_NAME
+                    )
+                    // Match folder path using LIKE query
+                    val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Images.Media.SIZE} > 0"
+                    } else {
+                        "${MediaStore.Images.Media.DATA} LIKE ? AND ${MediaStore.Images.Media.SIZE} > 0"
                     }
-                }
-                // Batch insert (500 at a time)
-                withContext(Dispatchers.IO) {
-                    images.chunked(500).forEach { chunk ->
-                        imageDao.insertAll(chunk)
+                    val selectionArgs = arrayOf("${folder.path}%")
+
+                    contentResolver.query(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        projection, selection, selectionArgs, null
+                    )?.use { cursor ->
+                        val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                        val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+                        while (cursor.moveToNext()) {
+                            try {
+                                val id = cursor.getLong(idCol)
+                                val name = cursor.getString(nameCol) ?: "untitled"
+                                val uri = Uri.withAppendedPath(
+                                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString()
+                                )
+                                result.add(WallpaperImage(
+                                    groupId = groupId,
+                                    uri = uri.toString(),
+                                    displayName = name,
+                                    isFromFolder = true,
+                                    folderPath = folder.path
+                                ))
+                            } catch (_: Exception) { continue }
+                        }
                     }
+                    result
                 }
-                refreshCount(groupId)
-                _toastMessage.emit("Imported ${images.size} images from '${folder.name}'")
+                if (images.isNotEmpty()) {
+                    withContext(Dispatchers.IO) {
+                        images.chunked(500).forEach { imageDao.insertAll(it) }
+                    }
+                    refreshCount(groupId)
+                    _toastMessage.emit("Imported ${images.size} images from '${folder.name}'")
+                } else {
+                    _toastMessage.emit("No images found")
+                }
             } catch (e: Exception) {
                 _toastMessage.emit("Import failed: ${e.message}")
             }
         }
     }
 
-    private fun isImageOrVideo(name: String): Boolean {
+    private fun isImageOnly(name: String): Boolean {
         val ext = name.lowercase().substringAfterLast('.', "")
-        return ext in listOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "mp4", "3gp", "webm")
-    }
-
-    private fun isVideoFile(name: String): Boolean {
-        val ext = name.lowercase().substringAfterLast('.', "")
-        return ext in listOf("mp4", "3gp", "webm")
+        return ext in listOf("jpg", "jpeg", "png", "webp", "bmp", "gif")
     }
 }
 
@@ -351,5 +418,5 @@ data class ScannedFolder(
     val path: String,
     val name: String,
     val imageCount: Int,
-    val sampleUris: List<String> = emptyList()
+    val sampleUris: List<String> = emptyList() // Only a few for preview
 )
