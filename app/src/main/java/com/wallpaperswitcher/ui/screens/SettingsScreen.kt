@@ -1,5 +1,8 @@
 package com.wallpaperswitcher.ui.screens
 
+import android.app.WallpaperManager
+import android.content.ComponentName
+import android.content.Intent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -18,9 +21,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
+import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 
 @Composable
 fun SettingsScreen(viewModel: WallpaperViewModel) {
+    val context = LocalContext.current
     val serviceEnabled by viewModel.serviceEnabled.collectAsStateWithLifecycle()
     val doubleTapEnabled by viewModel.doubleTapEnabled.collectAsStateWithLifecycle()
     val unlockSwitchEnabled by viewModel.unlockSwitchEnabled.collectAsStateWithLifecycle()
@@ -32,12 +37,12 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // 服务控制
-        SettingsSection(title = "服务") {
+        // Service control
+        SettingsSection(title = "Service") {
             SettingsSwitchItem(
                 icon = Icons.Outlined.PlayCircle,
-                title = "自动切换服务",
-                subtitle = "后台定时自动切换壁纸",
+                title = "Auto Switch Service",
+                subtitle = "Timed wallpaper switching in background",
                 checked = serviceEnabled,
                 onCheckedChange = { viewModel.toggleService(it) }
             )
@@ -45,12 +50,12 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // 触发方式
-        SettingsSection(title = "触发方式") {
+        // Trigger methods
+        SettingsSection(title = "Trigger") {
             SettingsSwitchItem(
                 icon = Icons.Outlined.LockOpen,
-                title = "解锁切换",
-                subtitle = "每次解锁屏幕时自动切换壁纸",
+                title = "Switch on Unlock",
+                subtitle = "Switch wallpaper every time you unlock the screen",
                 checked = unlockSwitchEnabled,
                 onCheckedChange = { viewModel.toggleUnlockSwitch(it) }
             )
@@ -59,25 +64,75 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
             SettingsSwitchItem(
                 icon = Icons.Outlined.TouchApp,
-                title = "双击切换",
-                subtitle = "双击屏幕切换壁纸（需设为动态壁纸）",
+                title = "Double Tap Switch",
+                subtitle = "Double tap screen to switch (needs Live Wallpaper)",
                 checked = doubleTapEnabled,
                 onCheckedChange = { viewModel.toggleDoubleTap(it) }
             )
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            // Set as Live Wallpaper button
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        try {
+                            val intent = Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
+                                putExtra(
+                                    WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
+                                    ComponentName(context, LiveWallpaperService::class.java)
+                                )
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            }
+                            context.startActivity(intent)
+                        } catch (e: Exception) {
+                            // Fallback: open wallpaper picker
+                            try {
+                                val intent = Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER)
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(intent)
+                            } catch (_: Exception) {}
+                        }
+                    }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Filled.Wallpaper,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Set as Live Wallpaper", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Required for double-tap to work",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Icon(
+                    Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // 壁纸模式说明
-        SettingsSection(title = "使用说明") {
+        // Usage guide
+        SettingsSection(title = "Guide") {
             SettingsInfoItem(
                 icon = Icons.Outlined.Info,
-                title = "两种运行模式",
+                title = "Two Modes",
                 subtitle = buildString {
-                    appendLine("1. 后台服务模式：在应用内开启「自动切换服务」和「解锁切换」，通过前台服务定时或解锁时切换壁纸。")
-                    appendLine("2. 动态壁纸模式：设置 → 壁纸 → 动态壁纸 → 选择「动态壁纸切换」，支持双击屏幕切换。")
+                    appendLine("1. Service Mode: Enable 'Auto Switch Service' and 'Switch on Unlock' for timed/unlock switching.")
+                    appendLine("2. Live Wallpaper Mode: Tap 'Set as Live Wallpaper' above, then double-tap screen to switch.")
                     appendLine("")
-                    appendLine("两种模式可以同时使用。")
+                    appendLine("Both modes can work together.")
                 }
             )
 
@@ -85,19 +140,19 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
             SettingsInfoItem(
                 icon = Icons.Outlined.Battery1Bar,
-                title = "省电提示",
-                subtitle = "应用使用协程调度，不使用 AlarmManager，电量消耗极低。前台服务通知可在系统设置中关闭。"
+                title = "Battery",
+                subtitle = "Uses coroutines, very low battery usage."
             )
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // 关于
-        SettingsSection(title = "关于") {
+        // About
+        SettingsSection(title = "About") {
             SettingsInfoItem(
                 icon = Icons.Outlined.Info,
-                title = "壁纸切换 v1.0",
-                subtitle = "一款轻量级壁纸自动切换工具，支持分组管理、多种切换模式和图片适配方式。"
+                title = "Wallpaper Switcher v1.0",
+                subtitle = "Lightweight wallpaper auto-switch tool with group management and multiple switch modes."
             )
         }
 
