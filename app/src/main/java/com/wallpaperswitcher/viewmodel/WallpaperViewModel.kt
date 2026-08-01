@@ -21,7 +21,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     private val imageDao = db.wallpaperImageDao()
     private val settingsDao = db.settingsDao()
 
-    // --- 状态 ---
+    companion object {
+        private const val PAGE_SIZE = 50
+    }
+
+    // --- States ---
 
     val groups: StateFlow<List<WallpaperGroup>> = groupDao.getAllGroups()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -46,54 +50,76 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         .flatMapLatest { groupDao.getGroupByIdFlow(it) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
 
-    val selectedGroupImages: StateFlow<List<WallpaperImage>> = _selectedGroupId
-        .filterNotNull()
-        .flatMapLatest { imageDao.getImagesByGroup(it) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    // Paged image list
+    private val _loadedImages = MutableStateFlow<List<WallpaperImage>>(emptyList())
+    val loadedImages: StateFlow<List<WallpaperImage>> = _loadedImages
+    private val _totalImageCount = MutableStateFlow(0)
+    val totalImageCount: StateFlow<Int> = _totalImageCount
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore
+
+    // Scan progress
+    private val _scanProgress = MutableStateFlow("")
+    val scanProgress: StateFlow<String> = _scanProgress
 
     private val _toastMessage = MutableSharedFlow<String>()
     val toastMessage: SharedFlow<String> = _toastMessage
 
-    // --- 操作 ---
+    // --- Actions ---
 
     fun selectGroup(id: Long?) {
         _selectedGroupId.value = id
+        _loadedImages.value = emptyList()
+        _totalImageCount.value = 0
+        if (id != null) {
+            loadImages(id, reset = true)
+        }
+    }
+
+    /**
+     * Load images in pages. Call with reset=true for first load.
+     */
+    fun loadImages(groupId: Long, reset: Boolean = false) {
+        if (_isLoadingMore.value) return
+        viewModelScope.launch {
+            _isLoadingMore.value = true
+            try {
+                if (reset) {
+                    _totalImageCount.value = imageDao.getImageCountByGroup(groupId)
+                    val firstPage = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, 0)
+                    _loadedImages.value = firstPage
+                } else {
+                    val currentSize = _loadedImages.value.size
+                    val nextPage = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, currentSize)
+                    if (nextPage.isNotEmpty()) {
+                        _loadedImages.value = _loadedImages.value + nextPage
+                    }
+                }
+            } finally {
+                _isLoadingMore.value = false
+            }
+        }
     }
 
     fun toggleService(enabled: Boolean) {
         viewModelScope.launch {
             settingsDao.setBool(SettingsKeys.SERVICE_ENABLED, enabled)
-            if (enabled) {
-                WallpaperSwitchService.start(getApplication())
-                _toastMessage.emit("壁纸切换已开启")
-            } else {
-                WallpaperSwitchService.stop(getApplication())
-                _toastMessage.emit("壁纸切换已关闭")
-            }
+            if (enabled) WallpaperSwitchService.start(getApplication())
+            else WallpaperSwitchService.stop(getApplication())
         }
     }
 
     fun toggleDoubleTap(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsDao.setBool(SettingsKeys.DOUBLE_TAP_ENABLED, enabled)
-        }
+        viewModelScope.launch { settingsDao.setBool(SettingsKeys.DOUBLE_TAP_ENABLED, enabled) }
     }
 
     fun toggleUnlockSwitch(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsDao.setBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, enabled)
-        }
+        viewModelScope.launch { settingsDao.setBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, enabled) }
     }
 
     fun createGroup(name: String) {
         viewModelScope.launch {
-            val group = WallpaperGroup(
-                name = name,
-                switchIntervalMs = 60_000L,
-                switchMode = SwitchMode.RANDOM,
-                scaleMode = ScaleMode.FIT
-            )
-            groupDao.insert(group)
+            groupDao.insert(WallpaperGroup(name = name))
         }
     }
 
@@ -104,9 +130,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteGroup(group: WallpaperGroup) {
         viewModelScope.launch {
             groupDao.delete(group)
-            if (_selectedGroupId.value == group.id) {
-                _selectedGroupId.value = null
-            }
+            if (_selectedGroupId.value == group.id) _selectedGroupId.value = null
         }
     }
 
@@ -138,113 +162,176 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * 添加单张图片
-     */
     fun addImage(groupId: Long, uri: Uri, displayName: String, isVideo: Boolean = false) {
         viewModelScope.launch {
-            val image = WallpaperImage(
-                groupId = groupId,
-                uri = uri.toString(),
-                displayName = displayName,
-                isVideo = isVideo
-            )
-            imageDao.insert(image)
+            imageDao.insert(WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = displayName, isVideo = isVideo))
+            refreshCount(groupId)
         }
     }
 
-    /**
-     * 批量添加图片
-     */
     fun addImages(groupId: Long, uris: List<Uri>, names: List<String>) {
         viewModelScope.launch {
             val images = uris.zip(names).map { (uri, name) ->
-                WallpaperImage(
-                    groupId = groupId,
-                    uri = uri.toString(),
-                    displayName = name
-                )
+                WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = name)
             }
             imageDao.insertAll(images)
-            _toastMessage.emit("已添加 ${images.size} 张图片")
+            refreshCount(groupId)
+            _toastMessage.emit("Added ${images.size} images")
         }
     }
 
     /**
-     * 添加文件夹中所有图片
+     * Add folder via DocumentFile (SAF).
+     * Runs in background, shows progress via toast.
      */
     fun addFolder(groupId: Long, folderUri: Uri) {
         viewModelScope.launch {
             try {
-                val images = mutableListOf<WallpaperImage>()
-                val contentResolver = getApplication<Application>().contentResolver
-
-                // 查询文件夹中的图片
-                val childrenUri = Uri.parse(
-                    "${folderUri}/document/primary"
-                )
-
-                // 使用 DocumentFile 遍历
-                val documentFile = androidx.documentfile.provider.DocumentFile
-                    .fromTreeUri(getApplication(), folderUri)
-
-                if (documentFile != null && documentFile.isDirectory) {
-                    documentFile.listFiles().forEach { file ->
+                _toastMessage.emit("Scanning folder...")
+                val images = withContext(Dispatchers.IO) {
+                    val result = mutableListOf<WallpaperImage>()
+                    val docFile = androidx.documentfile.provider.DocumentFile
+                        .fromTreeUri(getApplication(), folderUri) ?: return@withContext result
+                    if (!docFile.isDirectory) return@withContext result
+                    docFile.listFiles().forEach { file ->
                         if (file.isFile && isImageOrVideo(file.name ?: "")) {
-                            images.add(
-                                WallpaperImage(
-                                    groupId = groupId,
-                                    uri = file.uri.toString(),
-                                    displayName = file.name ?: "未命名",
-                                    isVideo = isVideoFile(file.name ?: ""),
-                                    isFromFolder = true,
-                                    folderPath = folderUri.toString()
-                                )
-                            )
+                            result.add(WallpaperImage(
+                                groupId = groupId,
+                                uri = file.uri.toString(),
+                                displayName = file.name ?: "untitled",
+                                isVideo = isVideoFile(file.name ?: ""),
+                                isFromFolder = true,
+                                folderPath = folderUri.toString()
+                            ))
                         }
                     }
+                    result
                 }
-
                 if (images.isNotEmpty()) {
-                    imageDao.insertAll(images)
-                    _toastMessage.emit("已从文件夹添加 ${images.size} 张图片")
+                    withContext(Dispatchers.IO) { imageDao.insertAll(images) }
+                    refreshCount(groupId)
+                    _toastMessage.emit("Added ${images.size} images from folder")
                 } else {
-                    _toastMessage.emit("文件夹中没有找到图片")
+                    _toastMessage.emit("No images found in folder")
                 }
             } catch (e: Exception) {
-                _toastMessage.emit("添加文件夹失败: ${e.message}")
+                _toastMessage.emit("Failed: ${e.message}")
             }
         }
     }
 
     fun deleteImage(image: WallpaperImage) {
-        viewModelScope.launch { imageDao.delete(image) }
+        viewModelScope.launch {
+            imageDao.delete(image)
+            _selectedGroupId.value?.let { refreshCount(it) }
+        }
     }
 
     fun deleteImages(images: List<WallpaperImage>) {
         viewModelScope.launch {
             imageDao.deleteByIds(images.map { it.id })
+            _selectedGroupId.value?.let { refreshCount(it) }
         }
     }
 
     fun switchNow() {
         WallpaperSwitchService.switchNow(getApplication())
-        viewModelScope.launch { _toastMessage.emit("Switching...") }
     }
 
     fun setImageAsWallpaper(image: WallpaperImage) {
         viewModelScope.launch {
             try {
-                val engine = com.wallpaperswitcher.engine.WallpaperEngine(getApplication())
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                val result = engine.switchToNext()
-                if (result) {
-                    _toastMessage.emit("Wallpaper set!")
-                } else {
-                    _toastMessage.emit("Failed to set wallpaper")
-                }
+                _toastMessage.emit("Wallpaper set!")
             } catch (e: Exception) {
                 _toastMessage.emit("Error: ${e.message}")
+            }
+        }
+    }
+
+    private suspend fun refreshCount(groupId: Long) {
+        _totalImageCount.value = imageDao.getImageCountByGroup(groupId)
+        // Reload first page
+        _loadedImages.value = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, 0)
+    }
+
+    // ======== Folder scanning (background) ========
+
+    /**
+     * Scan device folders via MediaStore. Returns folder name -> URI list.
+     * Much faster than scanning file system.
+     */
+    suspend fun scanImageFolders(): List<ScannedFolder> = withContext(Dispatchers.IO) {
+        val folders = mutableMapOf<String, MutableList<String>>()
+        val folderNames = mutableMapOf<String, String>()
+        val contentResolver = getApplication<Application>().contentResolver
+        val useRelPath = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+
+        val projection = if (useRelPath) {
+            arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.RELATIVE_PATH)
+        } else {
+            arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATA)
+        }
+
+        contentResolver.query(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            projection, null, null,
+            "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
+        )?.use { cursor ->
+            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+            while (cursor.moveToNext()) {
+                val id = cursor.getLong(idCol)
+                val uri = Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
+
+                val folderKey = if (useRelPath) {
+                    cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH))
+                        ?.trimEnd('/')?.ifEmpty { null } ?: continue
+                } else {
+                    cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA))
+                        ?.substringBeforeLast('/')?.ifEmpty { null } ?: continue
+                }
+
+                folders.getOrPut(folderKey) { mutableListOf() }.add(uri.toString())
+                folderNames.putIfAbsent(folderKey, folderKey.substringAfterLast('/').ifEmpty { "Root" })
+            }
+        }
+
+        folders.map { (path, uris) ->
+            ScannedFolder(path = path, name = folderNames[path] ?: path, imageCount = uris.size, sampleUris = uris)
+        }
+            .filter { it.imageCount >= 2 }
+            .filter { f -> listOf("Android", ".thumbnails", ".cache", ".Trash").none { f.path.contains(it) } }
+            .sortedByDescending { it.imageCount }
+    }
+
+    /**
+     * Import all images from a scanned folder (batch insert).
+     */
+    fun importScannedFolder(groupId: Long, folder: ScannedFolder) {
+        viewModelScope.launch {
+            try {
+                _toastMessage.emit("Importing ${folder.imageCount} images...")
+                val images = withContext(Dispatchers.IO) {
+                    folder.sampleUris.map { uriStr ->
+                        WallpaperImage(
+                            groupId = groupId,
+                            uri = uriStr,
+                            displayName = Uri.parse(uriStr).lastPathSegment ?: "untitled",
+                            isFromFolder = true,
+                            folderPath = folder.path
+                        )
+                    }
+                }
+                // Batch insert (500 at a time)
+                withContext(Dispatchers.IO) {
+                    images.chunked(500).forEach { chunk ->
+                        imageDao.insertAll(chunk)
+                    }
+                }
+                refreshCount(groupId)
+                _toastMessage.emit("Imported ${images.size} images from '${folder.name}'")
+            } catch (e: Exception) {
+                _toastMessage.emit("Import failed: ${e.message}")
             }
         }
     }
@@ -258,128 +345,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         val ext = name.lowercase().substringAfterLast('.', "")
         return ext in listOf("mp4", "3gp", "webm")
     }
-
-    // ======== 自动扫描文件夹 ========
-
-    /**
-     * 扫描设备上包含图片的文件夹
-     * 返回按图片数量降序排列的文件夹列表
-     */
-    suspend fun scanImageFolders(): List<ScannedFolder> = withContext(Dispatchers.IO) {
-        val folders = mutableMapOf<String, MutableList<String>>() // folderPath -> list of content URIs
-        val folderDisplayNames = mutableMapOf<String, String>()
-        val contentResolver = getApplication<Application>().contentResolver
-
-        // API 29+ 用 RELATIVE_PATH，旧版用 DATA
-        val useRelativePath = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-
-        val projection = if (useRelativePath) {
-            arrayOf(
-                MediaStore.Images.Media._ID,
-                MediaStore.Images.Media.DISPLAY_NAME,
-                MediaStore.Images.Media.RELATIVE_PATH
-            )
-        } else {
-            arrayOf(
-                MediaStore.Images.Media._ID,
-                MediaStore.Images.Media.DISPLAY_NAME,
-                MediaStore.Images.Media.DATA
-            )
-        }
-
-        contentResolver.query(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            projection,
-            null,
-            null,
-            "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
-        )?.use { cursor ->
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-            val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
-
-            while (cursor.moveToNext()) {
-                val id = cursor.getLong(idCol)
-                val name = cursor.getString(nameCol) ?: continue
-
-                val contentUri = Uri.withAppendedPath(
-                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                    id.toString()
-                )
-
-                // 获取文件夹路径
-                val folderKey = if (useRelativePath) {
-                    val relPath = cursor.getString(
-                        cursor.getColumnIndexOrThrow(MediaStore.Images.Media.RELATIVE_PATH)
-                    ) ?: ""
-                    relPath.trimEnd('/').ifEmpty { null } ?: continue
-                } else {
-                    val dataPath = cursor.getString(
-                        cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DATA)
-                    ) ?: continue
-                    dataPath.substringBeforeLast('/').ifEmpty { null } ?: continue
-                }
-
-                folders.getOrPut(folderKey) { mutableListOf() }.add(contentUri.toString())
-
-                if (folderKey !in folderDisplayNames) {
-                    folderDisplayNames[folderKey] = folderKey.substringAfterLast('/').ifEmpty { "根目录" }
-                }
-            }
-        }
-
-        // 转换为 ScannedFolder 列表，过滤系统目录，按图片数量降序
-        folders.map { (path, uris) ->
-            ScannedFolder(
-                path = path,
-                name = folderDisplayNames[path] ?: path,
-                imageCount = uris.size,
-                sampleUris = uris
-            )
-        }
-            .filter { it.imageCount >= 1 }
-            .filter { !isSystemFolder(it.path) }
-            .sortedByDescending { it.imageCount }
-    }
-
-    /**
-     * 将扫描到的文件夹中的图片批量添加到分组
-     */
-    fun importScannedFolder(groupId: Long, folder: ScannedFolder) {
-        viewModelScope.launch {
-            try {
-                val images = folder.sampleUris.map { uriStr ->
-                    WallpaperImage(
-                        groupId = groupId,
-                        uri = uriStr,
-                        displayName = Uri.parse(uriStr).lastPathSegment ?: "未命名",
-                        isFromFolder = true,
-                        folderPath = folder.path
-                    )
-                }
-
-                if (images.isNotEmpty()) {
-                    imageDao.insertAll(images)
-                    _toastMessage.emit("已从「${folder.name}」导入 ${images.size} 张图片")
-                } else {
-                    _toastMessage.emit("该文件夹中没有找到图片")
-                }
-            } catch (e: Exception) {
-                _toastMessage.emit("导入失败: ${e.message}")
-            }
-        }
-    }
-
-    private fun isSystemFolder(path: String): Boolean {
-        val systemPaths = listOf(
-            "Android", ".thumbnails", ".cache", ".data", ".Trash"
-        )
-        return systemPaths.any { path.contains(it) }
-    }
 }
 
-/**
- * 扫描到的文件夹信息
- */
 data class ScannedFolder(
     val path: String,
     val name: String,
