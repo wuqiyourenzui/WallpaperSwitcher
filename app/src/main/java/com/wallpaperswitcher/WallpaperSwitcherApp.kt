@@ -3,9 +3,11 @@ package com.wallpaperswitcher
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.IntentFilter
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.setBool
+import com.wallpaperswitcher.receiver.ScreenUnlockReceiver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -13,11 +15,13 @@ import kotlinx.coroutines.launch
 class WallpaperSwitcherApp : Application() {
 
     val database: AppDatabase by lazy { AppDatabase.getInstance(this) }
+    private var unlockReceiver: ScreenUnlockReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         initDefaultSettings()
+        registerUnlockReceiver()
     }
 
     private fun createNotificationChannel() {
@@ -33,14 +37,10 @@ class WallpaperSwitcherApp : Application() {
         manager.createNotificationChannel(channel)
     }
 
-    /**
-     * 初始化默认设置，确保数据库中有值
-     */
     private fun initDefaultSettings() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val dao = database.settingsDao()
-                // 只在 key 不存在时写入默认值
                 if (dao.getValue(SettingsKeys.SERVICE_ENABLED) == null) {
                     dao.setBool(SettingsKeys.SERVICE_ENABLED, false)
                 }
@@ -50,10 +50,27 @@ class WallpaperSwitcherApp : Application() {
                 if (dao.getValue(SettingsKeys.UNLOCK_SWITCH_ENABLED) == null) {
                     dao.setBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, false)
                 }
-            } catch (e: Exception) {
-                // 忽略初始化错误
-            }
+            } catch (_: Exception) {}
         }
+    }
+
+    /**
+     * Register unlock receiver programmatically (more reliable than manifest).
+     */
+    private fun registerUnlockReceiver() {
+        unlockReceiver = ScreenUnlockReceiver()
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            priority = IntentFilter.SYSTEM_HIGH_PRIORITY
+        }
+        registerReceiver(unlockReceiver, filter)
+    }
+
+    override fun onTerminate() {
+        unlockReceiver?.let {
+            try { unregisterReceiver(it) } catch (_: Exception) {}
+        }
+        super.onTerminate()
     }
 
     companion object {
