@@ -43,6 +43,9 @@ interface WallpaperImageDao {
     @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC")
     suspend fun getImagesByGroupSync(groupId: Long): List<WallpaperImage>
 
+    @Query("SELECT * FROM wallpaper_images WHERE id = :id")
+    suspend fun getImageById(id: Long): WallpaperImage?
+
     @Query("""
         SELECT * FROM wallpaper_images
         WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
