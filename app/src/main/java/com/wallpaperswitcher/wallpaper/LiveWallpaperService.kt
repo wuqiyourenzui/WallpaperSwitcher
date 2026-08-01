@@ -16,6 +16,10 @@ import kotlinx.coroutines.*
 /**
  * 动态壁纸服务
  * 支持双击切换壁纸，同时作为壁纸引擎的载体
+ *
+ * 注意：双击切换仅检查 doubleTapEnabled 设置，
+ * 不受 serviceEnabled（定时服务开关）影响，
+ * 两种触发方式可同时生效。
  */
 class LiveWallpaperService : WallpaperService() {
 
@@ -71,6 +75,15 @@ class LiveWallpaperService : WallpaperService() {
             switchJob = scope.launch {
                 while (isActive) {
                     try {
+                        // 检查定时切换是否启用
+                        val serviceEnabled = db.settingsDao()
+                            .getBool(SettingsKeys.SERVICE_ENABLED, false)
+                        if (!serviceEnabled) {
+                            // 定时切换未启用，等待后再检查
+                            delay(30_000L)
+                            continue
+                        }
+
                         val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
                         if (groups.isEmpty()) {
                             delay(60_000L)
@@ -82,9 +95,7 @@ class LiveWallpaperService : WallpaperService() {
 
                         delay(minInterval)
 
-                        val doubleTapEnabled = db.settingsDao()
-                            .getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
-                        // 动态壁纸模式下自动切换由定时器驱动
+                        // 定时切换
                         engine.switchToNext()
                     } catch (e: CancellationException) {
                         throw e
@@ -96,12 +107,21 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
+        /**
+         * 双击切换壁纸
+         * 仅检查 doubleTapEnabled，不受定时服务开关影响
+         */
         private fun onDoubleTapDetected() {
             scope.launch {
-                val enabled = db.settingsDao()
-                    .getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
-                if (enabled) {
-                    engine.switchToNext()
+                try {
+                    val enabled = db.settingsDao()
+                        .getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
+                    if (enabled) {
+                        engine.switchToNext()
+                        Log.d(TAG, "双击切换壁纸成功")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "双击切换壁纸失败", e)
                 }
             }
         }
