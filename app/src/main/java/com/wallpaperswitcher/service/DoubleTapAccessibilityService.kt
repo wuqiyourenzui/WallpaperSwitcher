@@ -34,23 +34,12 @@ class DoubleTapAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {}
 
-    /**
-     * 手势检测回调（API 24+）
-     * 系统检测到全局手势时调用
-     */
     override fun onGesture(gestureId: Int): Boolean {
         if (gestureId == GESTURE_DOUBLE_TAP) {
             onDoubleTap()
             return true
         }
         return false
-    }
-
-    /**
-     * 备用双击检测：通过触摸探索事件的时间差
-     */
-    override fun onTouchExplorationGesture(event: AccessibilityEvent?) {
-        // 备用方案
     }
 
     private fun onDoubleTap() {
