@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -46,7 +47,9 @@ fun GroupDetailScreen(
 ) {
     val context = LocalContext.current
     val group by viewModel.selectedGroup.collectAsStateWithLifecycle()
-    val images by viewModel.selectedGroupImages.collectAsStateWithLifecycle()
+    val images by viewModel.loadedImages.collectAsStateWithLifecycle()
+    val totalCount by viewModel.totalImageCount.collectAsStateWithLifecycle()
+    val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
 
     var showAddDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
@@ -109,7 +112,8 @@ fun GroupDetailScreen(
         if (currentGroup != null) {
             GroupInfoHeader(
                 group = currentGroup,
-                imageCount = images.size,
+                imageCount = totalCount,
+                loadedCount = images.size,
                 onSettingsClick = { showSettingsDialog = true },
                 onDeleteClick = {
                     viewModel.deleteGroup(currentGroup)
@@ -194,7 +198,11 @@ fun GroupDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                items(images, key = { it.id }) { image ->
+                itemsIndexed(images, key = { _, image -> image.id }) { index, image ->
+                    // Load more when near the end
+                    if (index >= images.size - 12 && images.size < totalCount && !isLoadingMore) {
+                        LaunchedEffect(Unit) { viewModel.loadImages(groupId) }
+                    }
                     ImageGridItem(
                         image = image,
                         isSelected = image.id in selectedImages,
@@ -210,6 +218,17 @@ fun GroupDetailScreen(
                         onDelete = { viewModel.deleteImage(image) },
                         onSetWallpaper = { viewModel.setImageAsWallpaper(image) }
                     )
+                }
+                // Loading indicator at the bottom
+                if (isLoadingMore) {
+                    item {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                        }
+                    }
                 }
             }
         }
@@ -267,6 +286,7 @@ fun GroupDetailScreen(
 private fun GroupInfoHeader(
     group: WallpaperGroup,
     imageCount: Int,
+    loadedCount: Int,
     onSettingsClick: () -> Unit,
     onDeleteClick: () -> Unit
 ) {
@@ -295,7 +315,7 @@ private fun GroupInfoHeader(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    "$imageCount 张壁纸",
+                    "$imageCount images${if (loadedCount < imageCount) " (loaded $loadedCount)" else ""}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
                 )
