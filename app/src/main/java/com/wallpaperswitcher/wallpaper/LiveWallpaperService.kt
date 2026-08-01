@@ -112,7 +112,18 @@ class LiveWallpaperService : WallpaperService() {
          * 已由 GestureOverlayService 接管，此处不再处理
          */
         private fun onDoubleTapDetected() {
-            // 由 GestureOverlayService 统一处理
+            scope.launch {
+                try {
+                    val enabled = db.settingsDao()
+                        .getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
+                    if (enabled) {
+                        engine.switchToNext()
+                        Log.d(TAG, "双击切换壁纸成功")
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "双击切换壁纸失败", e)
+                }
+            }
         }
     }
 

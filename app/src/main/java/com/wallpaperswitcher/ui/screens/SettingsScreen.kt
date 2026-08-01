@@ -1,7 +1,5 @@
 package com.wallpaperswitcher.ui.screens
 
-import android.content.Intent
-import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -19,20 +17,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.wallpaperswitcher.service.DoubleTapAccessibilityService
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
 @Composable
 fun SettingsScreen(viewModel: WallpaperViewModel) {
-    val context = LocalContext.current
     val serviceEnabled by viewModel.serviceEnabled.collectAsStateWithLifecycle()
     val doubleTapEnabled by viewModel.doubleTapEnabled.collectAsStateWithLifecycle()
     val unlockSwitchEnabled by viewModel.unlockSwitchEnabled.collectAsStateWithLifecycle()
-    var showA11yDialog by remember { mutableStateOf(false) }
-    // 实时检查无障碍服务状态
-    var a11yEnabled by remember { mutableStateOf(DoubleTapAccessibilityService.isEnabled(context)) }
-    // 每次进入页面重新检查
-    LaunchedEffect(Unit) { a11yEnabled = DoubleTapAccessibilityService.isEnabled(context) }
 
     Column(
         modifier = Modifier
@@ -57,32 +48,21 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
         // 触发方式
         SettingsSection(title = "触发方式") {
             SettingsSwitchItem(
-                icon = Icons.Outlined.TouchApp,
-                title = "双击切换",
-                subtitle = if (a11yEnabled) "双击屏幕任意位置切换壁纸" else "需开启无障碍服务（不影响触摸）",
-                checked = doubleTapEnabled && a11yEnabled,
-                onCheckedChange = { enabled ->
-                    if (enabled) {
-                        if (DoubleTapAccessibilityService.isEnabled(context)) {
-                            viewModel.toggleDoubleTap(true)
-                            a11yEnabled = true
-                        } else {
-                            showA11yDialog = true
-                        }
-                    } else {
-                        viewModel.toggleDoubleTap(false)
-                    }
-                }
-            )
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            SettingsSwitchItem(
                 icon = Icons.Outlined.LockOpen,
                 title = "解锁切换",
                 subtitle = "每次解锁屏幕时自动切换壁纸",
                 checked = unlockSwitchEnabled,
                 onCheckedChange = { viewModel.toggleUnlockSwitch(it) }
+            )
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            SettingsSwitchItem(
+                icon = Icons.Outlined.TouchApp,
+                title = "双击切换",
+                subtitle = "双击屏幕切换壁纸（需设为动态壁纸）",
+                checked = doubleTapEnabled,
+                onCheckedChange = { viewModel.toggleDoubleTap(it) }
             )
         }
 
@@ -94,10 +74,10 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 icon = Icons.Outlined.Info,
                 title = "两种运行模式",
                 subtitle = buildString {
-                    appendLine("1. 后台服务模式：在应用内开启，通过前台服务定时切换壁纸。")
-                    appendLine("2. 动态壁纸模式：设置 → 壁纸 → 动态壁纸 → 选择「动态壁纸切换」。")
+                    appendLine("1. 后台服务模式：在应用内开启「自动切换服务」和「解锁切换」，通过前台服务定时或解锁时切换壁纸。")
+                    appendLine("2. 动态壁纸模式：设置 → 壁纸 → 动态壁纸 → 选择「动态壁纸切换」，支持双击屏幕切换。")
                     appendLine("")
-                    appendLine("双击切换功能仅在动态壁纸模式下可用。")
+                    appendLine("两种模式可以同时使用。")
                 }
             )
 
@@ -122,41 +102,6 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
         }
 
         Spacer(modifier = Modifier.height(80.dp))
-    }
-
-    // 无障碍服务提示对话框
-    if (showA11yDialog) {
-        AlertDialog(
-            onDismissRequest = { showA11yDialog = false },
-            title = { Text("开启无障碍服务") },
-            text = {
-                Text(
-                    buildString {
-                        appendLine("双击切换壁纸需要开启无障碍服务。")
-                        appendLine("")
-                        appendLine("在接下来的设置页面中：")
-                        appendLine("1. 找到「壁纸切换」")
-                        appendLine("2. 打开开关")
-                        appendLine("3. 确认授权")
-                        appendLine("")
-                        appendLine("此服务仅检测双击手势，不读取屏幕内容，不影响触摸操作。")
-                    }
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    showA11yDialog = false
-                    DoubleTapAccessibilityService.openSettings(context)
-                }) {
-                    Text("去设置")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showA11yDialog = false }) {
-                    Text("取消")
-                }
-            }
-        )
     }
 }
 

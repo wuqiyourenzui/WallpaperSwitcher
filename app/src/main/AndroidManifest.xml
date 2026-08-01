@@ -54,24 +54,11 @@
             android:foregroundServiceType="specialUse"
             android:exported="false" />
 
-        <!-- Gesture Overlay Service (double-tap fallback) -->
+        <!-- Gesture Overlay Service (备用) -->
         <service
             android:name=".service.GestureOverlayService"
             android:foregroundServiceType="specialUse"
             android:exported="false" />
-
-        <!-- Double-tap Accessibility Service -->
-        <service
-            android:name=".service.DoubleTapAccessibilityService"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
-        </service>
 
         <!-- Boot Receiver -->
         <receiver
@@ -88,6 +75,7 @@
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.USER_PRESENT" />
+                <action android:name="android.intent.action.SCREEN_ON" />
             </intent-filter>
         </receiver>
 
