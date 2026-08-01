@@ -14,31 +14,25 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * 解锁屏幕时切换壁纸
- *
- * 同时监听 SCREEN_ON 和 USER_PRESENT，确保各种解锁方式都能触发：
- * - 密码/图案解锁 → USER_PRESENT
- * - 指纹/面部解锁 → USER_PRESENT（部分机型）
- * - 直接亮屏（无锁屏）→ SCREEN_ON
+ * Unlock screen wallpaper switch receiver.
+ * Listens to SCREEN_ON and USER_PRESENT.
  */
 class ScreenUnlockReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
-        Log.d(TAG, "收到广播: $action")
+        Log.d(TAG, "Received: $action")
 
-        // USER_PRESENT 直接触发
-        // SCREEN_ON 需要额外检查：屏幕已解锁（无锁屏或已解锁）
         val shouldSwitch = when (action) {
             Intent.ACTION_USER_PRESENT -> true
             Intent.ACTION_SCREEN_ON -> {
                 val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-                !km.isKeyguardLocked // 无锁屏或已解锁
+                !km.isKeyguardLocked
             }
             else -> return
         }
 
         if (!shouldSwitch) {
-            Log.d(TAG, "屏幕锁定中，跳过")
+            Log.d(TAG, "Screen locked, skip")
             return
         }
 
@@ -54,10 +48,10 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
                 if (unlockEnabled) {
                     val engine = WallpaperEngine(context)
                     val result = engine.switchToNext()
-                    Log.d(TAG, "解锁切换壁纸结果: $result")
+                    Log.d(TAG, "Switch result: $result")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "解锁切换壁纸失败", e)
+                Log.e(TAG, "Switch failed", e)
             } finally {
                 pendingResult.finish()
             }
