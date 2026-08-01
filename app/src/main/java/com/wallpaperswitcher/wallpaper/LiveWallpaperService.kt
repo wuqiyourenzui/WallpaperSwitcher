@@ -18,11 +18,6 @@ import com.wallpaperswitcher.data.getLong
 import com.wallpaperswitcher.engine.WallpaperEngine
 import kotlinx.coroutines.*
 
-/**
- * Live Wallpaper Service.
- * Draws the current wallpaper image on the surface.
- * Supports double-tap and timed switching.
- */
 class LiveWallpaperService : WallpaperService() {
 
     override fun onCreateEngine(): Engine = LiveWallpaperEngine()
@@ -34,13 +29,14 @@ class LiveWallpaperService : WallpaperService() {
         private lateinit var db: AppDatabase
         private var switchJob: Job? = null
         private var surfaceReady = false
-        private var visible = false
+        private var isVisible = false
+        private var isSwitching = false
 
         private val gestureDetector = GestureDetector(
             applicationContext,
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDoubleTap(e: MotionEvent): Boolean {
-                    onDoubleTapDetected()
+                    doSwitch("double-tap")
                     return true
                 }
             }
@@ -76,8 +72,8 @@ class LiveWallpaperService : WallpaperService() {
             super.onTouchEvent(event)
         }
 
-        override fun onVisibilityChanged(isVisible: Boolean) {
-            visible = isVisible
+        override fun onVisibilityChanged(visible: Boolean) {
+            isVisible = visible
             if (visible) {
                 drawCurrentWallpaper()
                 startSwitchLoop()
@@ -92,98 +88,85 @@ class LiveWallpaperService : WallpaperService() {
             super.onDestroy()
         }
 
-        /**
-         * Draw the current wallpaper image on the surface.
-         */
+        private fun doSwitch(source: String) {
+            if (isSwitching) return
+            isSwitching = true
+            scope.launch {
+                try {
+                    val result = engine.switchToNext()
+                    Log.d(TAG, "$source switch result: $result")
+                    if (result) {
+                        drawCurrentWallpaper()
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "$source switch failed", e)
+                } finally {
+                    isSwitching = false
+                }
+            }
+        }
+
         private fun drawCurrentWallpaper() {
-            if (!surfaceReady || !visible) return
+            if (!surfaceReady || !isVisible) return
             scope.launch {
                 try {
                     val lastImageId = db.settingsDao().getLong(SettingsKeys.LAST_IMAGE_ID)
-                    if (lastImageId == 0L) {
-                        drawDefault()
-                        return@launch
-                    }
+                    val image = if (lastImageId > 0) {
+                        db.wallpaperImageDao().getImageById(lastImageId)
+                    } else null
 
-                    val image = db.wallpaperImageDao().getImageById(lastImageId)
-                    if (image == null) {
-                        drawDefault()
-                        return@launch
+                    if (image != null) {
+                        val bitmap = decodeSampledBitmap(image.uri)
+                        if (bitmap != null) {
+                            drawBitmap(bitmap)
+                            bitmap.recycle()
+                            return@launch
+                        }
                     }
-
-                    val bitmap = decodeSampledBitmap(image.uri)
-                    if (bitmap != null) {
-                        drawBitmap(bitmap)
-                        bitmap.recycle()
-                    } else {
-                        drawDefault()
-                    }
+                    drawDefault()
                 } catch (e: Exception) {
-                    Log.e(TAG, "Draw wallpaper failed", e)
+                    Log.e(TAG, "Draw failed", e)
                     drawDefault()
                 }
             }
         }
 
         private fun drawDefault() {
-            val holder = surfaceHolder ?: return
             try {
-                val canvas = holder.lockCanvas()
-                if (canvas != null) {
-                    canvas.drawColor(Color.DKGRAY)
-                    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                        color = Color.WHITE
-                        textSize = 48f
-                        textAlign = Paint.Align.CENTER
-                    }
-                    val wm = applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager
-                    val metrics = DisplayMetrics()
-                    @Suppress("DEPRECATION")
-                    wm.defaultDisplay.getRealMetrics(metrics)
-                    canvas.drawText(
-                        "Wallpaper Switcher",
-                        metrics.widthPixels / 2f,
-                        metrics.heightPixels / 2f,
-                        paint
-                    )
-                    holder.unlockCanvasAndPost(canvas)
+                val canvas = surfaceHolder.lockCanvas() ?: return
+                canvas.drawColor(Color.DKGRAY)
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.WHITE; textSize = 48f; textAlign = Paint.Align.CENTER
                 }
+                val wm = applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager
+                val m = DisplayMetrics()
+                @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(m)
+                canvas.drawText("Wallpaper Switcher", m.widthPixels / 2f, m.heightPixels / 2f, paint)
+                surfaceHolder.unlockCanvasAndPost(canvas)
             } catch (e: Exception) {
                 Log.e(TAG, "Draw default failed", e)
             }
         }
 
         private fun drawBitmap(bitmap: Bitmap) {
-            val holder = surfaceHolder ?: return
             try {
-                val canvas = holder.lockCanvas()
-                if (canvas != null) {
-                    canvas.drawColor(Color.BLACK)
-                    val wm = applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager
-                    val metrics = DisplayMetrics()
-                    @Suppress("DEPRECATION")
-                    wm.defaultDisplay.getRealMetrics(metrics)
-                    val screenW = metrics.widthPixels.toFloat()
-                    val screenH = metrics.heightPixels.toFloat()
-
-                    // Center-crop scaling
-                    val imgRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
-                    val screenRatio = screenW / screenH
-                    val drawW: Float
-                    val drawH: Float
-                    if (imgRatio > screenRatio) {
-                        drawH = screenH
-                        drawW = drawH * imgRatio
-                    } else {
-                        drawW = screenW
-                        drawH = drawW / imgRatio
-                    }
-                    val left = (screenW - drawW) / 2f
-                    val top = (screenH - drawH) / 2f
-                    val dst = RectF(left, top, left + drawW, top + drawH)
-                    canvas.drawBitmap(bitmap, null, dst, null)
-                    holder.unlockCanvasAndPost(canvas)
-                }
+                val canvas = surfaceHolder.lockCanvas() ?: return
+                canvas.drawColor(Color.BLACK)
+                val wm = applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager
+                val m = DisplayMetrics()
+                @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(m)
+                val sw = m.widthPixels.toFloat()
+                val sh = m.heightPixels.toFloat()
+                val imgRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
+                val screenRatio = sw / sh
+                val dw: Float
+                val dh: Float
+                if (imgRatio > screenRatio) { dh = sh; dw = dh * imgRatio }
+                else { dw = sw; dh = dw / imgRatio }
+                val left = (sw - dw) / 2f
+                val top = (sh - dh) / 2f
+                canvas.drawBitmap(bitmap, null, RectF(left, top, left + dw, top + dh), null)
+                surfaceHolder.unlockCanvasAndPost(canvas)
             } catch (e: Exception) {
                 Log.e(TAG, "Draw bitmap failed", e)
             }
@@ -193,36 +176,20 @@ class LiveWallpaperService : WallpaperService() {
             return try {
                 val uri = Uri.parse(uriString)
                 val wm = applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager
-                val metrics = DisplayMetrics()
-                @Suppress("DEPRECATION")
-                wm.defaultDisplay.getRealMetrics(metrics)
-                val screenW = metrics.widthPixels
-                val screenH = metrics.heightPixels
-
-                // First pass: bounds only
+                val m = DisplayMetrics()
+                @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(m)
+                val sw = m.widthPixels
+                val sh = m.heightPixels
                 val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                contentResolver.openInputStream(uri)?.use {
-                    BitmapFactory.decodeStream(it, null, opts)
-                }
-
-                // Calculate sample size
+                contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
                 var sample = 1
-                while (opts.outWidth / sample > screenW * 2 || opts.outHeight / sample > screenH * 2) {
-                    sample *= 2
-                }
-
-                // Second pass: decode
+                while (opts.outWidth / sample > sw * 2 || opts.outHeight / sample > sh * 2) sample *= 2
                 val decodeOpts = BitmapFactory.Options().apply {
                     inSampleSize = sample
                     inPreferredConfig = Bitmap.Config.RGB_565
                 }
-                contentResolver.openInputStream(uri)?.use {
-                    BitmapFactory.decodeStream(it, null, decodeOpts)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Decode failed", e)
-                null
-            }
+                contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, decodeOpts) }
+            } catch (e: Exception) { null }
         }
 
         private fun startSwitchLoop() {
@@ -230,49 +197,15 @@ class LiveWallpaperService : WallpaperService() {
             switchJob = scope.launch {
                 while (isActive) {
                     try {
-                        val serviceEnabled = db.settingsDao()
-                            .getBool(SettingsKeys.SERVICE_ENABLED, false)
-                        if (!serviceEnabled) {
-                            delay(30_000L)
-                            continue
-                        }
-
+                        val serviceEnabled = db.settingsDao().getBool(SettingsKeys.SERVICE_ENABLED, false)
+                        if (!serviceEnabled) { delay(30_000L); continue }
                         val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
-                        if (groups.isEmpty()) {
-                            delay(60_000L)
-                            continue
-                        }
-
-                        val minInterval = groups.minOf { it.switchIntervalMs }
-                            .coerceAtLeast(60_000L)
+                        if (groups.isEmpty()) { delay(60_000L); continue }
+                        val minInterval = groups.minOf { it.switchIntervalMs }.coerceAtLeast(60_000L)
                         delay(minInterval)
-
-                        engine.switchToNext()
-                        // Draw the new wallpaper on the surface
-                        drawCurrentWallpaper()
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Switch loop error", e)
-                        delay(10_000L)
-                    }
-                }
-            }
-        }
-
-        private fun onDoubleTapDetected() {
-            scope.launch {
-                try {
-                    val enabled = db.settingsDao()
-                        .getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
-                    if (enabled) {
-                        engine.switchToNext()
-                        // Draw the new wallpaper on the surface
-                        drawCurrentWallpaper()
-                        Log.d(TAG, "Double-tap switch OK")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Double-tap switch failed", e)
+                        doSwitch("timed")
+                    } catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { Log.e(TAG, "Loop error", e); delay(10_000L) }
                 }
             }
         }
