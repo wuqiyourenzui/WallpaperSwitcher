@@ -40,6 +40,12 @@ interface WallpaperImageDao {
     @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC")
     fun getImagesByGroup(groupId: Long): Flow<List<WallpaperImage>>
 
+    @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC LIMIT :limit OFFSET :offset")
+    suspend fun getImagesByGroupPaged(groupId: Long, limit: Int, offset: Int): List<WallpaperImage>
+
+    @Query("SELECT COUNT(*) FROM wallpaper_images WHERE groupId = :groupId")
+    suspend fun getImageCountByGroup(groupId: Long): Int
+
     @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC")
     suspend fun getImagesByGroupSync(groupId: Long): List<WallpaperImage>
 
