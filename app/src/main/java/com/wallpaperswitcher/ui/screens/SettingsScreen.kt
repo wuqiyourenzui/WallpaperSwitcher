@@ -1,5 +1,8 @@
 package com.wallpaperswitcher.ui.screens
 
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -13,6 +16,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -20,9 +24,11 @@ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
 @Composable
 fun SettingsScreen(viewModel: WallpaperViewModel) {
+    val context = LocalContext.current
     val serviceEnabled by viewModel.serviceEnabled.collectAsStateWithLifecycle()
     val doubleTapEnabled by viewModel.doubleTapEnabled.collectAsStateWithLifecycle()
     val unlockSwitchEnabled by viewModel.unlockSwitchEnabled.collectAsStateWithLifecycle()
+    var showOverlayPermissionDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -49,9 +55,20 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
             SettingsSwitchItem(
                 icon = Icons.Outlined.TouchApp,
                 title = "双击切换",
-                subtitle = "双击屏幕（动态壁纸模式下）切换壁纸",
+                subtitle = "双击屏幕任意位置切换壁纸（需悬浮窗权限）",
                 checked = doubleTapEnabled,
-                onCheckedChange = { viewModel.toggleDoubleTap(it) }
+                onCheckedChange = { enabled ->
+                    if (enabled) {
+                        // 检查悬浮窗权限
+                        if (Settings.canDrawOverlays(context)) {
+                            viewModel.toggleDoubleTap(true)
+                        } else {
+                            showOverlayPermissionDialog = true
+                        }
+                    } else {
+                        viewModel.toggleDoubleTap(false)
+                    }
+                }
             )
 
             Divider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -101,6 +118,32 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
         }
 
         Spacer(modifier = Modifier.height(80.dp))
+    }
+
+    // 悬浮窗权限提示对话框
+    if (showOverlayPermissionDialog) {
+        AlertDialog(
+            onDismissRequest = { showOverlayPermissionDialog = false },
+            title = { Text("需要悬浮窗权限") },
+            text = { Text("双击切换壁纸需要「显示在其他应用上层」权限。\n\n请在接下来的设置页面中找到本应用，打开权限开关。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showOverlayPermissionDialog = false
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:${context.packageName}")
+                    )
+                    context.startActivity(intent)
+                }) {
+                    Text("去设置")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showOverlayPermissionDialog = false }) {
+                    Text("取消")
+                }
+            }
+        )
     }
 }
 
