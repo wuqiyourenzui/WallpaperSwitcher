@@ -13,5 +13,4 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-class WallpaperViewModel(app: Application) : AndroidViewModel(
-...(truncated)...
+class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
