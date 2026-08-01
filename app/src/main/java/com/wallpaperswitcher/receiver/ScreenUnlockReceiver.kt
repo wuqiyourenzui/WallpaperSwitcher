@@ -14,11 +14,10 @@ import kotlinx.coroutines.launch
 
 /**
  * 解锁屏幕时切换壁纸
- * 直接调用引擎切换，不依赖前台服务是否运行
- * 仅检查 UNLOCK_SWITCH_ENABLED，不受定时服务开关影响
  */
 class ScreenUnlockReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        Log.d(TAG, "收到广播: ${intent.action}")
         if (intent.action == Intent.ACTION_USER_PRESENT) {
             val pendingResult = goAsync()
             CoroutineScope(Dispatchers.IO).launch {
@@ -26,18 +25,26 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
                     val db = AppDatabase.getInstance(context)
                     val unlockEnabled = db.settingsDao()
                         .getBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, false)
+                    val serviceEnabled = db.settingsDao()
+                        .getBool(SettingsKeys.SERVICE_ENABLED, false)
+
+                    Log.d(TAG, "unlockEnabled=$unlockEnabled, serviceEnabled=$serviceEnabled")
 
                     if (unlockEnabled) {
                         val engine = WallpaperEngine(context)
-                        engine.switchToNext()
-                        Log.d("ScreenUnlockReceiver", "解锁切换壁纸成功")
+                        val result = engine.switchToNext()
+                        Log.d(TAG, "解锁切换壁纸结果: $result")
                     }
                 } catch (e: Exception) {
-                    Log.e("ScreenUnlockReceiver", "解锁切换壁纸失败", e)
+                    Log.e(TAG, "解锁切换壁纸失败", e)
                 } finally {
                     pendingResult.finish()
                 }
             }
         }
+    }
+
+    companion object {
+        private const val TAG = "ScreenUnlockReceiver"
     }
 }

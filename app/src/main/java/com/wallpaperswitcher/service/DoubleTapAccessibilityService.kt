@@ -1,10 +1,8 @@
 package com.wallpaperswitcher.service
 
 import android.accessibilityservice.AccessibilityService
-import android.accessibilityservice.GestureDescription
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -19,35 +17,57 @@ import kotlinx.coroutines.launch
 /**
  * 双击切换壁纸无障碍服务
  *
- * 通过 AccessibilityService 监听全局触摸事件，
- * 检测双击手势触发壁纸切换。
- * 完全不影响正常触摸操作。
+ * 两种检测方式（双保险）：
+ * 1. onGesture(GESTURE_DOUBLE_TAP) — 系统手势回调
+ * 2. TYPE_TOUCH_INTERACTION_START 事件的时间差检测 — 备用方案
  */
 class DoubleTapAccessibilityService : AccessibilityService() {
 
     private val scope = CoroutineScope(Dispatchers.IO)
     private var lastTapTime = 0L
+    private val doubleTapWindow = 400L // ms
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // 不处理无障碍事件，只用 touchExploration 的手势回调
+        // 备用方案：通过触摸交互事件检测双击
+        if (event?.eventType == AccessibilityEvent.TYPE_TOUCH_INTERACTION_START) {
+            checkDoubleTap()
+        }
     }
 
     override fun onInterrupt() {}
 
+    /**
+     * 系统手势回调 — 主要检测方式
+     */
     override fun onGesture(gestureId: Int): Boolean {
+        Log.d(TAG, "onGesture: $gestureId")
         if (gestureId == GESTURE_DOUBLE_TAP) {
-            onDoubleTap()
+            triggerSwitch()
             return true
         }
         return false
     }
 
-    private fun onDoubleTap() {
+    /**
+     * 备用双击检测
+     */
+    private fun checkDoubleTap() {
+        val now = System.currentTimeMillis()
+        if (now - lastTapTime < doubleTapWindow) {
+            lastTapTime = 0L
+            triggerSwitch()
+        } else {
+            lastTapTime = now
+        }
+    }
+
+    private fun triggerSwitch() {
         scope.launch {
             try {
                 val db = AppDatabase.getInstance(applicationContext)
                 val enabled = db.settingsDao()
                     .getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
+                Log.d(TAG, "双击触发, enabled=$enabled")
                 if (enabled) {
                     val engine = WallpaperEngine(applicationContext)
                     engine.switchToNext()
@@ -67,19 +87,17 @@ class DoubleTapAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         instance = null
+        Log.d(TAG, "双击无障碍服务已销毁")
         super.onDestroy()
     }
 
     companion object {
         private const val TAG = "DoubleTapA11y"
-        private const val GESTURE_DOUBLE_TAP = 17 // GESTURE_DOUBLE_TAP
+        private const val GESTURE_DOUBLE_TAP = 17
 
         var instance: DoubleTapAccessibilityService? = null
             private set
 
-        /**
-         * 检查无障碍服务是否已启用
-         */
         fun isEnabled(context: Context): Boolean {
             val serviceName = "${context.packageName}/${DoubleTapAccessibilityService::class.java.canonicalName}"
             val enabledServices = Settings.Secure.getString(
@@ -89,9 +107,6 @@ class DoubleTapAccessibilityService : AccessibilityService() {
             return enabledServices.contains(serviceName)
         }
 
-        /**
-         * 打开无障碍设置页面
-         */
         fun openSettings(context: Context) {
             context.startActivity(
                 Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
