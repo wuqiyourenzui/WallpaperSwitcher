@@ -416,7 +416,7 @@ class VideoFrameDecoder(
         private set
     private var paused = false
 
-    private val bufferInfo = MediaCodec.BufferInfo()
+
 
     fun init(): Boolean {
         try {
@@ -493,10 +493,10 @@ class VideoFrameDecoder(
             }
 
             // Get output
-            bufferInfo.clear()
-            val outputIndex = cdc.dequeueOutputBuffer(bufferInfo, 10_000L)
+            val info = MediaCodec.BufferInfo()
+            val outputIndex = cdc.dequeueOutputBuffer(info, 10_000L)
             if (outputIndex >= 0) {
-                lastPtsUs = bufferInfo.presentationTimeUs
+                lastPtsUs = info.presentationTimeUs
                 val outputBuffer = cdc.getOutputBuffer(outputIndex) ?: return null
                 val format = cdc.outputFormat
                 val width = format.getInteger(MediaFormat.KEY_WIDTH)
@@ -506,7 +506,7 @@ class VideoFrameDecoder(
                 cdc.releaseOutputBuffer(outputIndex, false)
 
                 // Check end of stream
-                if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                     if (isLooping) {
                         ext.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                         startTimeNs = System.nanoTime()
