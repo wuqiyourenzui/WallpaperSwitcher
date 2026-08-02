@@ -95,14 +95,21 @@ fun GroupDetailScreen(
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
-        uri?.let {
-            viewModel.addFolder(groupId, it)
+        if (uri == null) return@rememberLauncherForActivityResult
+        try {
+            context.contentResolver.takePersistableUriPermission(
+                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+        } catch (_: Exception) {}
+        // Diagnostic: launch with delay to separate callback from coroutine
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             try {
-                context.contentResolver.takePersistableUriPermission(
-                    it, Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (_: Exception) {}
-        }
+                viewModel.addFolder(groupId, uri)
+            } catch (e: Exception) {
+                android.util.Log.e("GroupDetail", "addFolder failed", e)
+                android.widget.Toast.makeText(context, "Error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
+            }
+        }, 100)
     }
 
     val currentGroup = group

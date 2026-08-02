@@ -206,27 +206,43 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 _toastMessage.emit("正在扫描文件夹...")
                 var total = 0
                 withContext(Dispatchers.IO) {
-                    val docFile = androidx.documentfile.provider.DocumentFile
-                        .fromTreeUri(getApplication(), folderUri) ?: return@withContext
+                    val docFile = try {
+                        androidx.documentfile.provider.DocumentFile
+                            .fromTreeUri(getApplication(), folderUri)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "fromTreeUri failed", e)
+                        null
+                    } ?: return@withContext
+
                     if (!docFile.isDirectory) return@withContext
+
+                    val files = try {
+                        docFile.listFiles()
+                    } catch (e: Exception) {
+                        Log.e(TAG, "listFiles failed", e)
+                        emptyArray()
+                    }
+
                     val batch = mutableListOf<WallpaperImage>()
-                    docFile.listFiles().forEach { file ->
+                    for (file in files) {
                         if (!isActive) return@withContext
-                        if (file.isFile && isSupportedMedia(file.name ?: "")) {
-                            batch.add(WallpaperImage(
-                                groupId = groupId,
-                                uri = file.uri.toString(),
-                                displayName = file.name ?: "untitled",
-                                mediaType = detectMediaType(file.name ?: ""),
-                                isFromFolder = true,
-                                folderPath = folderUri.toString()
-                            ))
-                            if (batch.size >= 100) {
-                                imageDao.insertAll(batch.toList())
-                                total += batch.size
-                                batch.clear()
+                        try {
+                            if (file.isFile && isSupportedMedia(file.name ?: "")) {
+                                batch.add(WallpaperImage(
+                                    groupId = groupId,
+                                    uri = file.uri.toString(),
+                                    displayName = file.name ?: "untitled",
+                                    mediaType = detectMediaType(file.name ?: ""),
+                                    isFromFolder = true,
+                                    folderPath = folderUri.toString()
+                                ))
+                                if (batch.size >= 100) {
+                                    imageDao.insertAll(batch.toList())
+                                    total += batch.size
+                                    batch.clear()
+                                }
                             }
-                        }
+                        } catch (_: Exception) { continue }
                     }
                     if (batch.isNotEmpty() && isActive) {
                         imageDao.insertAll(batch)
