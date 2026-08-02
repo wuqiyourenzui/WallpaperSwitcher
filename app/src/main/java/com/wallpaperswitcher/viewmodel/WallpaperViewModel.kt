@@ -168,9 +168,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsDao.setString(SettingsKeys.GLOBAL_SCALE_MODE, mode.name) }
     }
 
-    fun addImage(groupId: Long, uri: Uri, displayName: String, isVideo: Boolean = false) {
+    fun addImage(groupId: Long, uri: Uri, displayName: String) {
         viewModelScope.launch {
-            imageDao.insert(WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = displayName, isVideo = isVideo))
+            imageDao.insert(WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = displayName))
             refreshCount(groupId)
         }
     }
