@@ -1,6 +1,5 @@
 package com.wallpaperswitcher.receiver
 
-import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -27,13 +26,10 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
         val action = intent.action ?: return
         Log.d(TAG, "Received: $action")
 
+        // USER_PRESENT fires after any unlock: fingerprint, face, PIN, swipe
+        // No need for SCREEN_ON - it causes double-switch on fingerprint unlock
         if (action == Intent.ACTION_USER_PRESENT) {
             doSwitch(context)
-        } else if (action == Intent.ACTION_SCREEN_ON) {
-            val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
-            if (!km.isKeyguardLocked) {
-                doSwitch(context)
-            }
         }
     }
 

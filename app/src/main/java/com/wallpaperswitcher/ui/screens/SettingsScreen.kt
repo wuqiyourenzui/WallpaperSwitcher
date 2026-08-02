@@ -352,14 +352,14 @@ fun IntervalPickerDialog(
         43200_000L to "12 小时",
         86400_000L to "24 小时"
     )
-    var showCustomInput by remember { mutableStateOf(false) }
     var customValue by remember { mutableStateOf("") }
+    val scrollState = rememberScrollState()
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("切换间隔") },
         text = {
-            Column {
+            Column(modifier = Modifier.verticalScroll(scrollState)) {
                 options.forEach { (ms, label) ->
                     Row(
                         modifier = Modifier.fillMaxWidth().clickable { onSelect(ms) }.padding(12.dp),
@@ -370,48 +370,45 @@ fun IntervalPickerDialog(
                         Text(label)
                     }
                 }
-                // Custom input toggle
+                Divider(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+                // Custom input
+                Text(
+                    "自定义时间",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(start = 12.dp, top = 8.dp)
+                )
                 Row(
-                    modifier = Modifier.fillMaxWidth().clickable { showCustomInput = !showCustomInput }.padding(12.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(Icons.Outlined.Edit, null, modifier = Modifier.size(20.dp),
-                        tint = MaterialTheme.colorScheme.primary)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("自定义时间", color = MaterialTheme.colorScheme.primary)
-                }
-                if (showCustomInput) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        OutlinedTextField(
-                            value = customValue,
-                            onValueChange = { customValue = it.filter { c -> c.isDigit() } },
-                            label = { Text("秒数") },
-                            singleLine = true,
-                            modifier = Modifier.weight(1f)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        FilledTonalButton(
-                            onClick = {
-                                val seconds = customValue.toLongOrNull() ?: 0L
-                                if (seconds >= 10) {
-                                    onSelect(seconds * 1000L)
-                                }
-                            },
-                            enabled = (customValue.toLongOrNull() ?: 0L) >= 10
-                        ) {
-                            Text("确定")
-                        }
-                    }
-                    Text(
-                        "最少 10 秒",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 12.dp, top = 4.dp)
+                    OutlinedTextField(
+                        value = customValue,
+                        onValueChange = { customValue = it.filter { c -> c.isDigit() } },
+                        label = { Text("秒数") },
+                        placeholder = { Text("例如: 45") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f)
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    FilledTonalButton(
+                        onClick = {
+                            val seconds = customValue.toLongOrNull() ?: 0L
+                            if (seconds >= 10) {
+                                onSelect(seconds * 1000L)
+                            }
+                        },
+                        enabled = (customValue.toLongOrNull() ?: 0L) >= 10
+                    ) {
+                        Text("确定")
+                    }
                 }
+                Text(
+                    "最少 10 秒",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 12.dp, bottom = 8.dp)
+                )
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }
