@@ -25,6 +25,7 @@ data class WallpaperImage(
     val groupId: Long,
     val uri: String,
     val displayName: String = "",
+    val mediaType: String = "IMAGE",
     val isFromFolder: Boolean = false,
     val folderPath: String = "",
     val addedAt: Long = System.currentTimeMillis()
@@ -46,4 +47,10 @@ enum class ScaleMode {
     FILL,
     FIT,
     STRETCH
+}
+
+enum class MediaType {
+    IMAGE,
+    VIDEO,
+    GIF
 }
