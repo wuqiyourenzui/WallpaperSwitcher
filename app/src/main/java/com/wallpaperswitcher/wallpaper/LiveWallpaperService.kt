@@ -307,7 +307,7 @@ class LiveWallpaperService : WallpaperService() {
 
             if (drawable is android.graphics.drawable.AnimatedImageDrawable) {
                 gifDrawable = drawable
-                drawable.repeatCount = android.graphics.drawable.AnimatedImageDrawable.INFINITE
+                drawable.repeatCount = -1  // INFINITE
                 drawable.start()
 
                 val renderRunnable = object : Runnable {
