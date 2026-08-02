@@ -135,32 +135,37 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun updateGroupInterval(groupId: Long, intervalMs: Long) {
-        viewModelScope.launch {
-            val group = groupDao.getGroupById(groupId) ?: return@launch
-            groupDao.update(group.copy(switchIntervalMs = intervalMs.coerceAtLeast(60_000L)))
-        }
-    }
-
-    fun updateGroupSwitchMode(groupId: Long, mode: SwitchMode) {
-        viewModelScope.launch {
-            val group = groupDao.getGroupById(groupId) ?: return@launch
-            groupDao.update(group.copy(switchMode = mode))
-        }
-    }
-
-    fun updateGroupScaleMode(groupId: Long, mode: ScaleMode) {
-        viewModelScope.launch {
-            val group = groupDao.getGroupById(groupId) ?: return@launch
-            groupDao.update(group.copy(scaleMode = mode))
-        }
-    }
-
     fun toggleGroupEnabled(groupId: Long, enabled: Boolean) {
         viewModelScope.launch {
             val group = groupDao.getGroupById(groupId) ?: return@launch
             groupDao.update(group.copy(isEnabled = enabled))
         }
+    }
+
+    // --- Global settings ---
+
+    val globalIntervalMs: StateFlow<Long> = settingsDao.getValueFlow(SettingsKeys.GLOBAL_INTERVAL_MS)
+        .map { it?.toLongOrNull() ?: 60_000L }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 60_000L)
+
+    val globalSwitchMode: StateFlow<SwitchMode> = settingsDao.getValueFlow(SettingsKeys.GLOBAL_SWITCH_MODE)
+        .map { try { SwitchMode.valueOf(it ?: "RANDOM") } catch (_: Exception) { SwitchMode.RANDOM } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SwitchMode.RANDOM)
+
+    val globalScaleMode: StateFlow<ScaleMode> = settingsDao.getValueFlow(SettingsKeys.GLOBAL_SCALE_MODE)
+        .map { try { ScaleMode.valueOf(it ?: "FIT") } catch (_: Exception) { ScaleMode.FIT } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ScaleMode.FIT)
+
+    fun setGlobalInterval(ms: Long) {
+        viewModelScope.launch { settingsDao.setLong(SettingsKeys.GLOBAL_INTERVAL_MS, ms.coerceAtLeast(60_000L)) }
+    }
+
+    fun setGlobalSwitchMode(mode: SwitchMode) {
+        viewModelScope.launch { settingsDao.setString(SettingsKeys.GLOBAL_SWITCH_MODE, mode.name) }
+    }
+
+    fun setGlobalScaleMode(mode: ScaleMode) {
+        viewModelScope.launch { settingsDao.setString(SettingsKeys.GLOBAL_SCALE_MODE, mode.name) }
     }
 
     fun addImage(groupId: Long, uri: Uri, displayName: String, isVideo: Boolean = false) {
