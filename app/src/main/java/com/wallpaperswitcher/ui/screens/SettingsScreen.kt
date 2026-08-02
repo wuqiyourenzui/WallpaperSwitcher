@@ -25,6 +25,7 @@ import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(viewModel: WallpaperViewModel) {
     val context = LocalContext.current
