@@ -226,34 +226,6 @@ private fun GroupCard(
                     else
                         MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                Row {
-                    Text(
-                        when (group.switchMode) {
-                            com.wallpaperswitcher.data.SwitchMode.RANDOM -> "随机"
-                            com.wallpaperswitcher.data.SwitchMode.SEQUENTIAL -> "顺序"
-                            com.wallpaperswitcher.data.SwitchMode.SHUFFLE -> "洗牌"
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        " · ${formatInterval(group.switchIntervalMs)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        " · ${
-                            when (group.scaleMode) {
-                                com.wallpaperswitcher.data.ScaleMode.FILL -> "填充"
-                                com.wallpaperswitcher.data.ScaleMode.FIT -> "适应"
-                                com.wallpaperswitcher.data.ScaleMode.STRETCH -> "拉伸"
-                            }
-                        }",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
             }
 
             Switch(
