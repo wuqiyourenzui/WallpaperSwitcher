@@ -76,11 +76,11 @@ class WallpaperEngine(private val context: Context) {
             if (imgW <= 0 || imgH <= 0) return null
 
             var sample = 1
-            while (imgW / sample > screenW * 2 || imgH / sample > screenH * 2) sample *= 2
+            while (imgW / sample > screenW * 4 || imgH / sample > screenH * 4) sample *= 2
 
             val decoded = context.contentResolver.openInputStream(uri)?.use {
                 BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply {
-                    inSampleSize = sample; inPreferredConfig = Bitmap.Config.RGB_565
+                    inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888
                 })
             } ?: return null
 

@@ -428,8 +428,10 @@ class LiveWallpaperService : WallpaperService() {
                 }
                 val yuvImage = YuvImage(yuv, ImageFormat.NV21, width, height, null)
                 val out = java.io.ByteArrayOutputStream()
-                yuvImage.compressToJpeg(Rect(0, 0, width, height), 85, out)
-                BitmapFactory.decodeByteArray(out.toByteArray(), 0, out.size())
+                yuvImage.compressToJpeg(Rect(0, 0, width, height), 95, out)
+                BitmapFactory.decodeByteArray(out.toByteArray(), 0, out.size(), BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                })
             } catch (_: Exception) { null }
         }
 
@@ -539,11 +541,12 @@ class LiveWallpaperService : WallpaperService() {
                 val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
                 if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
+                // Only downsample if image is more than 4x screen size (preserve original quality)
                 var s = 1
-                while (opts.outWidth / s > m.widthPixels * 2 || opts.outHeight / s > m.heightPixels * 2) s *= 2
+                while (opts.outWidth / s > m.widthPixels * 4 || opts.outHeight / s > m.heightPixels * 4) s *= 2
                 contentResolver.openInputStream(uri)?.use {
                     BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply {
-                        inSampleSize = s; inPreferredConfig = Bitmap.Config.RGB_565
+                        inSampleSize = s; inPreferredConfig = Bitmap.Config.ARGB_8888
                     })
                 }
             } catch (_: Exception) { null }
