@@ -328,7 +328,7 @@ private fun GroupInfoHeader(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    "$imageCount images${if (loadedCount < imageCount) " (loaded $loadedCount)" else ""}",
+                    "$imageCount 张图片${if (loadedCount < imageCount) " (已加载 $loadedCount)" else ""}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
                 )

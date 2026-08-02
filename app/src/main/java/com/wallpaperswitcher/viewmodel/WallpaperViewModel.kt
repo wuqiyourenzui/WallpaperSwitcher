@@ -286,17 +286,16 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                // Update live wallpaper surface
-                val intent = com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH
-                val switchIntent = android.content.Intent(intent)
-                switchIntent.setPackage(getApplication<Application>().packageName)
-                getApplication<Application>().sendBroadcast(switchIntent)
-                // Also set via WallpaperManager for non-live-wallpaper mode
+                // Set via WallpaperManager (works for both live wallpaper and regular mode)
                 val engine = com.wallpaperswitcher.engine.WallpaperEngine(getApplication())
                 engine.setWallpaperForImage(image.uri)
-                _toastMessage.emit("Wallpaper set!")
+                // Also update live wallpaper surface if active
+                val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH)
+                switchIntent.setPackage(getApplication<Application>().packageName)
+                getApplication<Application>().sendBroadcast(switchIntent)
+                _toastMessage.emit("壁纸已设置！")
             } catch (e: Exception) {
-                _toastMessage.emit("Error: ${e.message}")
+                _toastMessage.emit("设置失败: ${e.message}")
             }
         }
     }

@@ -43,7 +43,7 @@ class LiveWallpaperService : WallpaperService() {
 
         // Shuffle tracking - keeps track of shown image IDs to avoid repeats
         private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
-        private var shuffleAllCount = 0
+        @Volatile private var shuffleAllCount = 0
 
         // Media state
         private var mediaCodecJob: Job? = null
@@ -388,11 +388,13 @@ class LiveWallpaperService : WallpaperService() {
                         val outputIdx = codec.dequeueOutputBuffer(info, 10000L)
                         if (outputIdx >= 0) {
                             val outBuf = codec.getOutputBuffer(outputIdx)
-                            if (outBuf != null && isActive) {
+                            if (outBuf != null && isActive && isVisible) {
                                 val bmp = yuvToBitmap(outBuf, width, height)
-                                if (bmp != null && isActive && isVisible) {
+                                if (bmp != null && isActive) {
                                     mainHandler.post { showBitmap(bmp, scaleMode) }
                                 }
+                            } else if (outBuf != null) {
+                                // Skip rendering when not visible, but still advance the buffer
                             }
                             codec.releaseOutputBuffer(outputIdx, false)
 

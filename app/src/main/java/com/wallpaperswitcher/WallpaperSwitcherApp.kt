@@ -65,7 +65,6 @@ class WallpaperSwitcherApp : Application() {
     private fun registerUnlockReceiver() {
         unlockReceiver = ScreenUnlockReceiver()
         val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_SCREEN_ON)
             addAction(Intent.ACTION_USER_PRESENT)
             priority = IntentFilter.SYSTEM_HIGH_PRIORITY
         }
