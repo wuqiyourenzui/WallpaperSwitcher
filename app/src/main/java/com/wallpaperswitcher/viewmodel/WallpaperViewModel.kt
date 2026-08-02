@@ -179,10 +179,10 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             // Filter to images only
             val imagePairs = uris.zip(names).filter { (uri, name) ->
-                isImageOnly(name) || uri.toString().contains("image")
+                isSupportedMedia(name) || uri.toString().contains("image") || uri.toString().contains("video")
             }
             val images = imagePairs.map { (uri, name) ->
-                WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = name)
+                WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = name, mediaType = detectMediaType(name))
             }
             if (images.isNotEmpty()) {
                 imageDao.insertAll(images)
@@ -213,11 +213,12 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                     val batch = mutableListOf<WallpaperImage>()
                     docFile.listFiles().forEach { file ->
                         if (!isActive) return@withContext // Check cancellation
-                        if (file.isFile && isImageOnly(file.name ?: "")) {
+                        if (file.isFile && isSupportedMedia(file.name ?: "")) {
                             batch.add(WallpaperImage(
                                 groupId = groupId,
                                 uri = file.uri.toString(),
                                 displayName = file.name ?: "untitled",
+                                mediaType = detectMediaType(file.name ?: ""),
                                 isFromFolder = true,
                                 folderPath = folderUri.toString()
                             ))
@@ -440,9 +441,18 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun isImageOnly(name: String): Boolean {
+    private fun isSupportedMedia(name: String): Boolean {
         val ext = name.lowercase().substringAfterLast('.', "")
-        return ext in listOf("jpg", "jpeg", "png", "webp", "bmp", "gif")
+        return ext in listOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "mp4", "mkv", "webm", "avi", "mov", "3gp")
+    }
+
+    private fun detectMediaType(name: String): String {
+        val ext = name.lowercase().substringAfterLast('.', "")
+        return when (ext) {
+            "gif" -> "GIF"
+            "mp4", "mkv", "webm", "avi", "mov", "3gp" -> "VIDEO"
+            else -> "IMAGE"
+        }
     }
 }
 
