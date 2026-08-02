@@ -72,6 +72,7 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
     implementation("io.coil-kt:coil-compose:2.5.0")
+    implementation("io.coil-kt:coil-video:2.5.0")  // 视频帧缩略图
 
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
