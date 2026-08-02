@@ -4,10 +4,9 @@ import android.app.WallpaperManager
 import android.content.Context
 import android.graphics.*
 import android.net.Uri
-import android.util.DisplayMetrics
+import android.os.Build
 import android.util.Log
-import android.view.WindowManager
-import com.wallpaperswitcher.data.*
+import com.wallpaperswitcher.data.ScaleMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -18,7 +17,6 @@ import kotlinx.coroutines.withContext
 class WallpaperEngine(private val context: Context) {
 
     private val wallpaperManager = WallpaperManager.getInstance(context)
-    private val db = AppDatabase.getInstance(context)
 
     /**
      * Set wallpaper for the given image URI.
@@ -55,12 +53,22 @@ class WallpaperEngine(private val context: Context) {
 
     private fun decodeAndScale(uri: Uri, scaleMode: ScaleMode): Bitmap? {
         return try {
-            val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val metrics = DisplayMetrics()
-            @Suppress("DEPRECATION")
-            wm.defaultDisplay.getRealMetrics(metrics)
-            val screenW = metrics.widthPixels
-            val screenH = metrics.heightPixels
+            val screenW: Int
+            val screenH: Int
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager
+                val bounds = windowManager.currentWindowMetrics.bounds
+                screenW = bounds.width()
+                screenH = bounds.height()
+            } else {
+                @Suppress("DEPRECATION")
+                val metrics = android.util.DisplayMetrics()
+                @Suppress("DEPRECATION")
+                (context.getSystemService(Context.WINDOW_SERVICE) as android.view.WindowManager)
+                    .defaultDisplay.getRealMetrics(metrics)
+                screenW = metrics.widthPixels
+                screenH = metrics.heightPixels
+            }
 
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }

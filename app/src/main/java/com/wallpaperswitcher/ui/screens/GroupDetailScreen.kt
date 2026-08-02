@@ -442,12 +442,12 @@ private fun ImageGridItem(
                     onDismissRequest = { showMenu = false }
                 ) {
                     DropdownMenuItem(
-                        text = { Text("Set as Wallpaper") },
+                        text = { Text("设为壁纸") },
                         onClick = { showMenu = false; onSetWallpaper() },
                         leadingIcon = { Icon(Icons.Filled.Wallpaper, null) }
                     )
                     DropdownMenuItem(
-                        text = { Text("Delete") },
+                        text = { Text("删除") },
                         onClick = { showMenu = false; onDelete() },
                         leadingIcon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) }
                     )
@@ -495,7 +495,7 @@ fun AddWallpaperDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add Wallpaper") },
+        title = { Text("添加壁纸") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(
@@ -504,7 +504,7 @@ fun AddWallpaperDialog(
                 ) {
                     Icon(Icons.Outlined.Image, null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("Select Image", modifier = Modifier.weight(1f))
+                    Text("选择单张图片", modifier = Modifier.weight(1f))
                 }
                 TextButton(
                     onClick = onAddMultiple,
@@ -512,7 +512,7 @@ fun AddWallpaperDialog(
                 ) {
                     Icon(Icons.Outlined.PhotoLibrary, null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("Select Multiple", modifier = Modifier.weight(1f))
+                    Text("选择多张图片", modifier = Modifier.weight(1f))
                 }
                 TextButton(
                     onClick = onAddFolder,
@@ -520,12 +520,12 @@ fun AddWallpaperDialog(
                 ) {
                     Icon(Icons.Outlined.Folder, null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("Add from Folder", modifier = Modifier.weight(1f))
+                    Text("从文件夹添加", modifier = Modifier.weight(1f))
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Cancel") }
+            TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
 }
@@ -542,7 +542,7 @@ fun WallpaperPreviewDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Set as Wallpaper") },
+        title = { Text("设为壁纸") },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -573,7 +573,7 @@ fun WallpaperPreviewDialog(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    "This will set this image as your wallpaper.",
+                    "将此图片设置为壁纸",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -581,12 +581,12 @@ fun WallpaperPreviewDialog(
         },
         confirmButton = {
             TextButton(onClick = onConfirm) {
-                Text("Set")
+                Text("确定")
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text("取消")
             }
         }
     )

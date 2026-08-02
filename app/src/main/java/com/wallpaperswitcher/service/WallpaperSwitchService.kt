@@ -28,6 +28,9 @@ class WallpaperSwitchService : Service() {
     private var switchJob: Job? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Always ensure foreground state first (required when started via startForegroundService)
+        startForeground(NOTIFICATION_ID, createNotification())
+
         when (intent?.action) {
             ACTION_SWITCH_NOW -> {
                 sendSwitchBroadcast()
@@ -37,7 +40,6 @@ class WallpaperSwitchService : Service() {
                 return START_NOT_STICKY
             }
             else -> {
-                startForeground(NOTIFICATION_ID, createNotification())
                 startSwitchLoop()
             }
         }

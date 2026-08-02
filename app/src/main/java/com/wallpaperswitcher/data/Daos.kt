@@ -76,32 +76,6 @@ interface WallpaperImageDao {
     """)
     suspend fun getSequentialImageFromEnabledGroups(offset: Int): WallpaperImage?
 
-    // --- Global queries (fallback) ---
-
-    @Query("""
-        SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
-        ORDER BY RANDOM() LIMIT 1
-    """)
-    suspend fun getRandomImage(): WallpaperImage?
-
-    @Query("""
-        SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
-        AND id != :excludeId
-        ORDER BY RANDOM() LIMIT 1
-    """)
-    suspend fun getRandomImageExcluding(excludeId: Long): WallpaperImage?
-
-    @Query("SELECT COUNT(*) FROM wallpaper_images WHERE groupId = :groupId")
-    suspend fun getImageCount(groupId: Long): Int
-
-    @Query("""
-        SELECT COUNT(*) FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
-    """)
-    suspend fun getEnabledImageCount(): Int
-
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(image: WallpaperImage): Long
 

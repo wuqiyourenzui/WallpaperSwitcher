@@ -7,10 +7,10 @@ import android.content.IntentFilter
 import android.graphics.*
 import android.media.*
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.service.wallpaper.WallpaperService
-import android.util.DisplayMetrics
 import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -19,6 +19,7 @@ import android.view.WindowManager
 import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.*
 import java.nio.ByteBuffer
+import java.util.concurrent.atomic.AtomicBoolean
 
 class LiveWallpaperService : WallpaperService() {
 
@@ -36,9 +37,13 @@ class LiveWallpaperService : WallpaperService() {
         private lateinit var db: AppDatabase
         private var surfaceReady = false
         private var isVisible = false
-        private var isSwitching = false
+        private val isSwitching = AtomicBoolean(false)
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
+
+        // Shuffle tracking - keeps track of shown image IDs to avoid repeats
+        private val shuffleShownIds = mutableSetOf<Long>()
+        private var shuffleAllCount = 0
 
         // Media state
         private var mediaCodecJob: Job? = null
@@ -147,11 +152,10 @@ class LiveWallpaperService : WallpaperService() {
         // ======== Switch logic ========
 
         private fun doSwitch(source: String) {
-            if (isSwitching) {
+            if (!isSwitching.compareAndSet(false, true)) {
                 Log.d(TAG, "Already switching, skip")
                 return
             }
-            isSwitching = true
             Log.d(TAG, "doSwitch from $source")
 
             scope.launch {
@@ -163,7 +167,7 @@ class LiveWallpaperService : WallpaperService() {
                     val groups = groupDao.getEnabledGroupsSync()
                     if (groups.isEmpty()) {
                         Log.d(TAG, "No enabled groups")
-                        isSwitching = false
+                        isSwitching.set(false)
                         return@launch
                     }
 
@@ -192,8 +196,36 @@ class LiveWallpaperService : WallpaperService() {
                             }
                         }
                         SwitchMode.SHUFFLE -> {
-                            imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
-                                ?: imageDao.getRandomImageFromEnabledGroups()
+                            // True shuffle: track shown images, reset when all shown
+                            val totalCount = imageDao.countByEnabledGroups()
+                            if (totalCount == 0) {
+                                null
+                            } else {
+                                // Reset if count changed or all shown
+                                if (shuffleAllCount != totalCount || shuffleShownIds.size >= totalCount) {
+                                    shuffleShownIds.clear()
+                                    shuffleAllCount = totalCount
+                                }
+                                // Try to find an unshown image
+                                var attempts = 0
+                                var candidate: com.wallpaperswitcher.data.WallpaperImage? = null
+                                while (attempts < 10 && candidate == null) {
+                                    val img = imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                                        ?: imageDao.getRandomImageFromEnabledGroups()
+                                    if (img != null && img.id !in shuffleShownIds) {
+                                        candidate = img
+                                    } else if (img != null && shuffleShownIds.size >= totalCount) {
+                                        // All shown, reset and use this one
+                                        shuffleShownIds.clear()
+                                        candidate = img
+                                    }
+                                    attempts++
+                                }
+                                if (candidate != null) {
+                                    shuffleShownIds.add(candidate.id)
+                                }
+                                candidate
+                            }
                         }
                     }
 
@@ -241,7 +273,7 @@ class LiveWallpaperService : WallpaperService() {
                 } catch (e: Exception) {
                     Log.e(TAG, "doSwitch error", e)
                 } finally {
-                    isSwitching = false
+                    isSwitching.set(false)
                 }
             }
         }
@@ -507,9 +539,17 @@ class LiveWallpaperService : WallpaperService() {
             } catch (_: Exception) { null }
         }
 
-        private fun getMetrics(): DisplayMetrics {
-            val wm = applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager
-            return DisplayMetrics().also { @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(it) }
+        private fun getMetrics(): android.util.DisplayMetrics {
+            val wm = applicationContext.getSystemService(WINDOW_SERVICE) as android.view.WindowManager
+            return android.util.DisplayMetrics().also {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    val bounds = wm.currentWindowMetrics.bounds
+                    it.widthPixels = bounds.width()
+                    it.heightPixels = bounds.height()
+                } else {
+                    @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(it)
+                }
+            }
         }
 
         private fun MediaFormat.getIntegerOrDefault(key: String, default: Int): Int {

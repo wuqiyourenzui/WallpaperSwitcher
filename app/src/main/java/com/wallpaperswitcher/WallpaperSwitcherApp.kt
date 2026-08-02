@@ -3,8 +3,10 @@ package com.wallpaperswitcher
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.util.Log
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.setBool
@@ -51,7 +53,9 @@ class WallpaperSwitcherApp : Application() {
                 if (dao.getValue(SettingsKeys.UNLOCK_SWITCH_ENABLED) == null) {
                     dao.setBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, false)
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.e(TAG, "initDefaultSettings failed", e)
+            }
         }
     }
 
@@ -62,19 +66,28 @@ class WallpaperSwitcherApp : Application() {
         unlockReceiver = ScreenUnlockReceiver()
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
             priority = IntentFilter.SYSTEM_HIGH_PRIORITY
         }
-        registerReceiver(unlockReceiver, filter)
+        val flags = if (android.os.Build.VERSION.SDK_INT >= 33) {
+            Context.RECEIVER_EXPORTED
+        } else {
+            0
+        }
+        registerReceiver(unlockReceiver, filter, flags)
     }
 
     override fun onTerminate() {
         unlockReceiver?.let {
-            try { unregisterReceiver(it) } catch (_: Exception) {}
+            try { unregisterReceiver(it) } catch (e: Exception) {
+                Log.e(TAG, "Failed to unregister receiver", e)
+            }
         }
         super.onTerminate()
     }
 
     companion object {
+        private const val TAG = "WallpaperSwitcherApp"
         const val CHANNEL_ID = "wallpaper_switch_service"
     }
 }
