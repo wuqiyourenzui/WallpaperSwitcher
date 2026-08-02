@@ -243,11 +243,11 @@ fun GroupDetailScreen(
             onDismiss = { showAddDialog = false },
             onAddSingle = {
                 showAddDialog = false
-                singleImagePicker.launch(arrayOf("image/*"))
+                singleImagePicker.launch(arrayOf("image/*", "video/*"))
             },
             onAddMultiple = {
                 showAddDialog = false
-                imagePickerLauncher.launch(arrayOf("image/*"))
+                imagePickerLauncher.launch(arrayOf("image/*", "video/*"))
             },
             onAddFolder = {
                 showAddDialog = false
