@@ -53,7 +53,7 @@ fun GroupDetailScreen(
 
     var showAddDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
-    var showScanDialog by remember { mutableStateOf(false) }
+    var showFolderPicker by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<WallpaperImage?>(null) }
     var selectedImages by remember { mutableStateOf(setOf<Long>()) }
     var isSelectionMode by remember { mutableStateOf(false) }
@@ -83,26 +83,12 @@ fun GroupDetailScreen(
         }
     }
 
-    // 文件夹选择器
-    val folderPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocumentTree()
-    ) { uri: Uri? ->
-        uri?.let {
-            viewModel.addFolder(groupId, it)
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    it, Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (_: Exception) {}
-        }
-    }
-
-    // 单张图片选择器
+    // Single image picker
     val singleImagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         uri?.let {
-            viewModel.addImage(groupId, it, it.lastPathSegment ?: "未命名")
+            viewModel.addImage(groupId, it, it.lastPathSegment ?: "untitled")
             try {
                 context.contentResolver.takePersistableUriPermission(
                     it, Intent.FLAG_GRANT_READ_URI_PERMISSION
@@ -240,7 +226,7 @@ fun GroupDetailScreen(
         }
     }
 
-    // 添加壁纸对话框
+    // Add wallpaper dialog
     if (showAddDialog) {
         AddWallpaperDialog(
             onDismiss = { showAddDialog = false },
@@ -254,21 +240,17 @@ fun GroupDetailScreen(
             },
             onAddFolder = {
                 showAddDialog = false
-                folderPickerLauncher.launch(null)
-            },
-            onScanFolders = {
-                showAddDialog = false
-                showScanDialog = true
+                showFolderPicker = true
             }
         )
     }
 
-    // Auto-scan folder dialog
-    if (showScanDialog) {
-        ScanFoldersDialog(
+    // Folder picker dialog
+    if (showFolderPicker) {
+        FolderPickerDialog(
             viewModel = viewModel,
             groupId = groupId,
-            onDismiss = { showScanDialog = false }
+            onDismiss = { showFolderPicker = false }
         )
     }
 
@@ -521,12 +503,11 @@ fun AddWallpaperDialog(
     onDismiss: () -> Unit,
     onAddSingle: () -> Unit,
     onAddMultiple: () -> Unit,
-    onAddFolder: () -> Unit,
-    onScanFolders: () -> Unit
+    onAddFolder: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加壁纸") },
+        title = { Text("Add Wallpaper") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(
@@ -535,7 +516,7 @@ fun AddWallpaperDialog(
                 ) {
                     Icon(Icons.Outlined.Image, null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("选择单张图片", modifier = Modifier.weight(1f))
+                    Text("Select Image", modifier = Modifier.weight(1f))
                 }
                 TextButton(
                     onClick = onAddMultiple,
@@ -543,7 +524,7 @@ fun AddWallpaperDialog(
                 ) {
                     Icon(Icons.Outlined.PhotoLibrary, null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("选择多张图片", modifier = Modifier.weight(1f))
+                    Text("Select Multiple", modifier = Modifier.weight(1f))
                 }
                 TextButton(
                     onClick = onAddFolder,
@@ -551,28 +532,12 @@ fun AddWallpaperDialog(
                 ) {
                     Icon(Icons.Outlined.Folder, null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("添加整个文件夹", modifier = Modifier.weight(1f))
-                }
-                Divider(modifier = Modifier.padding(vertical = 4.dp))
-                TextButton(
-                    onClick = onScanFolders,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Filled.Search, null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("自动扫描文件夹")
-                        Text(
-                            "扫描设备上包含图片的文件夹",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text("Add from Folder", modifier = Modifier.weight(1f))
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text("Cancel") }
         }
     )
 }
@@ -712,28 +677,27 @@ fun GroupSettingsDialog(
 }
 
 /**
- * 自动扫描文件夹对话框
- * 扫描设备上包含图片的文件夹，支持一键导入
+ * Custom folder picker dialog.
+ * Scans MediaStore for image folders and displays them.
  */
 @Composable
-fun ScanFoldersDialog(
+fun FolderPickerDialog(
     viewModel: WallpaperViewModel,
     groupId: Long,
     onDismiss: () -> Unit
 ) {
-    var scannedFolders by remember { mutableStateOf<List<ScannedFolder>>(emptyList()) }
-    var isScanning by remember { mutableStateOf(true) }
-    var scanError by remember { mutableStateOf<String?>(null) }
+    var folders by remember { mutableStateOf<List<ScannedFolder>>(emptyList()) }
+    var isLoading by remember { mutableStateOf(true) }
+    var error by remember { mutableStateOf<String?>(null) }
     var importedPaths by remember { mutableStateOf(setOf<String>()) }
 
-    // 启动扫描
     LaunchedEffect(Unit) {
         try {
-            scannedFolders = viewModel.scanImageFolders()
+            folders = viewModel.scanImageFolders()
         } catch (e: Exception) {
-            scanError = e.message ?: "扫描失败"
+            error = e.message ?: "Scan failed"
         } finally {
-            isScanning = false
+            isLoading = false
         }
     }
 
@@ -741,84 +705,60 @@ fun ScanFoldersDialog(
         onDismissRequest = onDismiss,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Filled.Search,
-                    contentDescription = null,
-                    modifier = Modifier.size(24.dp)
-                )
+                Icon(Icons.Filled.Folder, null, modifier = Modifier.size(24.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("扫描图片文件夹")
+                Text("Select Folder")
             }
         },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 when {
-                    isScanning -> {
+                    isLoading -> {
                         Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 32.dp),
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
-                                strokeWidth = 2.dp
-                            )
+                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(12.dp))
-                            Text("正在扫描设备上的图片文件夹...")
+                            Text("Scanning folders...")
                         }
                     }
-                    scanError != null -> {
-                        Text(
-                            "扫描失败: $scanError",
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(vertical = 16.dp)
-                        )
+                    error != null -> {
+                        Text("Error: $error", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
                     }
-                    scannedFolders.isEmpty() -> {
+                    folders.isEmpty() -> {
                         Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(vertical = 24.dp),
+                            modifier = Modifier.fillMaxWidth().padding(24.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Icon(
-                                Icons.Outlined.FolderOff,
-                                contentDescription = null,
-                                modifier = Modifier.size(48.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-                            )
+                            Icon(Icons.Outlined.FolderOff, null, modifier = Modifier.size(48.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
                             Spacer(modifier = Modifier.height(12.dp))
-                            Text(
-                                "未找到包含图片的文件夹",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                            Text("No image folders found", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     else -> {
                         Text(
-                            "找到 ${scannedFolders.size} 个包含图片的文件夹",
+                            "${folders.size} folders with images",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(bottom = 8.dp)
                         )
-
                         LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 400.dp),
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            items(scannedFolders) { folder ->
-                                val isImported = folder.path in importedPaths
-                                ScannedFolderItem(
+                            items(folders) { folder ->
+                                val imported = folder.path in importedPaths
+                                FolderItem(
                                     folder = folder,
-                                    isImported = isImported,
-                                    onImport = {
-                                        viewModel.importScannedFolder(groupId, folder)
-                                        importedPaths = importedPaths + folder.path
+                                    imported = imported,
+                                    onClick = {
+                                        if (!imported) {
+                                            viewModel.importScannedFolder(groupId, folder)
+                                            importedPaths = importedPaths + folder.path
+                                        }
                                     }
                                 )
                             }
@@ -827,90 +767,48 @@ fun ScanFoldersDialog(
                 }
             }
         },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text("完成")
-            }
-        }
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } }
     )
 }
 
 @Composable
-private fun ScannedFolderItem(
+private fun FolderItem(
     folder: ScannedFolder,
-    isImported: Boolean,
-    onImport: () -> Unit
+    imported: Boolean,
+    onClick: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().then(if (!imported) Modifier.clickable(onClick = onClick) else Modifier),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (isImported)
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-            else
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            containerColor = if (imported) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
         )
     ) {
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
+            modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                if (isImported) Icons.Filled.CheckCircle else Icons.Outlined.Folder,
-                contentDescription = null,
-                tint = if (isImported)
-                    MaterialTheme.colorScheme.primary
-                else
-                    MaterialTheme.colorScheme.onSurfaceVariant,
+                if (imported) Icons.Filled.CheckCircle else Icons.Outlined.Folder,
+                null,
+                tint = if (imported) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(28.dp)
             )
-
             Spacer(modifier = Modifier.width(12.dp))
-
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    folder.name,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    "${folder.imageCount} 张图片",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    folder.path,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Text(folder.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${folder.imageCount} images", style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-
-            Spacer(modifier = Modifier.width(8.dp))
-
-            if (isImported) {
-                Text(
-                    "已导入",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
+            if (imported) {
+                Text("Imported", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             } else {
-                FilledTonalButton(
-                    onClick = onImport,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-                ) {
-                    Icon(
-                        Icons.Filled.Add,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
+                FilledTonalButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) {
+                    Icon(Icons.Filled.Add, null, modifier = Modifier.size(16.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("导入")
+                    Text("Import")
                 }
             }
         }
