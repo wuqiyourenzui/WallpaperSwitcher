@@ -114,6 +114,30 @@ interface WallpaperImageDao {
     suspend fun deleteByIds(ids: List<Long>)
 }
 
+
+    // --- Enabled-groups queries (for cross-group wallpaper switching) ---
+
+    @Query("""
+        SELECT * FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        ORDER BY RANDOM() LIMIT 1
+    """)
+    suspend fun getRandomImageFromEnabledGroups(): WallpaperImage?
+
+    @Query("""
+        SELECT * FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        AND id != :excludeId
+        ORDER BY RANDOM() LIMIT 1
+    """)
+    suspend fun getRandomImageFromEnabledGroupsExcluding(excludeId: Long): WallpaperImage?
+
+    @Query("""
+        SELECT COUNT(*) FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+    """)
+    suspend fun countByEnabledGroups(): Int
+
 @Dao
 interface SettingsDao {
 
