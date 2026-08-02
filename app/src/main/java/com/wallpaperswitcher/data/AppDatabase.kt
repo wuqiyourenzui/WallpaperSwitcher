@@ -9,7 +9,7 @@ import androidx.room.migration.Migration
 @Database(
     entities = [WallpaperGroup::class, WallpaperImage::class, AppSettings::class],
     version = 2,
-    exportSchema = true
+    exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
     abstract fun wallpaperGroupDao(): WallpaperGroupDao
