@@ -54,12 +54,6 @@
             android:foregroundServiceType="specialUse"
             android:exported="false" />
 
-        <!-- Gesture Overlay Service (备用) -->
-        <service
-            android:name=".service.GestureOverlayService"
-            android:foregroundServiceType="specialUse"
-            android:exported="false" />
-
         <!-- Boot Receiver -->
         <receiver
             android:name=".receiver.BootReceiver"
