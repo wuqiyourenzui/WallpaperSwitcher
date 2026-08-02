@@ -118,7 +118,6 @@ fun GroupDetailScreen(
                 group = currentGroup,
                 imageCount = totalCount,
                 loadedCount = images.size,
-                onSettingsClick = { showSettingsDialog = true },
                 onDeleteClick = {
                     viewModel.deleteGroup(currentGroup)
                     onBack()
@@ -275,7 +274,6 @@ private fun GroupInfoHeader(
     group: WallpaperGroup,
     imageCount: Int,
     loadedCount: Int,
-    onSettingsClick: () -> Unit,
     onDeleteClick: () -> Unit
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -309,9 +307,6 @@ private fun GroupInfoHeader(
                 )
             }
 
-            IconButton(onClick = onSettingsClick) {
-                Icon(Icons.Filled.Settings, "设置")
-            }
             IconButton(onClick = { showDeleteConfirm = true }) {
                 Icon(
                     Icons.Filled.Delete,
@@ -438,22 +433,6 @@ private fun ImageGridItem(
                 }
             }
         }
-
-        // 视频标识
-        if (image.isVideo) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(6.dp)
-                    .background(
-                        MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
-                        RoundedCornerShape(4.dp)
-                    )
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            ) {
-                Text("视频", style = MaterialTheme.typography.labelSmall, fontSize = 10.sp)
-            }
-        }
     }
 }
 
@@ -526,140 +505,6 @@ fun AddWallpaperDialog(
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("Cancel") }
-        }
-    )
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun GroupSettingsDialog(
-    group: WallpaperGroup,
-    onDismiss: () -> Unit,
-    onUpdate: (WallpaperGroup) -> Unit,
-    onIntervalChange: (Long) -> Unit,
-    onSwitchModeChange: (SwitchMode) -> Unit,
-    onScaleModeChange: (ScaleMode) -> Unit
-) {
-    var intervalMinutes by remember { mutableStateOf((group.switchIntervalMs / 60_000).toInt()) }
-    var selectedSwitchMode by remember { mutableStateOf(group.switchMode) }
-    var selectedScaleMode by remember { mutableStateOf(group.scaleMode) }
-    var intervalText by remember { mutableStateOf(intervalMinutes.toString()) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("分组设置") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                // 切换间隔
-                Text("切换间隔（分钟）", style = MaterialTheme.typography.labelLarge)
-                OutlinedTextField(
-                    value = intervalText,
-                    onValueChange = { newValue ->
-                        intervalText = newValue
-                        newValue.toIntOrNull()?.let { intervalMinutes = it }
-                    },
-                    label = { Text("最小 1 分钟") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    supportingText = {
-                        val min = intervalText.toIntOrNull() ?: 0
-                        if (min < 1) Text("不能小于 1 分钟", color = MaterialTheme.colorScheme.error)
-                    }
-                )
-
-                // 快捷间隔按钮
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(1, 5, 15, 30, 60).forEach { min ->
-                        FilterChip(
-                            selected = intervalMinutes == min,
-                            onClick = {
-                                intervalMinutes = min
-                                intervalText = min.toString()
-                            },
-                            label = { Text("${min}分") }
-                        )
-                    }
-                }
-
-                Divider()
-
-                // 切换模式
-                Text("切换模式", style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SwitchMode.entries.forEach { mode ->
-                        FilterChip(
-                            selected = selectedSwitchMode == mode,
-                            onClick = { selectedSwitchMode = mode },
-                            label = {
-                                Text(
-                                    when (mode) {
-                                        SwitchMode.RANDOM -> "随机"
-                                        SwitchMode.SEQUENTIAL -> "顺序"
-                                        SwitchMode.SHUFFLE -> "洗牌"
-                                    }
-                                )
-                            }
-                        )
-                    }
-                }
-
-                Divider()
-
-                // 缩放模式
-                Text("图片适配", style = MaterialTheme.typography.labelLarge)
-                Column {
-                    ScaleMode.entries.forEach { mode ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { selectedScaleMode = mode }
-                                .padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(
-                                selected = selectedScaleMode == mode,
-                                onClick = { selectedScaleMode = mode }
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column {
-                                Text(
-                                    when (mode) {
-                                        ScaleMode.FILL -> "填充"
-                                        ScaleMode.FIT -> "适应"
-                                        ScaleMode.STRETCH -> "拉伸"
-                                    },
-                                    style = MaterialTheme.typography.bodyLarge
-                                )
-                                Text(
-                                    when (mode) {
-                                        ScaleMode.FILL -> "裁剪填满屏幕，保持比例"
-                                        ScaleMode.FIT -> "完整显示图片，可能有黑边"
-                                        ScaleMode.STRETCH -> "强制拉伸填满屏幕"
-                                    },
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val finalMinutes = intervalMinutes.coerceAtLeast(1)
-                    onIntervalChange(finalMinutes * 60_000L)
-                    onSwitchModeChange(selectedSwitchMode)
-                    onScaleModeChange(selectedScaleMode)
-                    onDismiss()
-                }
-            ) {
-                Text("保存")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
 }
