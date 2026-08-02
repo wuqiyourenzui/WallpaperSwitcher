@@ -69,6 +69,13 @@ interface WallpaperImageDao {
     @Query("SELECT COUNT(*) FROM wallpaper_images WHERE groupId = :groupId")
     suspend fun countByGroup(groupId: Long): Int
 
+    @Query("""
+        SELECT * FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        ORDER BY id ASC LIMIT 1 OFFSET :offset
+    """)
+    suspend fun getSequentialImageFromEnabledGroups(offset: Int): WallpaperImage?
+
     // --- Global queries (fallback) ---
 
     @Query("""
