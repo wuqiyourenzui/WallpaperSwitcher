@@ -43,6 +43,7 @@ class LiveWallpaperService : WallpaperService() {
         // Media state
         private var mediaCodecJob: Job? = null
         private var videoPlaying = false
+        private var videoStopFlag = false
 
         // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
@@ -118,6 +119,7 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun releaseAll() {
             videoPlaying = false
+            videoStopFlag = true
             mediaCodecJob?.cancel()
             mediaCodecJob = null
             gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
@@ -179,9 +181,10 @@ class LiveWallpaperService : WallpaperService() {
                             if (count == 0) null
                             else {
                                 val idx = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
-                                val next = (idx + 1) % count
-                                dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, next.toLong())
-                                imageDao.getRandomImageFromEnabledGroups()
+                                val next = idx % count
+                                dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, (next + 1).toLong())
+                                imageDao.getSequentialImageFromEnabledGroups(next)
+                                    ?: imageDao.getRandomImageFromEnabledGroups()
                             }
                         }
                         SwitchMode.SHUFFLE -> {
@@ -241,6 +244,7 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
+            if (videoPlaying && mediaCodecJob?.isActive == true) return
 
             scope.launch {
                 try {
@@ -314,7 +318,8 @@ class LiveWallpaperService : WallpaperService() {
                     val startTimeNs = System.nanoTime()
                     videoPlaying = true
 
-                    while (isActive && surfaceReady) {
+                    videoStopFlag = false
+                    while (isActive && surfaceReady && !videoStopFlag) {
                         // Pause when not visible
                         if (!isVisible) {
                             delay(100)
