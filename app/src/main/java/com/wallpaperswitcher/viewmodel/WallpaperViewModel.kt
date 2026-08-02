@@ -177,9 +177,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addImages(groupId: Long, uris: List<Uri>, names: List<String>) {
         viewModelScope.launch {
-            // Filter to images only
             val imagePairs = uris.zip(names).filter { (uri, name) ->
-                isSupportedMedia(name) || uri.toString().contains("image") || uri.toString().contains("video")
+                isSupportedMedia(name)
             }
             val images = imagePairs.map { (uri, name) ->
                 WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = name, mediaType = detectMediaType(name))

@@ -15,10 +15,10 @@ import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.SurfaceHolder
-import android.view.WindowManager
 import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.*
 import java.nio.ByteBuffer
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 class LiveWallpaperService : WallpaperService() {
@@ -42,7 +42,7 @@ class LiveWallpaperService : WallpaperService() {
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
         // Shuffle tracking - keeps track of shown image IDs to avoid repeats
-        private val shuffleShownIds = mutableSetOf<Long>()
+        private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
         private var shuffleAllCount = 0
 
         // Media state
@@ -439,7 +439,8 @@ class LiveWallpaperService : WallpaperService() {
             return try {
                 val retriever = MediaMetadataRetriever()
                 retriever.setDataSource(applicationContext, uri)
-                val frame = retriever.frameAtTime
+                // Use 0L for the first frame (frameAtTime defaults to a random frame)
+                val frame = retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 retriever.release()
                 frame
             } catch (_: Exception) { null }
@@ -535,34 +536,11 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private fun loadBitmap(uriStr: String): Bitmap? {
-            return try {
-                val uri = Uri.parse(uriStr)
-                val m = getMetrics()
-                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
-                if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
-                // Only downsample if image is more than 4x screen size (preserve original quality)
-                var s = 1
-                while (opts.outWidth / s > m.widthPixels * 4 || opts.outHeight / s > m.heightPixels * 4) s *= 2
-                contentResolver.openInputStream(uri)?.use {
-                    BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply {
-                        inSampleSize = s; inPreferredConfig = Bitmap.Config.ARGB_8888
-                    })
-                }
-            } catch (_: Exception) { null }
+            return com.wallpaperswitcher.engine.BitmapUtils.loadBitmap(applicationContext, uriStr)
         }
 
         private fun getMetrics(): android.util.DisplayMetrics {
-            val wm = applicationContext.getSystemService(WINDOW_SERVICE) as android.view.WindowManager
-            return android.util.DisplayMetrics().also {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    val bounds = wm.currentWindowMetrics.bounds
-                    it.widthPixels = bounds.width()
-                    it.heightPixels = bounds.height()
-                } else {
-                    @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(it)
-                }
-            }
+            return com.wallpaperswitcher.engine.BitmapUtils.getScreenMetrics(applicationContext)
         }
 
         private fun MediaFormat.getIntegerOrDefault(key: String, default: Int): Int {

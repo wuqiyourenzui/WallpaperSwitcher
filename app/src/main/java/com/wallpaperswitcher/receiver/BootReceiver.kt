@@ -3,6 +3,7 @@ package com.wallpaperswitcher.receiver
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.util.Log
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
@@ -26,7 +27,13 @@ class BootReceiver : BroadcastReceiver() {
                     val serviceEnabled = db.settingsDao()
                         .getBool(SettingsKeys.SERVICE_ENABLED, false)
                     if (serviceEnabled) {
-                        WallpaperSwitchService.start(context)
+                        // Use explicit component for Android 8+ background service start
+                        val serviceIntent = Intent(context, WallpaperSwitchService::class.java)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            context.startForegroundService(serviceIntent)
+                        } else {
+                            context.startService(serviceIntent)
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e("BootReceiver", "Boot start failed", e)

@@ -18,7 +18,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.data.WallpaperGroup
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
@@ -299,10 +298,14 @@ fun CreateGroupDialog(
 }
 
 fun formatInterval(ms: Long): String {
-    val minutes = ms / 60_000
+    val totalSeconds = ms / 1000
+    val minutes = totalSeconds / 60
+    val hours = minutes / 60
+    val days = hours / 24
     return when {
+        totalSeconds < 60 -> "${totalSeconds}秒"
         minutes < 60 -> "${minutes}分钟"
-        minutes < 1440 -> "${minutes / 60}小时${if (minutes % 60 > 0) "${minutes % 60}分" else ""}"
-        else -> "${minutes / 1440}天"
+        hours < 24 -> "${hours}小时${if (minutes % 60 > 0) "${minutes % 60}分" else ""}"
+        else -> "${days}天${if (hours % 24 > 0) "${hours % 24}小时" else ""}"
     }
 }

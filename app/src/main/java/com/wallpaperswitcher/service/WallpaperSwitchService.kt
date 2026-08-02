@@ -57,6 +57,8 @@ class WallpaperSwitchService : Service() {
     private fun startSwitchLoop() {
         switchJob?.cancel()
         switchJob = scope.launch {
+            // First switch immediately on start
+            sendSwitchBroadcast()
             while (isActive) {
                 try {
                     val db = AppDatabase.getInstance(applicationContext)
@@ -92,8 +94,8 @@ class WallpaperSwitchService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         return NotificationCompat.Builder(this, WallpaperSwitcherApp.CHANNEL_ID)
-            .setContentTitle("Wallpaper Switcher")
-            .setContentText("Auto-switching wallpaper")
+            .setContentTitle("壁纸切换")
+            .setContentText("壁纸自动切换中")
             .setSmallIcon(R.drawable.ic_wallpaper_thumb)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
