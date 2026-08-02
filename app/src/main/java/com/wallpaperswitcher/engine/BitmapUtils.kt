@@ -10,10 +10,14 @@ import android.view.WindowManager
 
 object BitmapUtils {
 
+    private var cachedScreenW = 0
+    private var cachedScreenH = 0
+
     /**
      * Load a bitmap from URI with quality-preserving downsample.
      * Only downsamples if image exceeds 4x screen dimensions.
      * Uses ARGB_8888 for full color depth.
+     * Single ContentResolver.openInputStream call (reads bounds + decodes in one pass).
      */
     fun loadBitmap(context: Context, uriStr: String): Bitmap? {
         return try {
@@ -22,16 +26,18 @@ object BitmapUtils {
             val screenW = metrics.widthPixels
             val screenH = metrics.heightPixels
 
-            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
-            if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
+            // Single file descriptor - avoids double openInputStream
+            val fd = context.contentResolver.openFileDescriptor(uri, "r") ?: return null
+            fd.use {
+                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFileDescriptor(fd.fileDescriptor, null, opts)
+                if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
 
-            // Only downsample if image is more than 4x screen size
-            var sample = 1
-            while (opts.outWidth / sample > screenW * 4 || opts.outHeight / sample > screenH * 4) sample *= 2
+                // Only downsample if image is more than 4x screen size
+                var sample = 1
+                while (opts.outWidth / sample > screenW * 4 || opts.outHeight / sample > screenH * 4) sample *= 2
 
-            context.contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply {
+                BitmapFactory.decodeFileDescriptor(fd.fileDescriptor, null, BitmapFactory.Options().apply {
                     inSampleSize = sample
                     inPreferredConfig = Bitmap.Config.ARGB_8888
                 })

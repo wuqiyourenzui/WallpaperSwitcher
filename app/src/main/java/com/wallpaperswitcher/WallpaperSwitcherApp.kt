@@ -7,6 +7,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
+import coil.Coil
+import coil.ImageLoader
+import coil.request.CachePolicy
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.setBool
@@ -25,6 +28,21 @@ class WallpaperSwitcherApp : Application() {
         createNotificationChannel()
         initDefaultSettings()
         registerUnlockReceiver()
+        initCoil()
+    }
+
+    private fun initCoil() {
+        val imageLoader = ImageLoader.Builder(this)
+            .memoryCachePolicy(CachePolicy.ENABLED)
+            .memoryCache {
+                coil.memory.MemoryCache.Builder(this)
+                    .maxSizePercent(0.25) // Use 25% of available memory for cache
+                    .build()
+            }
+            .diskCachePolicy(CachePolicy.ENABLED)
+            .allowHardware(false) // Software bitmaps for compatibility
+            .build()
+        Coil.setImageLoader(imageLoader)
     }
 
     private fun createNotificationChannel() {

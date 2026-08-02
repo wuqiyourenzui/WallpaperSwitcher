@@ -56,19 +56,20 @@ class WallpaperEngine(private val context: Context) {
             val screenW = metrics.widthPixels
             val screenH = metrics.heightPixels
 
-            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
-            val imgW = opts.outWidth; val imgH = opts.outHeight
-            if (imgW <= 0 || imgH <= 0) return null
+            // Single file descriptor - avoids double openInputStream
+            val fd = context.contentResolver.openFileDescriptor(uri, "r") ?: return null
+            fd.use {
+                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFileDescriptor(fd.fileDescriptor, null, opts)
+                val imgW = opts.outWidth; val imgH = opts.outHeight
+                if (imgW <= 0 || imgH <= 0) return null
 
-            var sample = 1
-            while (imgW / sample > screenW * 4 || imgH / sample > screenH * 4) sample *= 2
+                var sample = 1
+                while (imgW / sample > screenW * 4 || imgH / sample > screenH * 4) sample *= 2
 
-            val decoded = context.contentResolver.openInputStream(uri)?.use {
-                BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply {
+                val decoded = BitmapFactory.decodeFileDescriptor(fd.fileDescriptor, null, BitmapFactory.Options().apply {
                     inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888
-                })
-            } ?: return null
+                }) ?: return null
 
             when (scaleMode) {
                 ScaleMode.FILL -> {

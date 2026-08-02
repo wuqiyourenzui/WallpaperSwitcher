@@ -30,6 +30,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.decode.VideoFrameDecoder
 import com.wallpaperswitcher.data.*
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
@@ -392,7 +393,14 @@ private fun ImageGridItem(
         AsyncImage(
             model = ImageRequest.Builder(LocalContext.current)
                 .data(Uri.parse(image.uri))
+                .size(400, 400) // Grid thumbnail: limit to 400px, not full resolution
                 .crossfade(true)
+                .apply {
+                    // Use video frame decoder for video/GIF thumbnails
+                    if (image.mediaType == "VIDEO") {
+                        decoderFactory(VideoFrameDecoder.Factory())
+                    }
+                }
                 .build(),
             contentDescription = image.displayName,
             contentScale = ContentScale.Crop,
@@ -578,6 +586,7 @@ fun WallpaperPreviewDialog(
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(Uri.parse(image.uri))
+                        .size(800, 800) // Preview: limit to 800px
                         .crossfade(true)
                         .build(),
                     contentDescription = image.displayName,

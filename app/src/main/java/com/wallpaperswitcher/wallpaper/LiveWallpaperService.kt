@@ -422,19 +422,33 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
+        // Reusable buffers for video decoding (avoids GC pressure)
+        private var yuvBuffer: ByteArray? = null
+        private var jpegStream = java.io.ByteArrayOutputStream()
+
         private fun yuvToBitmap(buffer: ByteBuffer, width: Int, height: Int): Bitmap? {
             return try {
-                val yuv = ByteArray(buffer.remaining())
-                buffer.get(yuv)
                 val frameSize = width * height
+                val neededSize = frameSize + frameSize / 2
+                // Reuse buffer
+                val yuv = yuvBuffer?.takeIf { it.size >= neededSize }
+                    ?: ByteArray(neededSize).also { yuvBuffer = it }
+
+                buffer.rewind()
+                buffer.get(yuv, 0, minOf(buffer.remaining(), neededSize))
+
+                // Swap U/V for NV21
                 var i = frameSize
-                while (i < yuv.size - 1) {
+                while (i < neededSize - 1) {
                     val tmp = yuv[i]; yuv[i] = yuv[i + 1]; yuv[i + 1] = tmp; i += 2
                 }
+
                 val yuvImage = YuvImage(yuv, ImageFormat.NV21, width, height, null)
-                val out = java.io.ByteArrayOutputStream()
-                yuvImage.compressToJpeg(Rect(0, 0, width, height), 95, out)
-                BitmapFactory.decodeByteArray(out.toByteArray(), 0, out.size(), BitmapFactory.Options().apply {
+                // Reuse stream
+                jpegStream.reset()
+                yuvImage.compressToJpeg(Rect(0, 0, width, height), 95, jpegStream)
+                val bytes = jpegStream.toByteArray()
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply {
                     inPreferredConfig = Bitmap.Config.ARGB_8888
                 })
             } catch (_: Exception) { null }
@@ -444,8 +458,12 @@ class LiveWallpaperService : WallpaperService() {
             return try {
                 val retriever = MediaMetadataRetriever()
                 retriever.setDataSource(applicationContext, uri)
-                // Use 0L for the first frame (frameAtTime defaults to a random frame)
-                val frame = retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                // Use lower resolution for first frame (faster, less memory)
+                val frame = retriever.getScaledFrameAtTime(
+                    0L,
+                    MediaMetadataRetriever.OPTION_CLOSEST_SYNC,
+                    640, 360
+                ) ?: retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 retriever.release()
                 frame
             } catch (_: Exception) { null }
