@@ -132,11 +132,12 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
             Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
-            // Set as Live Wallpaper button
+                        // Set as Live Wallpaper button
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable {
+                        var success = false
                         try {
                             val intent = Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
                                 putExtra(
@@ -146,13 +147,24 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             }
                             context.startActivity(intent)
-                        } catch (e: Exception) {
-                            // Fallback: open wallpaper picker
+                            success = true
+                        } catch (_: Exception) {}
+                        if (!success) {
                             try {
                                 val intent = Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER)
                                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                 context.startActivity(intent)
+                                success = true
                             } catch (_: Exception) {}
+                        }
+                        if (!success) {
+                            try {
+                                val intent = Intent(WallpaperManager.ACTION_SET_WALLPAPER)
+                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                context.startActivity(intent)
+                            } catch (_: Exception) {
+                                android.widget.Toast.makeText(context, "Please set wallpaper manually: Settings > Wallpaper > Live Wallpaper", android.widget.Toast.LENGTH_LONG).show()
+                            }
                         }
                     }
                     .padding(16.dp),
