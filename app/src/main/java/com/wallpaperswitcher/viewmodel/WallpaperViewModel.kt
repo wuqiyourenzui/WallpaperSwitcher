@@ -157,7 +157,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ScaleMode.FIT)
 
     fun setGlobalInterval(ms: Long) {
-        viewModelScope.launch { settingsDao.setLong(SettingsKeys.GLOBAL_INTERVAL_MS, ms.coerceAtLeast(60_000L)) }
+        viewModelScope.launch { settingsDao.setLong(SettingsKeys.GLOBAL_INTERVAL_MS, ms.coerceAtLeast(10_000L)) }
     }
 
     fun setGlobalSwitchMode(mode: SwitchMode) {

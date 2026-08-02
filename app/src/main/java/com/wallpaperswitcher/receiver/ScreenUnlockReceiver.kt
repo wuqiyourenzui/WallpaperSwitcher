@@ -21,30 +21,17 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "ScreenUnlockReceiver"
-        private const val COOLDOWN_MS = 2000L
     }
-
-    @Volatile
-    private var lastSwitchTimeMs = 0L
 
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
         Log.d(TAG, "Received: $action")
 
-        // Cooldown: ACTION_SCREEN_ON and ACTION_USER_PRESENT can fire in quick succession
-        val now = System.currentTimeMillis()
-        if (now - lastSwitchTimeMs < COOLDOWN_MS) {
-            Log.d(TAG, "Cooldown active, skip")
-            return
-        }
-
         if (action == Intent.ACTION_USER_PRESENT) {
-            lastSwitchTimeMs = now
             doSwitch(context)
         } else if (action == Intent.ACTION_SCREEN_ON) {
             val km = context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
             if (!km.isKeyguardLocked) {
-                lastSwitchTimeMs = now
                 doSwitch(context)
             }
         }

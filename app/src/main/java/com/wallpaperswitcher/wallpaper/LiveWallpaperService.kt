@@ -26,7 +26,6 @@ class LiveWallpaperService : WallpaperService() {
     companion object {
         private const val TAG = "LiveWallpaperService"
         const val ACTION_SWITCH = "com.wallpaperswitcher.ACTION_SWITCH"
-        private const val SWITCH_COOLDOWN_MS = 1500L // 1.5s cooldown between switches
     }
 
     override fun onCreateEngine(): Engine = LiveWallpaperEngine()
@@ -39,7 +38,6 @@ class LiveWallpaperService : WallpaperService() {
         private var surfaceReady = false
         private var isVisible = false
         private val isSwitching = AtomicBoolean(false)
-        private var lastSwitchTimeMs = 0L
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
@@ -164,17 +162,10 @@ class LiveWallpaperService : WallpaperService() {
         // ======== Switch logic ========
 
         private fun doSwitch(source: String) {
-            // Cooldown: prevent rapid successive switches from different triggers
-            val now = System.currentTimeMillis()
-            if (now - lastSwitchTimeMs < SWITCH_COOLDOWN_MS) {
-                Log.d(TAG, "Cooldown active, skip ($source)")
-                return
-            }
             if (!isSwitching.compareAndSet(false, true)) {
                 Log.d(TAG, "Already switching, skip ($source)")
                 return
             }
-            lastSwitchTimeMs = now
             Log.d(TAG, "doSwitch from $source")
 
             scope.launch {

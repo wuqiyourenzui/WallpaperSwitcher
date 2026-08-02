@@ -67,7 +67,7 @@ class WallpaperSwitchService : Service() {
                     }
                     // Get global interval
                     val interval = db.settingsDao().getLong(SettingsKeys.GLOBAL_INTERVAL_MS, 60_000L)
-                        .coerceAtLeast(60_000L)
+                        .coerceAtLeast(10_000L)
                     delay(interval.toLong())
                     sendSwitchBroadcast()
                 } catch (e: CancellationException) { throw e }
