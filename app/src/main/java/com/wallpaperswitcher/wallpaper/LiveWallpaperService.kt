@@ -7,13 +7,6 @@ import android.content.IntentFilter
 import android.graphics.*
 import android.media.MediaPlayer
 import android.net.Uri
-import android.opengl.EGL14
-import android.opengl.EGLConfig
-import android.opengl.EGLContext
-import android.opengl.EGLDisplay
-import android.opengl.EGLSurface
-import android.opengl.GLES11Ext
-import android.opengl.GLES20
 import android.os.Handler
 import android.os.Looper
 import android.service.wallpaper.WallpaperService
@@ -25,9 +18,6 @@ import android.view.SurfaceHolder
 import android.view.WindowManager
 import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.*
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.nio.FloatBuffer
 
 class LiveWallpaperService : WallpaperService() {
 
@@ -47,14 +37,11 @@ class LiveWallpaperService : WallpaperService() {
         private var isVisible = false
         private var isSwitching = false
         private var currentBitmap: Bitmap? = null
-        private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
-        // Video playback with OpenGL
+        // Video
         private var mediaPlayer: MediaPlayer? = null
-        private var videoRenderer: VideoRenderer? = null
-        private var videoRenderRunnable: Runnable? = null
 
-        // GIF playback
+        // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
         private var gifFrameRunnable: Runnable? = null
 
@@ -111,8 +98,7 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onDestroy() {
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
-            stopVideo()
-            stopGif()
+            stopVideo(); stopGif()
             currentBitmap?.recycle(); currentBitmap = null
             scope.cancel()
             super.onDestroy()
@@ -167,7 +153,7 @@ class LiveWallpaperService : WallpaperService() {
                     val mediaType = nextImage.mediaType ?: "IMAGE"
 
                     when (mediaType) {
-                        "VIDEO" -> mainHandler.post { playVideo(nextImage.uri, scaleMode) }
+                        "VIDEO" -> mainHandler.post { playVideo(nextImage.uri) }
                         "GIF" -> mainHandler.post { playGif(nextImage.uri, scaleMode) }
                         else -> {
                             val bitmap = loadBitmap(nextImage.uri)
@@ -196,7 +182,7 @@ class LiveWallpaperService : WallpaperService() {
                     if (image != null) {
                         val mediaType = image.mediaType ?: "IMAGE"
                         when (mediaType) {
-                            "VIDEO" -> { mainHandler.post { playVideo(image.uri, scaleMode) }; return@launch }
+                            "VIDEO" -> { mainHandler.post { playVideo(image.uri) }; return@launch }
                             "GIF" -> { mainHandler.post { playGif(image.uri, scaleMode) }; return@launch }
                             else -> {
                                 val bitmap = loadBitmap(image.uri)
@@ -218,30 +204,25 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video playback (MediaPlayer + OpenGL) ========
+        // ======== Video playback (MediaPlayer + SurfaceHolder) ========
 
-        private fun playVideo(uriStr: String, scaleMode: ScaleMode = ScaleMode.FIT) {
+        private fun playVideo(uriStr: String) {
             stopVideo()
             stopGif()
             if (!surfaceReady) return
             try {
-                videoRenderer = VideoRenderer()
-                videoRenderer!!.initialize()
-
                 val uri = Uri.parse(uriStr)
                 mediaPlayer = MediaPlayer().apply {
                     setDataSource(applicationContext, uri)
                     isLooping = true
-                    setSurface(videoRenderer!!.getSurface())
+                    setDisplay(surfaceHolder)
                     setOnPreparedListener { mp ->
-                        videoRenderer!!.setVideoSize(mp.videoWidth, mp.videoHeight)
                         mp.start()
-                        startVideoRendering(scaleMode)
                         Log.d(TAG, "Video started: ${mp.videoWidth}x${mp.videoHeight}")
                     }
                     setOnErrorListener { _, what, extra ->
                         Log.e(TAG, "MediaPlayer error: $what / $extra")
-                        stopVideo(); showDefault(); true
+                        stopVideo(); true
                     }
                     prepareAsync()
                 }
@@ -251,36 +232,9 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        private fun startVideoRendering(scaleMode: ScaleMode) {
-            stopVideoRendering()
-            val runnable = object : Runnable {
-                override fun run() {
-                    if (!surfaceReady || !isVisible || mediaPlayer == null || videoRenderer == null) return
-                    try {
-                        val canvas = surfaceHolder.lockCanvas() ?: return
-                        canvas.drawColor(Color.BLACK)
-                        val m = getMetrics()
-                        videoRenderer!!.drawFrame(canvas, m.widthPixels, m.heightPixels, scaleMode)
-                        surfaceHolder.unlockCanvasAndPost(canvas)
-                    } catch (_: Exception) {}
-                    mainHandler.postDelayed(this, 33) // ~30fps
-                }
-            }
-            videoRenderRunnable = runnable
-            mainHandler.post(runnable)
-        }
-
-        private fun stopVideoRendering() {
-            videoRenderRunnable?.let { mainHandler.removeCallbacks(it) }
-            videoRenderRunnable = null
-        }
-
         private fun stopVideo() {
-            stopVideoRendering()
             try { mediaPlayer?.let { if (it.isPlaying) it.stop(); it.release() } } catch (_: Exception) {}
             mediaPlayer = null
-            videoRenderer?.release()
-            videoRenderer = null
         }
 
         // ======== GIF playback (ImageDecoder, API 28+) ========
@@ -307,18 +261,19 @@ class LiveWallpaperService : WallpaperService() {
             }
             if (drawable is android.graphics.drawable.AnimatedImageDrawable) {
                 gifDrawable = drawable
-                drawable.repeatCount = -1 // INFINITE
+                drawable.repeatCount = -1
                 drawable.start()
-                val renderRunnable = object : Runnable {
+                val runnable = object : Runnable {
                     override fun run() {
                         if (!surfaceReady || !isVisible || gifDrawable == null) return
                         try {
                             val canvas = surfaceHolder.lockCanvas() ?: return
                             canvas.drawColor(Color.BLACK)
                             val m = getMetrics()
-                            val sw = m.widthPixels.toFloat(); val sh = m.heightPixels.toFloat()
-                            val bw = drawable.intrinsicWidth.toFloat(); val bh = drawable.intrinsicHeight.toFloat()
-                            val dest = calcDestRect(bw, bh, sw, sh, scaleMode)
+                            val dest = calcDestRect(
+                                drawable.intrinsicWidth.toFloat(), drawable.intrinsicHeight.toFloat(),
+                                m.widthPixels.toFloat(), m.heightPixels.toFloat(), scaleMode
+                            )
                             drawable.setBounds(dest.left.toInt(), dest.top.toInt(), dest.right.toInt(), dest.bottom.toInt())
                             drawable.draw(canvas)
                             surfaceHolder.unlockCanvasAndPost(canvas)
@@ -326,8 +281,8 @@ class LiveWallpaperService : WallpaperService() {
                         mainHandler.postDelayed(this, 33)
                     }
                 }
-                gifFrameRunnable = renderRunnable
-                mainHandler.post(renderRunnable)
+                gifFrameRunnable = runnable
+                mainHandler.post(runnable)
                 Log.d(TAG, "GIF started")
             }
         }
@@ -405,164 +360,6 @@ class LiveWallpaperService : WallpaperService() {
         private fun getMetrics(): DisplayMetrics {
             val wm = applicationContext.getSystemService(WINDOW_SERVICE) as WindowManager
             return DisplayMetrics().also { @Suppress("DEPRECATION") wm.defaultDisplay.getRealMetrics(it) }
-        }
-    }
-}
-
-// ======== OpenGL ES 2.0 Video Renderer ========
-// Renders MediaPlayer frames to a Canvas with FIT/FILL/STRETCH scaling
-
-class VideoRenderer {
-    private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
-    private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
-    private var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
-    private var textureId = 0
-    private var surfaceTexture: android.graphics.SurfaceTexture? = null
-    private var renderSurface: android.view.Surface? = null
-    private var program = 0
-    private var videoWidth = 1
-    private var videoHeight = 1
-
-    private val vertexCoords = floatArrayOf(-1f, 1f, -1f, -1f, 1f, 1f, 1f, -1f)
-    private val texCoords = floatArrayOf(0f, 0f, 0f, 1f, 1f, 0f, 1f, 1f)
-
-    fun initialize() {
-        eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-        val version = IntArray(2)
-        EGL14.eglInitialize(eglDisplay, version, 0, version, 1)
-
-        val configAttribs = intArrayOf(
-            EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
-            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT, EGL14.EGL_NONE
-        )
-        val configs = arrayOfNulls<EGLConfig>(1)
-        val numConfigs = IntArray(1)
-        EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, numConfigs, 0)
-
-        val ctxAttribs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
-        eglContext = EGL14.eglCreateContext(eglDisplay, configs[0]!!, EGL14.EGL_NO_CONTEXT, ctxAttribs, 0)
-
-        val surfAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
-        eglSurface = EGL14.eglCreatePbufferSurface(eglDisplay, configs[0]!!, surfAttribs, 0)
-        EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
-
-        val texIds = IntArray(1)
-        GLES20.glGenTextures(1, texIds, 0)
-        textureId = texIds[0]
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-
-        surfaceTexture = android.graphics.SurfaceTexture(textureId)
-        renderSurface = android.view.Surface(surfaceTexture)
-
-        program = createProgram()
-    }
-
-    fun getSurface(): android.view.Surface = renderSurface!!
-
-    fun setVideoSize(w: Int, h: Int) { videoWidth = w; videoHeight = h }
-
-    fun drawFrame(canvas: Canvas, screenW: Int, screenH: Int, scaleMode: ScaleMode) {
-        surfaceTexture?.updateTexImage()
-
-        GLES20.glViewport(0, 0, screenW, screenH)
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        GLES20.glUseProgram(program)
-
-        val texLoc = GLES20.glGetUniformLocation(program, "uTexture")
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, textureId)
-        GLES20.glUniform1i(texLoc, 0)
-
-        // Calculate scale for FIT/FILL/STRETCH
-        val sw = screenW.toFloat(); val sh = screenH.toFloat()
-        val vw = videoWidth.toFloat(); val vh = videoHeight.toFloat()
-        val sx: Float; val sy: Float
-
-        when (scaleMode) {
-            ScaleMode.FIT -> {
-                val videoR = vw / vh; val screenR = sw / sh
-                if (videoR > screenR) { sx = 1f; sy = screenR / videoR }
-                else { sy = 1f; sx = videoR / screenR }
-            }
-            ScaleMode.FILL -> {
-                val videoR = vw / vh; val screenR = sw / sh
-                if (videoR < screenR) { sx = 1f; sy = screenR / videoR }
-                else { sy = 1f; sx = videoR / screenR }
-            }
-            ScaleMode.STRETCH -> { sx = 1f; sy = 1f }
-        }
-
-        val scaleLoc = GLES20.glGetUniformLocation(program, "uScale")
-        GLES20.glUniform2f(scaleLoc, sx, sy)
-
-        val posLoc = GLES20.glGetAttribLocation(program, "aPosition")
-        val tcLoc = GLES20.glGetAttribLocation(program, "aTexCoord")
-
-        val posBuf = createFloatBuffer(vertexCoords)
-        val tcBuf = createFloatBuffer(texCoords)
-
-        GLES20.glEnableVertexAttribArray(posLoc)
-        GLES20.glVertexAttribPointer(posLoc, 2, GLES20.GL_FLOAT, false, 0, posBuf)
-        GLES20.glEnableVertexAttribArray(tcLoc)
-        GLES20.glVertexAttribPointer(tcLoc, 2, GLES20.GL_FLOAT, false, 0, tcBuf)
-
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-
-        GLES20.glDisableVertexAttribArray(posLoc)
-        GLES20.glDisableVertexAttribArray(tcLoc)
-    }
-
-    fun release() {
-        try { surfaceTexture?.release() } catch (_: Exception) {}
-        surfaceTexture = null; renderSurface = null
-        try {
-            EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-            if (eglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, eglSurface)
-            if (eglContext != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(eglDisplay, eglContext)
-            if (eglDisplay != EGL14.EGL_NO_DISPLAY) EGL14.eglTerminate(eglDisplay)
-        } catch (_: Exception) {}
-        eglDisplay = EGL14.EGL_NO_DISPLAY; eglContext = EGL14.EGL_NO_CONTEXT; eglSurface = EGL14.EGL_NO_SURFACE
-    }
-
-    private fun createProgram(): Int {
-        val vs = """
-            attribute vec4 aPosition;
-            attribute vec2 aTexCoord;
-            varying vec2 vTexCoord;
-            uniform vec2 uScale;
-            void main() {
-                gl_Position = vec4(aPosition.xy * uScale, 0.0, 1.0);
-                vTexCoord = aTexCoord;
-            }
-        """.trimIndent()
-        val fs = """
-            #extension GL_OES_EGL_image_external : require
-            precision mediump float;
-            varying vec2 vTexCoord;
-            uniform samplerExternalOES uTexture;
-            void main() {
-                gl_FragColor = texture2D(uTexture, vTexCoord);
-            }
-        """.trimIndent()
-        val vsId = loadShader(GLES20.GL_VERTEX_SHADER, vs)
-        val fsId = loadShader(GLES20.GL_FRAGMENT_SHADER, fs)
-        val p = GLES20.glCreateProgram()
-        GLES20.glAttachShader(p, vsId); GLES20.glAttachShader(p, fsId)
-        GLES20.glLinkProgram(p)
-        return p
-    }
-
-    private fun loadShader(type: Int, code: String): Int {
-        val s = GLES20.glCreateShader(type)
-        GLES20.glShaderSource(s, code); GLES20.glCompileShader(s)
-        return s
-    }
-
-    private fun createFloatBuffer(data: FloatArray): FloatBuffer {
-        return ByteBuffer.allocateDirect(data.size * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
-            put(data); position(0)
         }
     }
 }
