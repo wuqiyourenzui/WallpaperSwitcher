@@ -159,7 +159,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                         }
                         if (!success) {
                             try {
-                                val intent = Intent(WallpaperManager.ACTION_SET_WALLPAPER)
+                                val intent = Intent(Intent.ACTION_SET_WALLPAPER)
                                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                 context.startActivity(intent)
                             } catch (_: Exception) {
