@@ -20,6 +20,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.wallpaperswitcher.data.ScaleMode
+import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 
