@@ -55,6 +55,22 @@ interface WallpaperImageDao {
     @Query("SELECT * FROM wallpaper_images LIMIT 1")
     suspend fun getFirstImage(): WallpaperImage?
 
+    // --- Group-specific queries (for wallpaper switching) ---
+
+    @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY RANDOM() LIMIT 1")
+    suspend fun getRandomImageFromGroup(groupId: Long): WallpaperImage?
+
+    @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId AND id != :excludeId ORDER BY RANDOM() LIMIT 1")
+    suspend fun getRandomImageFromGroupExcluding(groupId: Long, excludeId: Long): WallpaperImage?
+
+    @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt ASC LIMIT 1 OFFSET :offset")
+    suspend fun getSequentialImageFromGroup(groupId: Long, offset: Int): WallpaperImage?
+
+    @Query("SELECT COUNT(*) FROM wallpaper_images WHERE groupId = :groupId")
+    suspend fun countByGroup(groupId: Long): Int
+
+    // --- Global queries (fallback) ---
+
     @Query("""
         SELECT * FROM wallpaper_images
         WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
@@ -69,13 +85,6 @@ interface WallpaperImageDao {
         ORDER BY RANDOM() LIMIT 1
     """)
     suspend fun getRandomImageExcluding(excludeId: Long): WallpaperImage?
-
-    @Query("""
-        SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
-        ORDER BY addedAt ASC
-    """)
-    suspend fun getSequentialImages(): List<WallpaperImage>
 
     @Query("SELECT COUNT(*) FROM wallpaper_images WHERE groupId = :groupId")
     suspend fun getImageCount(groupId: Long): Int
@@ -118,7 +127,6 @@ interface SettingsDao {
     suspend fun setSetting(setting: AppSettings)
 }
 
-// 便捷扩展函数，不放在 DAO 接口里（避免 Room 代码生成问题）
 suspend fun SettingsDao.getString(key: String, default: String = ""): String {
     return getValue(key) ?: default
 }
