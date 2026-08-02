@@ -332,11 +332,10 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                         val id = cursor.getLong(idCol)
 
                         // Get folder path from DATA column
-                        val folderKey = if (dataCol >= 0) {
-                            val dataPath = cursor.getString(dataCol)
-                            if (!dataPath.isNullOrBlank()) dataPath.substringBeforeLast('/') else null
-                        } else null
-                        ?: continue
+                        val dataPath = if (dataCol >= 0) cursor.getString(dataCol) else null
+                        if (dataPath.isNullOrBlank()) continue
+                        val folderKey = dataPath.substringBeforeLast('/')
+                        if (folderKey.isEmpty()) continue
 
                         // Count images per folder
                         folderCounts[folderKey] = (folderCounts[folderKey] ?: 0) + 1
