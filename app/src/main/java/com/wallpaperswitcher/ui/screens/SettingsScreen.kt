@@ -73,7 +73,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 }
             }
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
             // Switch mode
             Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -90,7 +90,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 }
             }
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
             // Scale mode
             Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -120,7 +120,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 onCheckedChange = { viewModel.toggleUnlockSwitch(it) }
             )
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
             SettingsSwitchItem(
                 icon = Icons.Outlined.TouchApp,
@@ -130,7 +130,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 onCheckedChange = { viewModel.toggleDoubleTap(it) }
             )
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
                         // Set as Live Wallpaper button
             Row(
@@ -208,7 +208,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 }
             )
 
-            HorizontalDivider(modifier = Modifier.padding(horizontal = 16.dp))
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
             SettingsInfoItem(
                 icon = Icons.Outlined.Battery1Bar,
