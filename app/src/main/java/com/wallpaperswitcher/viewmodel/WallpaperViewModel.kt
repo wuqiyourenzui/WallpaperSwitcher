@@ -194,17 +194,21 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
      * Add folder via DocumentFile (SAF).
      * Runs in background, shows progress via toast.
      */
+    private var addFolderJob: Job? = null
+
     fun addFolder(groupId: Long, folderUri: Uri) {
-        viewModelScope.launch {
+        addFolderJob?.cancel() // Cancel previous add if running
+        addFolderJob = viewModelScope.launch {
             try {
                 _toastMessage.emit("Scanning folder...")
-                val count = withContext(Dispatchers.IO) {
-                    var total = 0
+                var total = 0
+                withContext(Dispatchers.IO) {
                     val docFile = androidx.documentfile.provider.DocumentFile
-                        .fromTreeUri(getApplication(), folderUri) ?: return@withContext 0
-                    if (!docFile.isDirectory) return@withContext 0
+                        .fromTreeUri(getApplication(), folderUri) ?: return@withContext
+                    if (!docFile.isDirectory) return@withContext
                     val batch = mutableListOf<WallpaperImage>()
                     docFile.listFiles().forEach { file ->
+                        if (!isActive) return@withContext // Check cancellation
                         if (file.isFile && isImageOnly(file.name ?: "")) {
                             batch.add(WallpaperImage(
                                 groupId = groupId,
@@ -213,7 +217,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                                 isFromFolder = true,
                                 folderPath = folderUri.toString()
                             ))
-                            // Insert in batches of 100 to avoid memory issues
                             if (batch.size >= 100) {
                                 imageDao.insertAll(batch.toList())
                                 total += batch.size
@@ -221,21 +224,22 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                             }
                         }
                     }
-                    if (batch.isNotEmpty()) {
+                    if (batch.isNotEmpty() && isActive) {
                         imageDao.insertAll(batch)
                         total += batch.size
                     }
-                    total
                 }
-                if (count > 0) {
+                if (total > 0) {
                     refreshCount(groupId)
-                    _toastMessage.emit("Added $count images from folder")
+                    _toastMessage.emit("Added $total images")
                 } else {
-                    _toastMessage.emit("No images found in folder")
+                    _toastMessage.emit("No images found")
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "addFolder failed", e)
-                _toastMessage.emit("Failed: ${e.message}")
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    Log.e(TAG, "addFolder failed", e)
+                    _toastMessage.emit("Failed: ${e.message}")
+                }
             }
         }
     }
@@ -274,9 +278,19 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun refreshCount(groupId: Long) {
         _totalImageCount.value = imageDao.getImageCountByGroup(groupId)
-        // Only reload first page (not all images)
-        val firstPage = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, 0)
-        _loadedImages.value = firstPage
+        // Don't reload images here - let the UI trigger paged loading
+        // This avoids OOM when adding large folders
+    }
+
+    /**
+     * Refresh the first page of images (call from UI when needed)
+     */
+    fun refreshImages() {
+        val groupId = _selectedGroupId.value ?: return
+        viewModelScope.launch {
+            _totalImageCount.value = imageDao.getImageCountByGroup(groupId)
+            _loadedImages.value = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, 0)
+        }
     }
 
     // ======== Folder scanning (background) ========
