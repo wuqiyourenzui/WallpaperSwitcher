@@ -679,6 +679,7 @@ fun GroupSettingsDialog(
 /**
  * Custom folder picker dialog.
  * Scans MediaStore for image folders and displays them.
+ * Compatible with Xiaomi/MIUI devices.
  */
 @Composable
 fun FolderPickerDialog(
@@ -703,13 +704,7 @@ fun FolderPickerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.Folder, null, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Select Folder")
-            }
-        },
+        title = { Text("Select Folder") },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
                 when {
@@ -721,7 +716,7 @@ fun FolderPickerDialog(
                         ) {
                             CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                             Spacer(modifier = Modifier.width(12.dp))
-                            Text("Scanning folders...")
+                            Text("Scanning...")
                         }
                     }
                     error != null -> {
@@ -732,15 +727,12 @@ fun FolderPickerDialog(
                             modifier = Modifier.fillMaxWidth().padding(24.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Icon(Icons.Outlined.FolderOff, null, modifier = Modifier.size(48.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f))
-                            Spacer(modifier = Modifier.height(12.dp))
                             Text("No image folders found", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                     else -> {
                         Text(
-                            "${folders.size} folders with images",
+                            "${folders.size} folders",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(bottom = 8.dp)
@@ -778,19 +770,20 @@ private fun FolderItem(
     onClick: () -> Unit
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().then(if (!imported) Modifier.clickable(onClick = onClick) else Modifier),
+        modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
             containerColor = if (imported) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
             else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
+        ),
+        onClick = if (!imported) onClick else {{}}
     ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
-                if (imported) Icons.Filled.CheckCircle else Icons.Outlined.Folder,
+                if (imported) Icons.Filled.CheckCircle else Icons.Outlined.PhotoLibrary,
                 null,
                 tint = if (imported) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(28.dp)
@@ -803,11 +796,9 @@ private fun FolderItem(
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             if (imported) {
-                Text("Imported", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Text("OK", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             } else {
                 FilledTonalButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) {
-                    Icon(Icons.Filled.Add, null, modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
                     Text("Import")
                 }
             }
