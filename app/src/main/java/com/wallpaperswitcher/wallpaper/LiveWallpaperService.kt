@@ -282,7 +282,16 @@ class LiveWallpaperService : WallpaperService() {
 
                 Log.d(TAG, "Creating MediaPlayer, surface=${surface.hashCode()}")
                 mediaPlayer = MediaPlayer().apply {
-                    setDataSource(applicationContext, uri)
+                    // Use FileDescriptor to avoid MEDIA_ERROR_IO (-38)
+                    val pfd = try { contentResolver.openFileDescriptor(uri, "r") } catch (e: Exception) { null }
+                    if (pfd == null) {
+                        Log.e(TAG, "openFileDescriptor returned null for: $uri")
+                        debugMsg = "Cannot open video file"
+                        showDebug()
+                        return
+                    }
+                    setDataSource(pfd.fileDescriptor)
+                    pfd.close()
 
                     setOnPreparedListener { mp ->
                         Log.d(TAG, "MediaPlayer prepared: ${mp.videoWidth}x${mp.videoHeight}")
