@@ -10,9 +10,8 @@ import androidx.lifecycle.viewModelScope
 import com.wallpaperswitcher.WallpaperSwitcherApp
 import com.wallpaperswitcher.data.*
 import com.wallpaperswitcher.service.WallpaperSwitchService
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
