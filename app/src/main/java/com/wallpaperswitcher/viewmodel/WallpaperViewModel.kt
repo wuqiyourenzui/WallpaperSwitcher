@@ -311,38 +311,32 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             val folderNames = mutableMapOf<String, String>()
             val contentResolver = getApplication<Application>().contentResolver
 
+            // Try RELATIVE_PATH first (API 29+), fall back to DATA
             val projection = arrayOf(
                 MediaStore.Images.Media._ID,
-                MediaStore.Images.Media.RELATIVE_PATH,
                 MediaStore.Images.Media.DATA
             )
 
             contentResolver.query(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                 projection,
-                "${MediaStore.Images.Media.SIZE} > 0",
+                null,
                 null,
                 "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
             )?.use { cursor ->
                 val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                val relPathCol = cursor.getColumnIndex(MediaStore.Images.Media.RELATIVE_PATH)
                 val dataCol = cursor.getColumnIndex(MediaStore.Images.Media.DATA)
 
                 while (cursor.moveToNext()) {
                     try {
                         val id = cursor.getLong(idCol)
 
-                        val folderKey = when {
-                            relPathCol >= 0 -> {
-                                val relPath = cursor.getString(relPathCol)
-                                if (!relPath.isNullOrBlank()) relPath.trimEnd('/') else null
-                            }
-                            dataCol >= 0 -> {
-                                val dataPath = cursor.getString(dataCol)
-                                if (!dataPath.isNullOrBlank()) dataPath.substringBeforeLast('/') else null
-                            }
-                            else -> null
-                        } ?: continue
+                        // Get folder path from DATA column
+                        val folderKey = if (dataCol >= 0) {
+                            val dataPath = cursor.getString(dataCol)
+                            if (!dataPath.isNullOrBlank()) dataPath.substringBeforeLast('/') else null
+                        } else null
+                        ?: continue
 
                         // Count images per folder
                         folderCounts[folderKey] = (folderCounts[folderKey] ?: 0) + 1
