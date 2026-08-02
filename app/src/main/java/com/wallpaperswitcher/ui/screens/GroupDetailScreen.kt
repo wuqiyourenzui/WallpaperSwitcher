@@ -92,6 +92,8 @@ fun GroupDetailScreen(
     }
 
     // Folder picker (system)
+    // postDelayed avoids crash on MIUI/HyperOS where ActivityResult callback
+    // fires before Activity is fully ready
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
@@ -101,14 +103,8 @@ fun GroupDetailScreen(
                 uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
             )
         } catch (_: Exception) {}
-        // Diagnostic: launch with delay to separate callback from coroutine
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-            try {
-                viewModel.addFolder(groupId, uri)
-            } catch (e: Exception) {
-                android.util.Log.e("GroupDetail", "addFolder failed", e)
-                android.widget.Toast.makeText(context, "Error: ${e.message}", android.widget.Toast.LENGTH_LONG).show()
-            }
+            viewModel.addFolder(groupId, uri)
         }, 100)
     }
 
