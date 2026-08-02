@@ -61,8 +61,10 @@ class WallpaperSwitchService : Service() {
                         delay(60_000L)
                         continue
                     }
-                    val minInterval = groups.minOf { it.switchIntervalMs }.coerceAtLeast(60_000L)
-                    delay(minInterval)
+                    // Get global interval
+                    val interval = db.settingsDao().getLong(SettingsKeys.GLOBAL_INTERVAL_MS, 60_000L)
+                        .coerceAtLeast(60_000L)
+                    delay(interval)
                     sendSwitchBroadcast()
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
