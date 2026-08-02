@@ -36,6 +36,7 @@ class LiveWallpaperService : WallpaperService() {
         private var isVisible = false
         private var isSwitching = false
         private var currentBitmap: Bitmap? = null
+        private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
         private val switchReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -142,9 +143,13 @@ class LiveWallpaperService : WallpaperService() {
 
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
 
+                    val scaleMode = try {
+                        ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
+                    } catch (_: Exception) { ScaleMode.FIT }
+
                     val bitmap = loadBitmap(nextImage.uri)
                     if (bitmap != null) {
-                        mainHandler.post { showBitmap(bitmap) }
+                        mainHandler.post { showBitmap(bitmap, scaleMode) }
                         Log.d(TAG, "$source: ${nextImage.displayName}")
                     }
                 } catch (e: Exception) {
@@ -159,18 +164,22 @@ class LiveWallpaperService : WallpaperService() {
             if (!surfaceReady || !isVisible) return
             scope.launch {
                 try {
-                    val imageId = db.settingsDao().getLong(SettingsKeys.LAST_IMAGE_ID)
+                    val dao = db.settingsDao()
+                    val imageId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
+                    val scaleMode = try {
+                        ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
+                    } catch (_: Exception) { ScaleMode.FIT }
                     val image = if (imageId > 0) db.wallpaperImageDao().getImageById(imageId) else null
                     if (image != null) {
                         val bitmap = loadBitmap(image.uri)
-                        if (bitmap != null) { mainHandler.post { showBitmap(bitmap) }; return@launch }
+                        if (bitmap != null) { mainHandler.post { showBitmap(bitmap, scaleMode) }; return@launch }
                     }
                     // Fallback
                     val first = db.wallpaperImageDao().getRandomImage()
                     if (first != null) {
-                        db.settingsDao().setLong(SettingsKeys.LAST_IMAGE_ID, first.id)
+                        dao.setLong(SettingsKeys.LAST_IMAGE_ID, first.id)
                         val bitmap = loadBitmap(first.uri)
-                        if (bitmap != null) { mainHandler.post { showBitmap(bitmap) }; return@launch }
+                        if (bitmap != null) { mainHandler.post { showBitmap(bitmap, scaleMode) }; return@launch }
                     }
                     mainHandler.post { showDefault() }
                 } catch (e: Exception) {
@@ -180,7 +189,7 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        private fun showBitmap(bitmap: Bitmap) {
+        private fun showBitmap(bitmap: Bitmap, scaleMode: ScaleMode = ScaleMode.FIT) {
             if (!surfaceReady) return
             try {
                 currentBitmap?.recycle(); currentBitmap = bitmap
@@ -188,12 +197,32 @@ class LiveWallpaperService : WallpaperService() {
                 canvas.drawColor(Color.BLACK)
                 val m = getMetrics()
                 val sw = m.widthPixels.toFloat(); val sh = m.heightPixels.toFloat()
-                val ratio = bitmap.width.toFloat() / bitmap.height.toFloat()
-                val sr = sw / sh
-                val dw: Float; val dh: Float
-                if (ratio > sr) { dh = sh; dw = dh * ratio } else { dw = sw; dh = dw / ratio }
-                val l = (sw - dw) / 2f; val t = (sh - dh) / 2f
-                canvas.drawBitmap(bitmap, null, RectF(l, t, l + dw, t + dh), null)
+                val bw = bitmap.width.toFloat(); val bh = bitmap.height.toFloat()
+
+                val dest: RectF = when (scaleMode) {
+                    ScaleMode.FIT -> {
+                        // Maintain aspect ratio, fit inside screen (may have black bars)
+                        val ratio = bw / bh; val sr = sw / sh
+                        val dw: Float; val dh: Float
+                        if (ratio > sr) { dw = sw; dh = dw / ratio } else { dh = sh; dw = dh * ratio }
+                        val l = (sw - dw) / 2f; val t = (sh - dh) / 2f
+                        RectF(l, t, l + dw, t + dh)
+                    }
+                    ScaleMode.FILL -> {
+                        // Maintain aspect ratio, fill entire screen (may crop edges)
+                        val ratio = bw / bh; val sr = sw / sh
+                        val dw: Float; val dh: Float
+                        if (ratio < sr) { dw = sw; dh = dw / ratio } else { dh = sh; dw = dh * ratio }
+                        val l = (sw - dw) / 2f; val t = (sh - dh) / 2f
+                        RectF(l, t, l + dw, t + dh)
+                    }
+                    ScaleMode.STRETCH -> {
+                        // Stretch to fill screen exactly (ignore aspect ratio)
+                        RectF(0f, 0f, sw, sh)
+                    }
+                }
+
+                canvas.drawBitmap(bitmap, null, dest, null)
                 surfaceHolder.unlockCanvasAndPost(canvas)
             } catch (e: Exception) { Log.e(TAG, "showBitmap error", e) }
         }
