@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.*
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -37,6 +38,14 @@ class LiveWallpaperService : WallpaperService() {
         private var isSwitching = false
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
+
+        // Video playback
+        private var mediaPlayer: MediaPlayer? = null
+        private var isVideoPlaying = false
+
+        // GIF playback
+        private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
+        private var gifFrameRunnable: Runnable? = null
 
         private val switchReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -74,6 +83,8 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
+            stopVideo()
+            stopGif()
         }
 
         override fun onTouchEvent(event: MotionEvent) {
@@ -83,19 +94,40 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
-            if (visible) drawCurrentImage()
+            if (visible) {
+                drawCurrentImage()
+            } else {
+                stopVideo()
+                stopGif()
+            }
         }
 
         override fun onDestroy() {
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
+            stopVideo()
+            stopGif()
             currentBitmap?.recycle(); currentBitmap = null
             scope.cancel()
             super.onDestroy()
         }
 
-        /**
-         * Switch to next image per group settings.
-         */
+        // ======== Media type detection ========
+
+        private fun getMediaType(uriStr: String): String {
+            return try {
+                val uri = Uri.parse(uriStr)
+                val name = uri.lastPathSegment ?: ""
+                val ext = name.lowercase().substringAfterLast('.', "")
+                when (ext) {
+                    "gif" -> "GIF"
+                    "mp4", "mkv", "webm", "avi", "mov", "3gp" -> "VIDEO"
+                    else -> "IMAGE"
+                }
+            } catch (_: Exception) { "IMAGE" }
+        }
+
+        // ======== Switch logic ========
+
         private fun doSwitch(source: String) {
             if (isSwitching) return
             isSwitching = true
@@ -105,18 +137,15 @@ class LiveWallpaperService : WallpaperService() {
                     val imageDao = db.wallpaperImageDao()
                     val groupDao = db.wallpaperGroupDao()
 
-                    // Check if any group is enabled
                     val groups = groupDao.getEnabledGroupsSync()
                     if (groups.isEmpty()) { isSwitching = false; return@launch }
 
                     val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
 
-                    // Get global switch mode
                     val switchMode = try {
                         SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
                     } catch (_: Exception) { SwitchMode.RANDOM }
 
-                    // Pick next image from ALL enabled groups
                     val nextImage = when (switchMode) {
                         SwitchMode.RANDOM -> {
                             imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
@@ -129,7 +158,6 @@ class LiveWallpaperService : WallpaperService() {
                                 val idx = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
                                 val next = (idx + 1) % count
                                 dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, next.toLong())
-                                // For sequential, just use random (sequential across all groups is complex)
                                 imageDao.getRandomImageFromEnabledGroups()
                             }
                         }
@@ -147,11 +175,23 @@ class LiveWallpaperService : WallpaperService() {
                         ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
                     } catch (_: Exception) { ScaleMode.FIT }
 
-                    val bitmap = loadBitmap(nextImage.uri)
-                    if (bitmap != null) {
-                        mainHandler.post { showBitmap(bitmap, scaleMode) }
-                        Log.d(TAG, "$source: ${nextImage.displayName}")
+                    val mediaType = nextImage.mediaType ?: getMediaType(nextImage.uri)
+
+                    when (mediaType) {
+                        "VIDEO" -> {
+                            mainHandler.post { playVideo(nextImage.uri) }
+                        }
+                        "GIF" -> {
+                            mainHandler.post { playGif(nextImage.uri, scaleMode) }
+                        }
+                        else -> {
+                            val bitmap = loadBitmap(nextImage.uri)
+                            if (bitmap != null) {
+                                mainHandler.post { showBitmap(bitmap, scaleMode) }
+                            }
+                        }
                     }
+                    Log.d(TAG, "$source: ${nextImage.displayName} ($mediaType)")
                 } catch (e: Exception) {
                     Log.e(TAG, "$source error", e)
                 } finally {
@@ -171,10 +211,16 @@ class LiveWallpaperService : WallpaperService() {
                     } catch (_: Exception) { ScaleMode.FIT }
                     val image = if (imageId > 0) db.wallpaperImageDao().getImageById(imageId) else null
                     if (image != null) {
-                        val bitmap = loadBitmap(image.uri)
-                        if (bitmap != null) { mainHandler.post { showBitmap(bitmap, scaleMode) }; return@launch }
+                        val mediaType = image.mediaType ?: getMediaType(image.uri)
+                        when (mediaType) {
+                            "VIDEO" -> { mainHandler.post { playVideo(image.uri) }; return@launch }
+                            "GIF" -> { mainHandler.post { playGif(image.uri, scaleMode) }; return@launch }
+                            else -> {
+                                val bitmap = loadBitmap(image.uri)
+                                if (bitmap != null) { mainHandler.post { showBitmap(bitmap, scaleMode) }; return@launch }
+                            }
+                        }
                     }
-                    // Fallback
                     val first = db.wallpaperImageDao().getRandomImage()
                     if (first != null) {
                         dao.setLong(SettingsKeys.LAST_IMAGE_ID, first.id)
@@ -189,6 +235,130 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
+        // ======== Video playback (MediaPlayer) ========
+
+        private fun playVideo(uriStr: String) {
+            stopVideo()
+            stopGif()
+            if (!surfaceReady) return
+            try {
+                val uri = Uri.parse(uriStr)
+                mediaPlayer = MediaPlayer().apply {
+                    setDataSource(applicationContext, uri)
+                    isLooping = true
+                    setSurface(surfaceHolder.surface)
+                    setOnPreparedListener { mp ->
+                        mp.start()
+                        isVideoPlaying = true
+                        Log.d(TAG, "Video playback started")
+                    }
+                    setOnErrorListener { _, what, extra ->
+                        Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
+                        stopVideo()
+                        showDefault()
+                        true
+                    }
+                    prepareAsync()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "playVideo failed", e)
+                stopVideo()
+            }
+        }
+
+        private fun stopVideo() {
+            try {
+                mediaPlayer?.let {
+                    if (it.isPlaying) it.stop()
+                    it.release()
+                }
+            } catch (_: Exception) {}
+            mediaPlayer = null
+            isVideoPlaying = false
+        }
+
+        // ======== GIF playback (ImageDecoder, API 28+) ========
+
+        private fun playGif(uriStr: String, scaleMode: ScaleMode = ScaleMode.FIT) {
+            stopGif()
+            stopVideo()
+            if (!surfaceReady) return
+            try {
+                if (android.os.Build.VERSION.SDK_INT >= 28) {
+                    playGifImageDecoder(uriStr, scaleMode)
+                } else {
+                    val bitmap = loadBitmap(uriStr)
+                    if (bitmap != null) showBitmap(bitmap, scaleMode)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "playGif failed", e)
+                val bitmap = loadBitmap(uriStr)
+                if (bitmap != null) showBitmap(bitmap, scaleMode)
+            }
+        }
+
+        @android.annotation.TargetApi(28)
+        private fun playGifImageDecoder(uriStr: String, scaleMode: ScaleMode) {
+            val uri = Uri.parse(uriStr)
+            val source = android.graphics.ImageDecoder.createSource(contentResolver, uri)
+            val drawable = android.graphics.ImageDecoder.decodeDrawable(source) { decoder, _, _ ->
+                decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+
+            if (drawable is android.graphics.drawable.AnimatedImageDrawable) {
+                gifDrawable = drawable
+                drawable.repeatCount = android.graphics.drawable.AnimatedImageDrawable.INFINITE
+                drawable.start()
+
+                val renderRunnable = object : Runnable {
+                    override fun run() {
+                        if (!surfaceReady || !isVisible || gifDrawable == null) return
+                        try {
+                            val canvas = surfaceHolder.lockCanvas() ?: return
+                            canvas.drawColor(Color.BLACK)
+                            val m = getMetrics()
+                            val sw = m.widthPixels.toFloat()
+                            val sh = m.heightPixels.toFloat()
+                            val bw = drawable.intrinsicWidth.toFloat()
+                            val bh = drawable.intrinsicHeight.toFloat()
+                            val dw: Float
+                            val dh: Float
+
+                            when (scaleMode) {
+                                ScaleMode.FIT -> {
+                                    val ratio = bw / bh; val sr = sw / sh
+                                    if (ratio > sr) { dw = sw; dh = dw / ratio } else { dh = sh; dw = dh * ratio }
+                                }
+                                ScaleMode.FILL -> {
+                                    val ratio = bw / bh; val sr = sw / sh
+                                    if (ratio < sr) { dw = sw; dh = dw / ratio } else { dh = sh; dw = dh * ratio }
+                                }
+                                ScaleMode.STRETCH -> { dw = sw; dh = sh }
+                            }
+
+                            val l = (sw - dw) / 2f; val t = (sh - dh) / 2f
+                            drawable.setBounds(l.toInt(), t.toInt(), (l + dw).toInt(), (t + dh).toInt())
+                            drawable.draw(canvas)
+                            surfaceHolder.unlockCanvasAndPost(canvas)
+                        } catch (_: Exception) {}
+                        mainHandler.postDelayed(this, 33)
+                    }
+                }
+                gifFrameRunnable = renderRunnable
+                mainHandler.post(renderRunnable)
+                Log.d(TAG, "GIF playback started")
+            }
+        }
+
+        private fun stopGif() {
+            gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
+            gifFrameRunnable = null
+            try { gifDrawable?.stop() } catch (_: Exception) {}
+            gifDrawable = null
+        }
+
+        // ======== Static image rendering ========
+
         private fun showBitmap(bitmap: Bitmap, scaleMode: ScaleMode = ScaleMode.FIT) {
             if (!surfaceReady) return
             try {
@@ -201,7 +371,6 @@ class LiveWallpaperService : WallpaperService() {
 
                 val dest: RectF = when (scaleMode) {
                     ScaleMode.FIT -> {
-                        // Maintain aspect ratio, fit inside screen (may have black bars)
                         val ratio = bw / bh; val sr = sw / sh
                         val dw: Float; val dh: Float
                         if (ratio > sr) { dw = sw; dh = dw / ratio } else { dh = sh; dw = dh * ratio }
@@ -209,7 +378,6 @@ class LiveWallpaperService : WallpaperService() {
                         RectF(l, t, l + dw, t + dh)
                     }
                     ScaleMode.FILL -> {
-                        // Maintain aspect ratio, fill entire screen (may crop edges)
                         val ratio = bw / bh; val sr = sw / sh
                         val dw: Float; val dh: Float
                         if (ratio < sr) { dw = sw; dh = dw / ratio } else { dh = sh; dw = dh * ratio }
@@ -217,7 +385,6 @@ class LiveWallpaperService : WallpaperService() {
                         RectF(l, t, l + dw, t + dh)
                     }
                     ScaleMode.STRETCH -> {
-                        // Stretch to fill screen exactly (ignore aspect ratio)
                         RectF(0f, 0f, sw, sh)
                     }
                 }
