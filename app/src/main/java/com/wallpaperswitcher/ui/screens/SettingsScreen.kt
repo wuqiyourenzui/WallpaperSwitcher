@@ -29,6 +29,11 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
     val serviceEnabled by viewModel.serviceEnabled.collectAsStateWithLifecycle()
     val doubleTapEnabled by viewModel.doubleTapEnabled.collectAsStateWithLifecycle()
     val unlockSwitchEnabled by viewModel.unlockSwitchEnabled.collectAsStateWithLifecycle()
+    val globalIntervalMs by viewModel.globalIntervalMs.collectAsStateWithLifecycle()
+    val globalSwitchMode by viewModel.globalSwitchMode.collectAsStateWithLifecycle()
+    val globalScaleMode by viewModel.globalScaleMode.collectAsStateWithLifecycle()
+
+    var showIntervalDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -46,6 +51,58 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 checked = serviceEnabled,
                 onCheckedChange = { viewModel.toggleService(it) }
             )
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Global wallpaper settings
+        SettingsSection(title = "Wallpaper Settings") {
+            // Interval
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { showIntervalDialog = true }.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Outlined.Timer, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Switch Interval", style = MaterialTheme.typography.bodyLarge)
+                    Text(formatInterval(globalIntervalMs), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            // Switch mode
+            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.Shuffle, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(16.dp))
+                Text("Switch Mode", modifier = Modifier.weight(1f))
+                SwitchMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = globalSwitchMode == mode,
+                        onClick = { viewModel.setGlobalSwitchMode(mode) },
+                        label = { Text(when (mode) { SwitchMode.RANDOM -> "Random"; SwitchMode.SEQUENTIAL -> "Seq"; SwitchMode.SHUFFLE -> "Shuffle" }) },
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                }
+            }
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            // Scale mode
+            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.AspectRatio, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(16.dp))
+                Text("Scale Mode", modifier = Modifier.weight(1f))
+                ScaleMode.entries.forEach { mode ->
+                    FilterChip(
+                        selected = globalScaleMode == mode,
+                        onClick = { viewModel.setGlobalScaleMode(mode) },
+                        label = { Text(when (mode) { ScaleMode.FILL -> "Fill"; ScaleMode.FIT -> "Fit"; ScaleMode.STRETCH -> "Stretch" }) },
+                        modifier = Modifier.padding(start = 4.dp)
+                    )
+                }
+            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -158,6 +215,15 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
         Spacer(modifier = Modifier.height(80.dp))
     }
+
+    // Interval picker dialog
+    if (showIntervalDialog) {
+        IntervalPickerDialog(
+            currentMs = globalIntervalMs,
+            onDismiss = { showIntervalDialog = false },
+            onSelect = { viewModel.setGlobalInterval(it); showIntervalDialog = false }
+        )
+    }
 }
 
 @Composable
@@ -250,4 +316,42 @@ private fun SettingsInfoItem(
             )
         }
     }
+}
+
+@Composable
+fun IntervalPickerDialog(
+    currentMs: Long,
+    onDismiss: () -> Unit,
+    onSelect: (Long) -> Unit
+) {
+    val options = listOf(
+        60_000L to "1 min",
+        300_000L to "5 min",
+        900_000L to "15 min",
+        1800_000L to "30 min",
+        3600_000L to "1 hour",
+        7200_000L to "2 hours",
+        21600_000L to "6 hours",
+        43200_000L to "12 hours",
+        86400_000L to "24 hours"
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Switch Interval") },
+        text = {
+            Column {
+                options.forEach { (ms, label) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { onSelect(ms) }.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = currentMs == ms, onClick = { onSelect(ms) })
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(label)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
