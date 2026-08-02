@@ -54,8 +54,14 @@ fun GroupDetailScreen(
     var showAddDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
     var showScanDialog by remember { mutableStateOf(false) }
+    var previewImage by remember { mutableStateOf<WallpaperImage?>(null) }
     var selectedImages by remember { mutableStateOf(setOf<Long>()) }
     var isSelectionMode by remember { mutableStateOf(false) }
+
+    // Refresh images when screen becomes visible
+    LaunchedEffect(groupId) {
+        viewModel.refreshImages()
+    }
 
     // 图片选择器
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -216,7 +222,7 @@ fun GroupDetailScreen(
                             }
                         },
                         onDelete = { viewModel.deleteImage(image) },
-                        onSetWallpaper = { viewModel.setImageAsWallpaper(image) }
+                        onSetWallpaper = { previewImage = image }
                     )
                 }
                 // Loading indicator at the bottom
@@ -257,7 +263,7 @@ fun GroupDetailScreen(
         )
     }
 
-    // 自动扫描文件夹对话框
+    // Auto-scan folder dialog
     if (showScanDialog) {
         ScanFoldersDialog(
             viewModel = viewModel,
@@ -266,7 +272,19 @@ fun GroupDetailScreen(
         )
     }
 
-    // 分组设置对话框
+    // Wallpaper preview dialog
+    previewImage?.let { image ->
+        WallpaperPreviewDialog(
+            image = image,
+            onDismiss = { previewImage = null },
+            onConfirm = {
+                viewModel.setImageAsWallpaper(image)
+                previewImage = null
+            }
+        )
+    }
+
+    // Group settings dialog
     if (showSettingsDialog && currentGroup != null) {
         GroupSettingsDialog(
             group = currentGroup,
@@ -897,4 +915,66 @@ private fun ScannedFolderItem(
             }
         }
     }
+}
+
+/**
+ * Wallpaper preview dialog.
+ * Shows the image and lets the user confirm before setting as wallpaper.
+ */
+@Composable
+fun WallpaperPreviewDialog(
+    image: WallpaperImage,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Set as Wallpaper") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Image preview
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalContext.current)
+                        .data(Uri.parse(image.uri))
+                        .crossfade(true)
+                        .build(),
+                    contentDescription = image.displayName,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 400.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    image.displayName,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    "This will set this image as your wallpaper.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Set")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Cancel")
+            }
+        }
+    )
 }
