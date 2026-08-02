@@ -12,6 +12,8 @@ import com.wallpaperswitcher.WallpaperSwitcherApp
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.getBool
+import com.wallpaperswitcher.data.getLong
+import com.wallpaperswitcher.data.setLong
 import com.wallpaperswitcher.ui.MainActivity
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import kotlinx.coroutines.*
@@ -64,7 +66,7 @@ class WallpaperSwitchService : Service() {
                     // Get global interval
                     val interval = db.settingsDao().getLong(SettingsKeys.GLOBAL_INTERVAL_MS, 60_000L)
                         .coerceAtLeast(60_000L)
-                    delay(interval)
+                    delay(interval.toLong())
                     sendSwitchBroadcast()
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
