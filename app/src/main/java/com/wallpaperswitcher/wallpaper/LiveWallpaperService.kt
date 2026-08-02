@@ -231,7 +231,7 @@ class LiveWallpaperService : WallpaperService() {
 
                     if (nextImage == null) {
                         Log.d(TAG, "No next image")
-                        isSwitching = false
+                        isSwitching.set(false)
                         return@launch
                     }
 
