@@ -38,6 +38,7 @@ class LiveWallpaperService : WallpaperService() {
         private var isVisible = false
         private var isSwitching = false
         private var currentBitmap: Bitmap? = null
+        private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
         // Media state
         private var mediaCodecJob: Job? = null
@@ -49,7 +50,10 @@ class LiveWallpaperService : WallpaperService() {
 
         private val switchReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                if (intent.action == ACTION_SWITCH) doSwitch("broadcast")
+                if (intent.action == ACTION_SWITCH) {
+                    Log.d(TAG, "Broadcast received")
+                    doSwitch("broadcast")
+                }
             }
         }
 
@@ -67,13 +71,16 @@ class LiveWallpaperService : WallpaperService() {
             super.onCreate(surfaceHolder)
             db = AppDatabase.getInstance(applicationContext)
             setTouchEventsEnabled(true)
+            val filter = IntentFilter(ACTION_SWITCH)
             try {
-                applicationContext.registerReceiver(switchReceiver, IntentFilter(ACTION_SWITCH))
+                applicationContext.registerReceiver(switchReceiver, filter)
             } catch (_: Exception) {}
+            Log.d(TAG, "Engine created")
         }
 
         override fun onSurfaceCreated(holder: SurfaceHolder?) {
             surfaceReady = true
+            Log.d(TAG, "Surface created")
             drawCurrentImage()
         }
 
@@ -81,7 +88,6 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
-            stopAll()
         }
 
         override fun onTouchEvent(event: MotionEvent) {
@@ -91,21 +97,26 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
-            if (!visible) stopAll()
-            else drawCurrentImage()
+            Log.d(TAG, "Visibility: $visible")
+            if (visible) {
+                drawCurrentImage()
+            } else {
+                // Pause video/GIF but don't stop - resume when visible again
+                pauseMedia()
+            }
         }
 
         override fun onDestroy() {
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
-            stopAll()
+            releaseAll()
             currentBitmap?.recycle(); currentBitmap = null
             scope.cancel()
             super.onDestroy()
         }
 
-        // ======== Stop everything ========
+        // ======== Media control ========
 
-        private fun stopAll() {
+        private fun releaseAll() {
             videoPlaying = false
             mediaCodecJob?.cancel()
             mediaCodecJob = null
@@ -115,11 +126,28 @@ class LiveWallpaperService : WallpaperService() {
             gifDrawable = null
         }
 
+        private fun pauseMedia() {
+            // Pause GIF rendering but keep video job alive (it checks isVisible)
+            gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
+        }
+
+        private fun resumeMedia() {
+            // Resume GIF rendering
+            gifDrawable?.let {
+                gifFrameRunnable?.let { runnable -> mainHandler.post(runnable) }
+            }
+        }
+
         // ======== Switch logic ========
 
         private fun doSwitch(source: String) {
-            if (isSwitching) return
+            if (isSwitching) {
+                Log.d(TAG, "Already switching, skip")
+                return
+            }
             isSwitching = true
+            Log.d(TAG, "doSwitch from $source")
+
             scope.launch {
                 try {
                     val dao = db.settingsDao()
@@ -127,13 +155,17 @@ class LiveWallpaperService : WallpaperService() {
                     val groupDao = db.wallpaperGroupDao()
 
                     val groups = groupDao.getEnabledGroupsSync()
-                    if (groups.isEmpty()) { isSwitching = false; return@launch }
+                    if (groups.isEmpty()) {
+                        Log.d(TAG, "No enabled groups")
+                        isSwitching = false
+                        return@launch
+                    }
 
                     val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
                     val switchMode = try {
                         SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
                     } catch (_: Exception) { SwitchMode.RANDOM }
-                    val scaleMode = try {
+                    currentScaleMode = try {
                         ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
                     } catch (_: Exception) { ScaleMode.FIT }
 
@@ -158,42 +190,49 @@ class LiveWallpaperService : WallpaperService() {
                         }
                     }
 
-                    if (nextImage == null) { isSwitching = false; return@launch }
+                    if (nextImage == null) {
+                        Log.d(TAG, "No next image")
+                        isSwitching = false
+                        return@launch
+                    }
 
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
                     val mediaType = nextImage.mediaType ?: "IMAGE"
+                    Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
 
+                    // SMOOTH: prepare new content first, then stop old, then show new
                     when (mediaType) {
                         "VIDEO" -> {
-                            // Extract first frame BEFORE stopping old content
-                            val firstFrame = extractFirstFrame(Uri.parse(nextImage.uri))
-                            if (firstFrame != null) {
-                                mainHandler.post { showBitmap(firstFrame, scaleMode) }
-                            }
-                            // Now stop old and start new video decoder
+                            val newUri = nextImage.uri
+                            val scaleMode = currentScaleMode
+                            // Extract first frame before stopping old
+                            val firstFrame = extractFirstFrame(Uri.parse(newUri))
+                            // Stop old content and show first frame immediately
                             mainHandler.post {
-                                stopAll()
-                                startVideoDecoder(nextImage.uri, scaleMode)
+                                releaseAll()
+                                if (firstFrame != null) showBitmap(firstFrame, scaleMode)
+                                startVideoDecoder(newUri, scaleMode)
                             }
                         }
                         "GIF" -> {
+                            val newUri = nextImage.uri
+                            val scaleMode = currentScaleMode
                             mainHandler.post {
-                                stopAll()
-                                playGif(nextImage.uri, scaleMode)
+                                releaseAll()
+                                playGif(newUri, scaleMode)
                             }
                         }
                         else -> {
                             val bitmap = loadBitmap(nextImage.uri)
-                            if (bitmap != null) {
-                                mainHandler.post {
-                                    stopAll()
-                                    showBitmap(bitmap, scaleMode)
-                                }
+                            val scaleMode = currentScaleMode
+                            mainHandler.post {
+                                releaseAll()
+                                if (bitmap != null) showBitmap(bitmap, scaleMode)
                             }
                         }
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "$source error", e)
+                    Log.e(TAG, "doSwitch error", e)
                 } finally {
                     isSwitching = false
                 }
@@ -202,23 +241,32 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
-            if (videoPlaying) return
 
             scope.launch {
                 try {
                     val dao = db.settingsDao()
                     val imageId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
-                    val scaleMode = try {
+                    currentScaleMode = try {
                         ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
                     } catch (_: Exception) { ScaleMode.FIT }
                     val image = if (imageId > 0) db.wallpaperImageDao().getImageById(imageId) else null
+
                     if (image != null) {
                         when (image.mediaType ?: "IMAGE") {
-                            "VIDEO" -> { mainHandler.post { startVideoDecoder(image.uri, scaleMode) }; return@launch }
-                            "GIF" -> { mainHandler.post { playGif(image.uri, scaleMode) }; return@launch }
+                            "VIDEO" -> {
+                                mainHandler.post { startVideoDecoder(image.uri, currentScaleMode) }
+                                return@launch
+                            }
+                            "GIF" -> {
+                                mainHandler.post { playGif(image.uri, currentScaleMode) }
+                                return@launch
+                            }
                             else -> {
                                 val bitmap = loadBitmap(image.uri)
-                                if (bitmap != null) { mainHandler.post { showBitmap(bitmap, scaleMode) }; return@launch }
+                                if (bitmap != null) {
+                                    mainHandler.post { showBitmap(bitmap, currentScaleMode) }
+                                    return@launch
+                                }
                             }
                         }
                     }
@@ -266,7 +314,13 @@ class LiveWallpaperService : WallpaperService() {
                     val startTimeNs = System.nanoTime()
                     videoPlaying = true
 
-                    while (isActive && surfaceReady && isVisible) {
+                    while (isActive && surfaceReady) {
+                        // Pause when not visible
+                        if (!isVisible) {
+                            delay(100)
+                            continue
+                        }
+
                         val inputIdx = codec.dequeueInputBuffer(10000L)
                         if (inputIdx >= 0) {
                             val buf = codec.getInputBuffer(inputIdx) ?: continue
@@ -285,7 +339,7 @@ class LiveWallpaperService : WallpaperService() {
                             val outBuf = codec.getOutputBuffer(outputIdx)
                             if (outBuf != null && isActive) {
                                 val bmp = yuvToBitmap(outBuf, width, height)
-                                if (bmp != null && isActive) {
+                                if (bmp != null && isActive && isVisible) {
                                     mainHandler.post { showBitmap(bmp, scaleMode) }
                                 }
                             }
