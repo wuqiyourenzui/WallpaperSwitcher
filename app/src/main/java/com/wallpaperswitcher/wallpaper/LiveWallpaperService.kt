@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.*
+import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Handler
@@ -37,9 +38,11 @@ class LiveWallpaperService : WallpaperService() {
         private var isVisible = false
         private var isSwitching = false
         private var currentBitmap: Bitmap? = null
+        private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
         // Video
         private var mediaPlayer: MediaPlayer? = null
+        private var videoPlaying = false
 
         // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
@@ -72,17 +75,28 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onSurfaceCreated(holder: SurfaceHolder?) {
             surfaceReady = true
+            // If a video was playing, restart it on the new surface
+            if (videoPlaying && mediaPlayer != null) {
+                try {
+                    mediaPlayer!!.setDisplay(holder)
+                    if (!mediaPlayer!!.isPlaying) mediaPlayer!!.start()
+                } catch (e: Exception) {
+                    Log.e(TAG, "setDisplay on surfaceCreated failed", e)
+                }
+            }
             drawCurrentImage()
         }
 
         override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {
+            if (videoPlaying && mediaPlayer != null) {
+                try { mediaPlayer!!.setDisplay(holder) } catch (_: Exception) {}
+            }
             drawCurrentImage()
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
-            stopVideo()
-            stopGif()
+            // Don't stop video here - surface may be recreated
         }
 
         override fun onTouchEvent(event: MotionEvent) {
@@ -92,13 +106,25 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
-            if (visible) drawCurrentImage()
-            else { stopVideo(); stopGif() }
+            if (visible) {
+                if (videoPlaying && mediaPlayer != null) {
+                    try {
+                        mediaPlayer!!.setDisplay(surfaceHolder)
+                        if (!mediaPlayer!!.isPlaying) mediaPlayer!!.start()
+                    } catch (_: Exception) {}
+                }
+                drawCurrentImage()
+            } else {
+                if (videoPlaying && mediaPlayer != null) {
+                    try { if (mediaPlayer!!.isPlaying) mediaPlayer!!.pause() } catch (_: Exception) {}
+                }
+                stopGif()
+            }
         }
 
         override fun onDestroy() {
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
-            stopVideo(); stopGif()
+            releaseVideo(); stopGif()
             currentBitmap?.recycle(); currentBitmap = null
             scope.cancel()
             super.onDestroy()
@@ -153,7 +179,7 @@ class LiveWallpaperService : WallpaperService() {
                     val mediaType = nextImage.mediaType ?: "IMAGE"
 
                     when (mediaType) {
-                        "VIDEO" -> mainHandler.post { playVideo(nextImage.uri) }
+                        "VIDEO" -> mainHandler.post { playVideo(nextImage.uri, scaleMode) }
                         "GIF" -> mainHandler.post { playGif(nextImage.uri, scaleMode) }
                         else -> {
                             val bitmap = loadBitmap(nextImage.uri)
@@ -171,6 +197,9 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
+            // If video is playing, don't override it
+            if (videoPlaying && mediaPlayer?.isPlaying == true) return
+
             scope.launch {
                 try {
                     val dao = db.settingsDao()
@@ -182,7 +211,7 @@ class LiveWallpaperService : WallpaperService() {
                     if (image != null) {
                         val mediaType = image.mediaType ?: "IMAGE"
                         when (mediaType) {
-                            "VIDEO" -> { mainHandler.post { playVideo(image.uri) }; return@launch }
+                            "VIDEO" -> { mainHandler.post { playVideo(image.uri, scaleMode) }; return@launch }
                             "GIF" -> { mainHandler.post { playGif(image.uri, scaleMode) }; return@launch }
                             else -> {
                                 val bitmap = loadBitmap(image.uri)
@@ -204,36 +233,113 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video playback (MediaPlayer + SurfaceHolder) ========
+        // ======== Video playback ========
 
-        private fun playVideo(uriStr: String) {
-            stopVideo()
+        private fun playVideo(uriStr: String, scaleMode: ScaleMode = ScaleMode.FIT) {
+            releaseVideo()
             stopGif()
             if (!surfaceReady) return
-            try {
-                val uri = Uri.parse(uriStr)
-                mediaPlayer = MediaPlayer().apply {
-                    setDataSource(applicationContext, uri)
-                    isLooping = true
-                    setDisplay(surfaceHolder)
-                    setOnPreparedListener { mp ->
-                        mp.start()
-                        Log.d(TAG, "Video started: ${mp.videoWidth}x${mp.videoHeight}")
-                    }
-                    setOnErrorListener { _, what, extra ->
-                        Log.e(TAG, "MediaPlayer error: $what / $extra")
-                        stopVideo(); true
-                    }
-                    prepareAsync()
+
+            val uri = Uri.parse(uriStr)
+            Log.d(TAG, "playVideo: $uriStr")
+
+            // Step 1: Extract first frame as bitmap (guaranteed to show something)
+            scope.launch {
+                val firstFrame = extractVideoFrame(uriStr)
+                if (firstFrame != null) {
+                    mainHandler.post { showBitmap(firstFrame, scaleMode) }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "playVideo failed", e)
-                stopVideo()
+
+                // Step 2: Start MediaPlayer for continuous playback
+                mainHandler.post { startMediaPlayer(uri, scaleMode) }
             }
         }
 
-        private fun stopVideo() {
-            try { mediaPlayer?.let { if (it.isPlaying) it.stop(); it.release() } } catch (_: Exception) {}
+        private fun startMediaPlayer(uri: Uri, scaleMode: ScaleMode) {
+            try {
+                mediaPlayer = MediaPlayer().apply {
+                    setDataSource(applicationContext, uri)
+                    isLooping = true
+
+                    setOnPreparedListener { mp ->
+                        Log.d(TAG, "MediaPlayer prepared: ${mp.videoWidth}x${mp.videoHeight}")
+                        try {
+                            mp.setDisplay(surfaceHolder)
+                            mp.start()
+                            videoPlaying = true
+                            Log.d(TAG, "Video playback started")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "setDisplay/start failed", e)
+                            // First frame bitmap already shown as fallback
+                        }
+                    }
+
+                    setOnErrorListener { _, what, extra ->
+                        Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
+                        videoPlaying = false
+                        // First frame bitmap already shown as fallback
+                        true
+                    }
+
+                    setOnInfoListener { _, what, extra ->
+                        Log.d(TAG, "MediaPlayer info: what=$what extra=$extra")
+                        false
+                    }
+
+                    // Use synchronous prepare on IO thread to catch errors immediately
+                    try {
+                        prepare()
+                        Log.d(TAG, "MediaPlayer sync prepare OK")
+                        setDisplay(surfaceHolder)
+                        start()
+                        videoPlaying = true
+                        Log.d(TAG, "Video started (sync)")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "sync prepare failed, trying async", e)
+                        try { prepareAsync() } catch (e2: Exception) {
+                            Log.e(TAG, "async prepare also failed", e2)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "startMediaPlayer failed", e)
+            }
+        }
+
+        private fun extractVideoFrame(uriStr: String): Bitmap? {
+            return try {
+                val retriever = MediaMetadataRetriever()
+                retriever.setDataSource(applicationContext, Uri.parse(uriStr))
+                val frame = retriever.frameAtTime
+                retriever.release()
+                if (frame != null) {
+                    // Scale down if too large
+                    val m = getMetrics()
+                    val maxW = m.widthPixels * 2
+                    val maxH = m.heightPixels * 2
+                    if (frame.width > maxW || frame.height > maxH) {
+                        val scaled = Bitmap.createScaledBitmap(frame,
+                            frame.width * maxW / maxOf(frame.width, maxW),
+                            frame.height * maxH / maxOf(frame.height, maxH), true)
+                        if (scaled !== frame) frame.recycle()
+                        scaled
+                    } else frame
+                } else null
+            } catch (e: Exception) {
+                Log.e(TAG, "extractVideoFrame failed", e)
+                null
+            }
+        }
+
+        private fun releaseVideo() {
+            videoPlaying = false
+            try {
+                mediaPlayer?.let {
+                    try { it.setDisplay(null) } catch (_: Exception) {}
+                    if (it.isPlaying) it.stop()
+                    it.release()
+                }
+            } catch (_: Exception) {}
             mediaPlayer = null
         }
 
@@ -241,7 +347,7 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun playGif(uriStr: String, scaleMode: ScaleMode = ScaleMode.FIT) {
             stopGif()
-            stopVideo()
+            releaseVideo()
             if (!surfaceReady) return
             try {
                 if (android.os.Build.VERSION.SDK_INT >= 28) playGifImageDecoder(uriStr, scaleMode)
