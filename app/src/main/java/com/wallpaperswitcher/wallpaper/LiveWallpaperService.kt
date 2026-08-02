@@ -74,7 +74,11 @@ class LiveWallpaperService : WallpaperService() {
             setTouchEventsEnabled(true)
             val filter = IntentFilter(ACTION_SWITCH)
             try {
-                applicationContext.registerReceiver(switchReceiver, filter)
+                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                    applicationContext.registerReceiver(switchReceiver, filter, Context.RECEIVER_EXPORTED)
+                } else {
+                    applicationContext.registerReceiver(switchReceiver, filter)
+                }
             } catch (_: Exception) {}
             Log.d(TAG, "Engine created")
         }
@@ -320,10 +324,10 @@ class LiveWallpaperService : WallpaperService() {
 
                     videoStopFlag = false
                     while (isActive && surfaceReady && !videoStopFlag) {
-                        // Pause when not visible
+                        // When not visible, slow down but don't stop (keeps video looping)
                         if (!isVisible) {
-                            delay(100)
-                            continue
+                            delay(50)
+                            // Still feed input/output to keep the pipeline moving
                         }
 
                         val inputIdx = codec.dequeueInputBuffer(10000L)
@@ -357,7 +361,9 @@ class LiveWallpaperService : WallpaperService() {
                         }
 
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            // Loop: seek back to start and flush codec
                             extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                            codec.flush()
                         }
                     }
 
