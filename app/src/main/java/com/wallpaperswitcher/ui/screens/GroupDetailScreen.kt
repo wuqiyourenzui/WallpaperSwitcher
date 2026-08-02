@@ -52,7 +52,6 @@ fun GroupDetailScreen(
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
 
     var showAddDialog by remember { mutableStateOf(false) }
-    var showSettingsDialog by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<WallpaperImage?>(null) }
     var selectedImages by remember { mutableStateOf(setOf<Long>()) }
     var isSelectionMode by remember { mutableStateOf(false) }
@@ -267,21 +266,6 @@ fun GroupDetailScreen(
                 viewModel.setImageAsWallpaper(image)
                 previewImage = null
             }
-        )
-    }
-
-    // Group settings dialog
-    if (showSettingsDialog && currentGroup != null) {
-        GroupSettingsDialog(
-            group = currentGroup,
-            onDismiss = { showSettingsDialog = false },
-            onUpdate = { updated ->
-                viewModel.updateGroup(updated)
-                showSettingsDialog = false
-            },
-            onIntervalChange = { viewModel.updateGroupInterval(groupId, it) },
-            onSwitchModeChange = { viewModel.updateGroupSwitchMode(groupId, it) },
-            onScaleModeChange = { viewModel.updateGroupScaleMode(groupId, it) }
         )
     }
 }
