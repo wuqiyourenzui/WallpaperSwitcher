@@ -677,9 +677,7 @@ fun GroupSettingsDialog(
 }
 
 /**
- * Custom folder picker dialog.
- * Scans MediaStore for image folders and displays them.
- * Compatible with Xiaomi/MIUI devices.
+ * Simple folder picker dialog.
  */
 @Composable
 fun FolderPickerDialog(
@@ -689,14 +687,14 @@ fun FolderPickerDialog(
 ) {
     var folders by remember { mutableStateOf<List<ScannedFolder>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
-    var error by remember { mutableStateOf<String?>(null) }
+    var errorMsg by remember { mutableStateOf<String?>(null) }
     var importedPaths by remember { mutableStateOf(setOf<String>()) }
 
     LaunchedEffect(Unit) {
         try {
             folders = viewModel.scanImageFolders()
         } catch (e: Exception) {
-            error = e.message ?: "Scan failed"
+            errorMsg = e.message ?: "Error"
         } finally {
             isLoading = false
         }
@@ -704,105 +702,63 @@ fun FolderPickerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Select Folder") },
+        title = { Text("Add from Folder") },
         text = {
             Column(modifier = Modifier.fillMaxWidth()) {
-                when {
-                    isLoading -> {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Text("Scanning...")
-                        }
+                if (isLoading) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().height(100.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(strokeWidth = 2.dp)
                     }
-                    error != null -> {
-                        Text("Error: $error", color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(16.dp))
-                    }
-                    folders.isEmpty() -> {
-                        Column(
-                            modifier = Modifier.fillMaxWidth().padding(24.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text("No image folders found", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    else -> {
-                        Text(
-                            "${folders.size} folders",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        )
-                        LazyColumn(
-                            modifier = Modifier.fillMaxWidth().heightIn(max = 400.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            items(folders) { folder ->
-                                val imported = folder.path in importedPaths
-                                FolderItem(
-                                    folder = folder,
-                                    imported = imported,
-                                    onClick = {
-                                        if (!imported) {
+                } else if (errorMsg != null) {
+                    Text(errorMsg!!, color = MaterialTheme.colorScheme.error)
+                } else if (folders.isEmpty()) {
+                    Text("No image folders found", modifier = Modifier.padding(16.dp))
+                } else {
+                    Text("${folders.size} folders", style = MaterialTheme.typography.bodySmall)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    LazyColumn(
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 350.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(folders) { folder ->
+                            val done = folder.path in importedPaths
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(
+                                        if (done) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
+                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                        RoundedCornerShape(8.dp)
+                                    )
+                                    .then(
+                                        if (!done) Modifier.clickable {
                                             viewModel.importScannedFolder(groupId, folder)
                                             importedPaths = importedPaths + folder.path
-                                        }
-                                    }
-                                )
+                                        } else Modifier
+                                    )
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(folder.name, fontWeight = FontWeight.Medium)
+                                    Text("${folder.imageCount} images", style = MaterialTheme.typography.bodySmall)
+                                }
+                                if (done) {
+                                    Text("OK", color = MaterialTheme.colorScheme.primary)
+                                } else {
+                                    Text("Import", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                                }
                             }
                         }
                     }
                 }
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } }
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
     )
-}
-
-@Composable
-private fun FolderItem(
-    folder: ScannedFolder,
-    imported: Boolean,
-    onClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier.fillMaxWidth().then(if (!imported) Modifier.clickable(onClick = onClick) else Modifier),
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (imported) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        ),
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(12.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                if (imported) Icons.Filled.CheckCircle else Icons.Outlined.PhotoLibrary,
-                null,
-                tint = if (imported) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(28.dp)
-            )
-            Spacer(modifier = Modifier.width(12.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text(folder.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium,
-                    maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${folder.imageCount} images", style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (imported) {
-                Text("OK", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-            } else {
-                FilledTonalButton(onClick = onClick, contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)) {
-                    Text("Import")
-                }
-            }
-        }
-    }
 }
 
 /**
