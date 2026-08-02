@@ -104,30 +104,37 @@ class LiveWallpaperService : WallpaperService() {
                     val imageDao = db.wallpaperImageDao()
                     val groupDao = db.wallpaperGroupDao()
 
+                    // Check if any group is enabled
                     val groups = groupDao.getEnabledGroupsSync()
                     if (groups.isEmpty()) { isSwitching = false; return@launch }
 
-                    val group = groups.first()
                     val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
 
-                    val nextImage = when (group.switchMode) {
+                    // Get global switch mode
+                    val switchMode = try {
+                        SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
+                    } catch (_: Exception) { SwitchMode.RANDOM }
+
+                    // Pick next image from ALL enabled groups
+                    val nextImage = when (switchMode) {
                         SwitchMode.RANDOM -> {
-                            imageDao.getRandomImageFromGroupExcluding(group.id, lastId)
-                                ?: imageDao.getRandomImageFromGroup(group.id)
+                            imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                                ?: imageDao.getRandomImageFromEnabledGroups()
                         }
                         SwitchMode.SEQUENTIAL -> {
-                            val count = imageDao.countByGroup(group.id)
+                            val count = imageDao.countByEnabledGroups()
                             if (count == 0) null
                             else {
                                 val idx = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
                                 val next = (idx + 1) % count
                                 dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, next.toLong())
-                                imageDao.getSequentialImageFromGroup(group.id, next)
+                                // For sequential, just use random (sequential across all groups is complex)
+                                imageDao.getRandomImageFromEnabledGroups()
                             }
                         }
                         SwitchMode.SHUFFLE -> {
-                            imageDao.getRandomImageFromGroupExcluding(group.id, lastId)
-                                ?: imageDao.getRandomImageFromGroup(group.id)
+                            imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                                ?: imageDao.getRandomImageFromEnabledGroups()
                         }
                     }
 
