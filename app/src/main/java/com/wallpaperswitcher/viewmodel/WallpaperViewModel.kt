@@ -262,7 +262,10 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                _toastMessage.emit("Wallpaper set!")
+                val engine = com.wallpaperswitcher.engine.WallpaperEngine(getApplication())
+                val result = engine.setWallpaperForImage(image.uri)
+                if (result) _toastMessage.emit("Wallpaper set!")
+                else _toastMessage.emit("Failed to set wallpaper")
             } catch (e: Exception) {
                 _toastMessage.emit("Error: ${e.message}")
             }
