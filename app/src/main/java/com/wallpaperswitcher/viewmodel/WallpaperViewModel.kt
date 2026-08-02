@@ -207,42 +207,63 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 _scanProgress.value = "扫描中..."
                 var total = 0
                 withContext(Dispatchers.IO) {
-                    val docFile = androidx.documentfile.provider.DocumentFile
+                    val contentResolver = getApplication<Application>().contentResolver
+                    val docUri = androidx.documentfile.provider.DocumentFile
                         .fromTreeUri(getApplication(), folderUri) ?: return@withContext
-                    if (!docFile.isDirectory) return@withContext
+                    if (!docUri.isDirectory) return@withContext
 
-                    // First pass: count files for progress
-                    val allFiles = docFile.listFiles()
-                    val mediaFiles = allFiles.filter { it.isFile && isSupportedMedia(it.name ?: "") }
-                    val totalCount = mediaFiles.size
+                    // Use ContentResolver query instead of listFiles() to avoid OOM
+                    val childrenUri = android.provider.DocumentsContract
+                        .buildChildDocumentsUriUsingTree(folderUri,
+                            android.provider.DocumentsContract.getTreeDocumentId(folderUri))
 
-                    if (totalCount == 0) {
-                        _scanProgress.value = ""
-                        return@withContext
-                    }
+                    val projection = arrayOf(
+                        android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE
+                    )
 
-                    _scanProgress.value = "导入中 0/$totalCount"
                     val batch = mutableListOf<WallpaperImage>()
 
-                    mediaFiles.forEachIndexed { index, file ->
-                        if (!isActive) return@withContext
-                        batch.add(WallpaperImage(
-                            groupId = groupId,
-                            uri = file.uri.toString(),
-                            displayName = file.name ?: "untitled",
-                            mediaType = detectMediaType(file.name ?: ""),
-                            isFromFolder = true,
-                            folderPath = folderUri.toString()
-                        ))
-                        // Batch insert every 500 items, yield to keep UI responsive
-                        if (batch.size >= 500) {
-                            imageDao.insertAll(batch.toList())
-                            total += batch.size
-                            batch.clear()
-                            _scanProgress.value = "导入中 $total/$totalCount"
-                            yield() // Let UI thread breathe
+                    contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                        val idCol = cursor.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                        val nameCol = cursor.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                        val mimeCol = cursor.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE)
+
+                        while (cursor.moveToNext()) {
+                            if (!isActive) return@withContext
+                            try {
+                                val docId = cursor.getString(idCol)
+                                val name = cursor.getString(nameCol) ?: "untitled"
+                                val mime = cursor.getString(mimeCol) ?: ""
+
+                                // Skip directories
+                                if (mime == android.provider.DocumentsContract.Document.MIME_TYPE_DIR) continue
+                                if (!isSupportedMedia(name)) continue
+
+                                val fileUri = android.provider.DocumentsContract
+                                    .buildDocumentUriUsingTree(folderUri, docId)
+
+                                batch.add(WallpaperImage(
+                                    groupId = groupId,
+                                    uri = fileUri.toString(),
+                                    displayName = name,
+                                    mediaType = detectMediaType(name),
+                                    isFromFolder = true,
+                                    folderPath = folderUri.toString()
+                                ))
+
+                                if (batch.size >= 500) {
+                                    imageDao.insertAll(batch.toList())
+                                    total += batch.size
+                                    batch.clear()
+                                    _scanProgress.value = "已导入 $total 张"
+                                    yield()
+                                }
+                            } catch (_: Exception) { continue }
                         }
                     }
+
                     if (batch.isNotEmpty() && isActive) {
                         imageDao.insertAll(batch)
                         total += batch.size
