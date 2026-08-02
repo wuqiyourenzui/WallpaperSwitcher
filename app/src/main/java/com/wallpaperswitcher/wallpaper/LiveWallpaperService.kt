@@ -46,6 +46,7 @@ class LiveWallpaperService : WallpaperService() {
         private var mediaPlayer: MediaPlayer? = null
         private var videoPlaying = false
         private var lastVideoUri: String = ""
+        private var mediaCodecJob: kotlinx.coroutines.Job? = null
 
         // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
@@ -343,7 +344,7 @@ class LiveWallpaperService : WallpaperService() {
                 var isDecoding = true
 
                 // Decode loop on background thread
-                scope.launch {
+                mediaCodecJob = scope.launch {
                     while (isDecoding && surfaceReady) {
                         if (!isVisible) { delay(100); continue }
 
@@ -527,6 +528,8 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun releaseVideo() {
             videoPlaying = false
+            mediaCodecJob?.cancel()
+            mediaCodecJob = null
             try {
                 mediaPlayer?.let {
                     try { it.setSurface(null) } catch (_: Exception) {}
