@@ -45,6 +45,7 @@ fun GroupDetailScreen(
     val images by viewModel.loadedImages.collectAsStateWithLifecycle()
     val totalCount by viewModel.totalImageCount.collectAsStateWithLifecycle()
     val isLoadingMore by viewModel.isLoadingMore.collectAsStateWithLifecycle()
+    val scanProgress by viewModel.scanProgress.collectAsStateWithLifecycle()
 
     var showAddDialog by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<WallpaperImage?>(null) }
@@ -181,6 +182,34 @@ fun GroupDetailScreen(
                     Icon(Icons.Filled.Delete, "删除", modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(4.dp))
                     Text("删除所选")
+                }
+            }
+        }
+
+        // 导入进度
+        if (scanProgress.isNotEmpty()) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
+                )
+            ) {
+                Row(
+                    modifier = Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp),
+                        strokeWidth = 2.dp
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text(
+                        scanProgress,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
                 }
             }
         }

@@ -195,55 +195,72 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * Add folder via DocumentFile (SAF).
-     * Runs in background, shows progress via toast.
+     * Optimized for large folders: batch insert, progress updates, yield for UI responsiveness.
      */
     private var addFolderJob: Job? = null
 
     fun addFolder(groupId: Long, folderUri: Uri) {
-        addFolderJob?.cancel() // Cancel previous add if running
+        addFolderJob?.cancel()
         addFolderJob = viewModelScope.launch {
             try {
-                _toastMessage.emit("Scanning folder...")
+                _toastMessage.emit("正在扫描文件夹...")
+                _scanProgress.value = "扫描中..."
                 var total = 0
                 withContext(Dispatchers.IO) {
                     val docFile = androidx.documentfile.provider.DocumentFile
                         .fromTreeUri(getApplication(), folderUri) ?: return@withContext
                     if (!docFile.isDirectory) return@withContext
+
+                    // First pass: count files for progress
+                    val allFiles = docFile.listFiles()
+                    val mediaFiles = allFiles.filter { it.isFile && isSupportedMedia(it.name ?: "") }
+                    val totalCount = mediaFiles.size
+
+                    if (totalCount == 0) {
+                        _scanProgress.value = ""
+                        return@withContext
+                    }
+
+                    _scanProgress.value = "导入中 0/$totalCount"
                     val batch = mutableListOf<WallpaperImage>()
-                    docFile.listFiles().forEach { file ->
-                        if (!isActive) return@withContext // Check cancellation
-                        if (file.isFile && isSupportedMedia(file.name ?: "")) {
-                            batch.add(WallpaperImage(
-                                groupId = groupId,
-                                uri = file.uri.toString(),
-                                displayName = file.name ?: "untitled",
-                                mediaType = detectMediaType(file.name ?: ""),
-                                isFromFolder = true,
-                                folderPath = folderUri.toString()
-                            ))
-                            if (batch.size >= 100) {
-                                imageDao.insertAll(batch.toList())
-                                total += batch.size
-                                batch.clear()
-                            }
+
+                    mediaFiles.forEachIndexed { index, file ->
+                        if (!isActive) return@withContext
+                        batch.add(WallpaperImage(
+                            groupId = groupId,
+                            uri = file.uri.toString(),
+                            displayName = file.name ?: "untitled",
+                            mediaType = detectMediaType(file.name ?: ""),
+                            isFromFolder = true,
+                            folderPath = folderUri.toString()
+                        ))
+                        // Batch insert every 500 items, yield to keep UI responsive
+                        if (batch.size >= 500) {
+                            imageDao.insertAll(batch.toList())
+                            total += batch.size
+                            batch.clear()
+                            _scanProgress.value = "导入中 $total/$totalCount"
+                            yield() // Let UI thread breathe
                         }
                     }
                     if (batch.isNotEmpty() && isActive) {
                         imageDao.insertAll(batch)
                         total += batch.size
                     }
+                    _scanProgress.value = ""
                 }
                 if (total > 0) {
                     refreshCount(groupId)
-                    _toastMessage.emit("Added $total images")
+                    _toastMessage.emit("已添加 $total 张图片")
                 } else {
-                    _toastMessage.emit("No images found")
+                    _toastMessage.emit("未找到图片")
                 }
             } catch (e: Exception) {
                 if (e !is kotlinx.coroutines.CancellationException) {
                     Log.e(TAG, "addFolder failed", e)
-                    _toastMessage.emit("Failed: ${e.message}")
+                    _toastMessage.emit("导入失败: ${e.message}")
                 }
+                _scanProgress.value = ""
             }
         }
     }
@@ -384,15 +401,15 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun importScannedFolder(groupId: Long, folder: ScannedFolder) {
         viewModelScope.launch {
             try {
-                _toastMessage.emit("Importing images from '${folder.name}'...")
-                val images = withContext(Dispatchers.IO) {
-                    val result = mutableListOf<WallpaperImage>()
+                _toastMessage.emit("正在从「${folder.name}」导入...")
+                _scanProgress.value = "查询中..."
+                var total = 0
+                withContext(Dispatchers.IO) {
                     val contentResolver = getApplication<Application>().contentResolver
                     val projection = arrayOf(
                         MediaStore.Images.Media._ID,
                         MediaStore.Images.Media.DISPLAY_NAME
                     )
-                    // Match folder path using LIKE query
                     val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                         "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Images.Media.SIZE} > 0"
                     } else {
@@ -406,36 +423,48 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                     )?.use { cursor ->
                         val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
                         val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+                        val batch = mutableListOf<WallpaperImage>()
+
                         while (cursor.moveToNext()) {
+                            if (!isActive) return@withContext
                             try {
                                 val id = cursor.getLong(idCol)
                                 val name = cursor.getString(nameCol) ?: "untitled"
                                 val uri = Uri.withAppendedPath(
                                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString()
                                 )
-                                result.add(WallpaperImage(
+                                batch.add(WallpaperImage(
                                     groupId = groupId,
                                     uri = uri.toString(),
                                     displayName = name,
                                     isFromFolder = true,
                                     folderPath = folder.path
                                 ))
+                                if (batch.size >= 500) {
+                                    imageDao.insertAll(batch.toList())
+                                    total += batch.size
+                                    batch.clear()
+                                    _scanProgress.value = "导入中 $total 张"
+                                    yield()
+                                }
                             } catch (_: Exception) { continue }
                         }
+                        if (batch.isNotEmpty() && isActive) {
+                            imageDao.insertAll(batch)
+                            total += batch.size
+                        }
                     }
-                    result
+                    _scanProgress.value = ""
                 }
-                if (images.isNotEmpty()) {
-                    withContext(Dispatchers.IO) {
-                        images.chunked(500).forEach { imageDao.insertAll(it) }
-                    }
+                if (total > 0) {
                     refreshCount(groupId)
-                    _toastMessage.emit("Imported ${images.size} images from '${folder.name}'")
+                    _toastMessage.emit("已从「${folder.name}」导入 $total 张图片")
                 } else {
-                    _toastMessage.emit("No images found")
+                    _toastMessage.emit("未找到图片")
                 }
             } catch (e: Exception) {
-                _toastMessage.emit("Import failed: ${e.message}")
+                _toastMessage.emit("导入失败: ${e.message}")
+                _scanProgress.value = ""
             }
         }
     }
