@@ -23,6 +23,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -52,6 +53,14 @@ fun GroupDetailScreen(
     var previewImage by remember { mutableStateOf<WallpaperImage?>(null) }
     var selectedImages by remember { mutableStateOf(setOf<Long>()) }
     var isSelectionMode by remember { mutableStateOf(false) }
+
+    // Derive load-more state to avoid recomposition on every scroll
+    val shouldLoadMore by remember {
+        derivedStateOf {
+            val lastVisibleItem = images.size - 1
+            lastVisibleItem >= 0 && lastVisibleItem >= images.size - 12 && images.size < totalCount && !isLoadingMore
+        }
+    }
 
     // Refresh images when screen becomes visible
     LaunchedEffect(groupId) {
@@ -229,14 +238,12 @@ fun GroupDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                itemsIndexed(images, key = { _, image -> image.id }) { index, image ->
-                    // Load more when near the end
-                    if (index >= images.size - 12 && images.size < totalCount && !isLoadingMore) {
-                        LaunchedEffect(Unit) { viewModel.loadImages(groupId) }
-                    }
+                itemsIndexed(images, key = { _, image -> image.id }) { _, image ->
+                    // Stable selection check - only recompose when THIS image's selection changes
+                    val isImageSelected = remember(selectedImages) { image.id in selectedImages }
                     ImageGridItem(
                         image = image,
-                        isSelected = image.id in selectedImages,
+                        isSelected = isImageSelected,
                         selectionMode = isSelectionMode,
                         onClick = {
                             if (isSelectionMode) {
@@ -250,17 +257,11 @@ fun GroupDetailScreen(
                         onSetWallpaper = { previewImage = image }
                     )
                 }
-                // Loading indicator at the bottom
-                if (isLoadingMore) {
-                    item {
-                        Box(
-                            modifier = Modifier.fillMaxWidth().padding(16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-                        }
-                    }
-                }
+            }
+
+            // Load more trigger - outside grid to avoid recomposition
+            LaunchedEffect(shouldLoadMore) {
+                if (shouldLoadMore) viewModel.loadImages(groupId)
             }
         }
     }
@@ -394,7 +395,8 @@ private fun ImageGridItem(
             model = ImageRequest.Builder(LocalContext.current)
                 .data(Uri.parse(image.uri))
                 .size(400, 400) // Grid thumbnail: limit to 400px, not full resolution
-                .crossfade(true)
+                .crossfade(200) // Smooth 200ms fade
+                .allowHardware(false) // Software bitmap for Canvas compatibility
                 .apply {
                     // Use video frame decoder for video/GIF thumbnails
                     if (image.mediaType == "VIDEO") {
@@ -404,6 +406,8 @@ private fun ImageGridItem(
                 .build(),
             contentDescription = image.displayName,
             contentScale = ContentScale.Crop,
+            placeholder = androidx.compose.ui.graphics.painter.ColorPainter(Color(0xFFE0E0E0)),
+            error = androidx.compose.ui.graphics.painter.ColorPainter(Color(0xFFBDBDBD)),
             modifier = Modifier.fillMaxSize()
         )
 
@@ -587,10 +591,12 @@ fun WallpaperPreviewDialog(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(Uri.parse(image.uri))
                         .size(800, 800) // Preview: limit to 800px
-                        .crossfade(true)
+                        .crossfade(200)
+                        .allowHardware(false)
                         .build(),
                     contentDescription = image.displayName,
                     contentScale = ContentScale.Fit,
+                    placeholder = androidx.compose.ui.graphics.painter.ColorPainter(Color(0xFFE0E0E0)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(max = 400.dp)

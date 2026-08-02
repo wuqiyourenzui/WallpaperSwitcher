@@ -41,6 +41,7 @@ class WallpaperSwitcherApp : Application() {
             }
             .diskCachePolicy(CachePolicy.ENABLED)
             .allowHardware(false) // Software bitmaps for compatibility
+            .bitmapConfig(android.graphics.Bitmap.Config.RGB_565) // 16-bit for thumbnails (less memory)
             .build()
         Coil.setImageLoader(imageLoader)
     }
