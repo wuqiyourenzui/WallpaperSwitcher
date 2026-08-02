@@ -153,7 +153,8 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private fun resumeMedia() {
-            // Resume GIF rendering
+            // Resume GIF rendering only if visible and GIF is loaded
+            if (!isVisible) return
             gifDrawable?.let {
                 gifFrameRunnable?.let { runnable -> mainHandler.post(runnable) }
             }
@@ -366,10 +367,12 @@ class LiveWallpaperService : WallpaperService() {
 
                     videoStopFlag = false
                     while (isActive && surfaceReady && !videoStopFlag) {
-                        // When not visible, slow down but don't stop (keeps video looping)
+                        // When not visible, stop decoding entirely to save power
+                        // Will restart via drawCurrentImage() when visible again
                         if (!isVisible) {
-                            delay(50)
-                            // Still feed input/output to keep the pipeline moving
+                            videoPlaying = false
+                            codec.stop(); codec.release(); extractor.release()
+                            return@launch
                         }
 
                         val inputIdx = codec.dequeueInputBuffer(10000L)

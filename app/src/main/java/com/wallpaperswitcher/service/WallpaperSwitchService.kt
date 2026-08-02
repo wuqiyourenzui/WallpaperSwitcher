@@ -64,7 +64,7 @@ class WallpaperSwitchService : Service() {
                     val db = AppDatabase.getInstance(applicationContext)
                     val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
                     if (groups.isEmpty()) {
-                        delay(60_000L)
+                        delay(300_000L) // 5 min when no groups, save power
                         continue
                     }
                     // Get global interval
