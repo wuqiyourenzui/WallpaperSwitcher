@@ -188,7 +188,13 @@ class LiveWallpaperService : WallpaperService() {
                     Log.d(TAG, "$source: ${nextImage.displayName} type=$mediaType uri=${nextImage.uri.take(50)}")
 
                     when (mediaType) {
-                        "VIDEO" -> mainHandler.post { playVideo(nextImage.uri, scaleMode) }
+                        "VIDEO" -> {
+                            if (videoPlaying && mediaPlayer?.isPlaying == true && nextImage.uri == lastVideoUri) {
+                                Log.d(TAG, "Same video playing, skip")
+                            } else {
+                                mainHandler.post { playVideo(nextImage.uri, scaleMode) }
+                            }
+                        }
                         "GIF" -> mainHandler.post { playGif(nextImage.uri, scaleMode) }
                         else -> {
                             val bitmap = loadBitmap(nextImage.uri)
@@ -394,16 +400,22 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun yuvToBitmap(buffer: java.nio.ByteBuffer, format: android.media.MediaFormat, width: Int, height: Int): Bitmap? {
             return try {
-                val colorFormat = format.getIntegerOrDefault(android.media.MediaFormat.KEY_COLOR_FORMAT,
-                    android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
-
                 val yuv = ByteArray(buffer.remaining())
                 buffer.get(yuv)
 
-                // Use YuvImage (built-in Android class) for reliable conversion
+                // MediaCodec outputs NV12 (UV), YuvImage needs NV21 (VU) - swap UV bytes
+                val frameSize = width * height
+                var i = frameSize
+                while (i < yuv.size - 1) {
+                    val tmp = yuv[i]
+                    yuv[i] = yuv[i + 1]
+                    yuv[i + 1] = tmp
+                    i += 2
+                }
+
                 val yuvImage = android.graphics.YuvImage(yuv, android.graphics.ImageFormat.NV21, width, height, null)
                 val out = java.io.ByteArrayOutputStream()
-                yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 90, out)
+                yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 85, out)
                 val bytes = out.toByteArray()
                 android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             } catch (e: Exception) {
