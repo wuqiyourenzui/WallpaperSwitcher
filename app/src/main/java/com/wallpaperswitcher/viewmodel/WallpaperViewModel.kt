@@ -208,14 +208,21 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 var total = 0
                 withContext(Dispatchers.IO) {
                     val contentResolver = getApplication<Application>().contentResolver
-                    val docUri = androidx.documentfile.provider.DocumentFile
-                        .fromTreeUri(getApplication(), folderUri) ?: return@withContext
-                    if (!docUri.isDirectory) return@withContext
 
-                    // Use ContentResolver query instead of listFiles() to avoid OOM
+                    // Validate URI first
+                    val treeDocId = try {
+                        android.provider.DocumentsContract.getTreeDocumentId(folderUri)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Invalid tree URI: $folderUri", e)
+                        null
+                    }
+                    if (treeDocId == null) {
+                        _scanProgress.value = ""
+                        return@withContext
+                    }
+
                     val childrenUri = android.provider.DocumentsContract
-                        .buildChildDocumentsUriUsingTree(folderUri,
-                            android.provider.DocumentsContract.getTreeDocumentId(folderUri))
+                        .buildChildDocumentsUriUsingTree(folderUri, treeDocId)
 
                     val projection = arrayOf(
                         android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -225,42 +232,70 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
                     val batch = mutableListOf<WallpaperImage>()
 
-                    contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
-                        val idCol = cursor.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                        val nameCol = cursor.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                        val mimeCol = cursor.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE)
+                    try {
+                        contentResolver.query(childrenUri, projection, null, null, null)?.use { cursor ->
+                            val idCol = cursor.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                            val nameCol = cursor.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                            val mimeCol = cursor.getColumnIndexOrThrow(android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE)
 
-                        while (cursor.moveToNext()) {
-                            if (!isActive) return@withContext
-                            try {
-                                val docId = cursor.getString(idCol)
-                                val name = cursor.getString(nameCol) ?: "untitled"
-                                val mime = cursor.getString(mimeCol) ?: ""
+                            while (cursor.moveToNext()) {
+                                if (!isActive) return@withContext
+                                try {
+                                    val docId = cursor.getString(idCol) ?: continue
+                                    val name = cursor.getString(nameCol) ?: "untitled"
+                                    val mime = cursor.getString(mimeCol) ?: ""
 
-                                // Skip directories
-                                if (mime == android.provider.DocumentsContract.Document.MIME_TYPE_DIR) continue
-                                if (!isSupportedMedia(name)) continue
+                                    if (mime == android.provider.DocumentsContract.Document.MIME_TYPE_DIR) continue
+                                    if (!isSupportedMedia(name)) continue
 
-                                val fileUri = android.provider.DocumentsContract
-                                    .buildDocumentUriUsingTree(folderUri, docId)
+                                    val fileUri = android.provider.DocumentsContract
+                                        .buildDocumentUriUsingTree(folderUri, docId)
 
-                                batch.add(WallpaperImage(
-                                    groupId = groupId,
-                                    uri = fileUri.toString(),
-                                    displayName = name,
-                                    mediaType = detectMediaType(name),
-                                    isFromFolder = true,
-                                    folderPath = folderUri.toString()
-                                ))
+                                    batch.add(WallpaperImage(
+                                        groupId = groupId,
+                                        uri = fileUri.toString(),
+                                        displayName = name,
+                                        mediaType = detectMediaType(name),
+                                        isFromFolder = true,
+                                        folderPath = folderUri.toString()
+                                    ))
 
-                                if (batch.size >= 500) {
-                                    imageDao.insertAll(batch.toList())
-                                    total += batch.size
-                                    batch.clear()
-                                    _scanProgress.value = "已导入 $total 张"
-                                    yield()
+                                    if (batch.size >= 500) {
+                                        imageDao.insertAll(batch.toList())
+                                        total += batch.size
+                                        batch.clear()
+                                        _scanProgress.value = "已导入 $total 张"
+                                    }
+                                } catch (_: Exception) { continue }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Query folder failed, trying fallback", e)
+                        // Fallback: use DocumentFile.listFiles() with limited iteration
+                        try {
+                            val docFile = androidx.documentfile.provider.DocumentFile
+                                .fromTreeUri(getApplication(), folderUri)
+                            docFile?.listFiles()?.take(5000)?.forEach { file ->
+                                if (!isActive) return@withContext
+                                if (file.isFile && isSupportedMedia(file.name ?: "")) {
+                                    batch.add(WallpaperImage(
+                                        groupId = groupId,
+                                        uri = file.uri.toString(),
+                                        displayName = file.name ?: "untitled",
+                                        mediaType = detectMediaType(file.name ?: ""),
+                                        isFromFolder = true,
+                                        folderPath = folderUri.toString()
+                                    ))
+                                    if (batch.size >= 500) {
+                                        imageDao.insertAll(batch.toList())
+                                        total += batch.size
+                                        batch.clear()
+                                        _scanProgress.value = "已导入 $total 张"
+                                    }
                                 }
-                            } catch (_: Exception) { continue }
+                            }
+                        } catch (e2: Exception) {
+                            Log.e(TAG, "Fallback also failed", e2)
                         }
                     }
 

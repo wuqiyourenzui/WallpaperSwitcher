@@ -96,12 +96,12 @@ fun GroupDetailScreen(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
         uri?.let {
-            viewModel.addFolder(groupId, it)
             try {
                 context.contentResolver.takePersistableUriPermission(
                     it, Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
             } catch (_: Exception) {}
+            viewModel.addFolder(groupId, it)
         }
     }
 
