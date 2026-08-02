@@ -198,32 +198,43 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 _toastMessage.emit("Scanning folder...")
-                val images = withContext(Dispatchers.IO) {
-                    val result = mutableListOf<WallpaperImage>()
+                val count = withContext(Dispatchers.IO) {
+                    var total = 0
                     val docFile = androidx.documentfile.provider.DocumentFile
-                        .fromTreeUri(getApplication(), folderUri) ?: return@withContext result
-                    if (!docFile.isDirectory) return@withContext result
+                        .fromTreeUri(getApplication(), folderUri) ?: return@withContext 0
+                    if (!docFile.isDirectory) return@withContext 0
+                    val batch = mutableListOf<WallpaperImage>()
                     docFile.listFiles().forEach { file ->
                         if (file.isFile && isImageOnly(file.name ?: "")) {
-                            result.add(WallpaperImage(
+                            batch.add(WallpaperImage(
                                 groupId = groupId,
                                 uri = file.uri.toString(),
                                 displayName = file.name ?: "untitled",
                                 isFromFolder = true,
                                 folderPath = folderUri.toString()
                             ))
+                            // Insert in batches of 100 to avoid memory issues
+                            if (batch.size >= 100) {
+                                imageDao.insertAll(batch.toList())
+                                total += batch.size
+                                batch.clear()
+                            }
                         }
                     }
-                    result
+                    if (batch.isNotEmpty()) {
+                        imageDao.insertAll(batch)
+                        total += batch.size
+                    }
+                    total
                 }
-                if (images.isNotEmpty()) {
-                    withContext(Dispatchers.IO) { imageDao.insertAll(images) }
+                if (count > 0) {
                     refreshCount(groupId)
-                    _toastMessage.emit("Added ${images.size} images from folder")
+                    _toastMessage.emit("Added $count images from folder")
                 } else {
                     _toastMessage.emit("No images found in folder")
                 }
             } catch (e: Exception) {
+                Log.e(TAG, "addFolder failed", e)
                 _toastMessage.emit("Failed: ${e.message}")
             }
         }
@@ -260,8 +271,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun refreshCount(groupId: Long) {
         _totalImageCount.value = imageDao.getImageCountByGroup(groupId)
-        // Reload first page
-        _loadedImages.value = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, 0)
+        // Only reload first page (not all images)
+        val firstPage = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, 0)
+        _loadedImages.value = firstPage
     }
 
     // ======== Folder scanning (background) ========
