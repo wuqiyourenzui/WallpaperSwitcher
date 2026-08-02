@@ -265,10 +265,15 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
+                // Update live wallpaper surface
+                val intent = com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH
+                val switchIntent = android.content.Intent(intent)
+                switchIntent.setPackage(getApplication<Application>().packageName)
+                getApplication<Application>().sendBroadcast(switchIntent)
+                // Also set via WallpaperManager for non-live-wallpaper mode
                 val engine = com.wallpaperswitcher.engine.WallpaperEngine(getApplication())
-                val result = engine.setWallpaperForImage(image.uri)
-                if (result) _toastMessage.emit("Wallpaper set!")
-                else _toastMessage.emit("Failed to set wallpaper")
+                engine.setWallpaperForImage(image.uri)
+                _toastMessage.emit("Wallpaper set!")
             } catch (e: Exception) {
                 _toastMessage.emit("Error: ${e.message}")
             }
