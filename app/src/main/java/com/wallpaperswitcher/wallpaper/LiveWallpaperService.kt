@@ -20,6 +20,7 @@ import android.view.SurfaceHolder
 import android.view.WindowManager
 import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.sync.Mutex
 
 class LiveWallpaperService : WallpaperService() {
 
@@ -248,6 +249,7 @@ class LiveWallpaperService : WallpaperService() {
 
         // ======== Video playback ========
 
+        @Synchronized
         private fun playVideo(uriStr: String, scaleMode: ScaleMode = ScaleMode.FIT) {
             releaseVideo()
             stopGif()
@@ -345,8 +347,8 @@ class LiveWallpaperService : WallpaperService() {
 
                 // Decode loop on background thread
                 mediaCodecJob = scope.launch {
-                    while (isDecoding && surfaceReady) {
-                        if (!isVisible) { delay(100); continue }
+                    while (isDecoding && surfaceReady && isActive) {
+                        if (!isVisible || !isActive) { delay(100); continue }
 
                         // Feed input
                         val inputIndex = codec.dequeueInputBuffer(10000L)
@@ -369,7 +371,7 @@ class LiveWallpaperService : WallpaperService() {
                             val outputBuffer = codec.getOutputBuffer(outputIndex)
                             if (outputBuffer != null) {
                                 val bitmap = yuvToBitmap(outputBuffer, format, width, height)
-                                if (bitmap != null) {
+                                if (bitmap != null && isActive) {
                                     mainHandler.post { showBitmap(bitmap, scaleMode) }
                                 }
                             }
@@ -529,6 +531,10 @@ class LiveWallpaperService : WallpaperService() {
         private fun releaseVideo() {
             videoPlaying = false
             mediaCodecJob?.cancel()
+            // Wait briefly for the job to actually stop
+            runBlocking {
+                try { withTimeout(200) { mediaCodecJob?.join() } } catch (_: Exception) {}
+            }
             mediaCodecJob = null
             try {
                 mediaPlayer?.let {
