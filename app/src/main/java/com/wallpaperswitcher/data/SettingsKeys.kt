@@ -4,8 +4,10 @@ object SettingsKeys {
     const val SERVICE_ENABLED = "service_enabled"
     const val DOUBLE_TAP_ENABLED = "double_tap_enabled"
     const val UNLOCK_SWITCH_ENABLED = "unlock_switch_enabled"
-    const val DEFAULT_INTERVAL_MS = "default_interval_ms"
     const val LAST_IMAGE_ID = "last_image_id"
     const val SEQUENTIAL_INDEX = "sequential_index"
-    const val NOTIFICATION_ENABLED = "notification_enabled"
+    // Global wallpaper settings
+    const val GLOBAL_INTERVAL_MS = "global_interval_ms"
+    const val GLOBAL_SWITCH_MODE = "global_switch_mode"
+    const val GLOBAL_SCALE_MODE = "global_scale_mode"
 }
