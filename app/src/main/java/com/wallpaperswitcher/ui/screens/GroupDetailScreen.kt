@@ -53,7 +53,6 @@ fun GroupDetailScreen(
 
     var showAddDialog by remember { mutableStateOf(false) }
     var showSettingsDialog by remember { mutableStateOf(false) }
-    var showFolderPicker by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<WallpaperImage?>(null) }
     var selectedImages by remember { mutableStateOf(setOf<Long>()) }
     var isSelectionMode by remember { mutableStateOf(false) }
@@ -89,6 +88,20 @@ fun GroupDetailScreen(
     ) { uri: Uri? ->
         uri?.let {
             viewModel.addImage(groupId, it, it.lastPathSegment ?: "untitled")
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    it, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {}
+        }
+    }
+
+    // Folder picker (system)
+    val folderPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        uri?.let {
+            viewModel.addFolder(groupId, it)
             try {
                 context.contentResolver.takePersistableUriPermission(
                     it, Intent.FLAG_GRANT_READ_URI_PERMISSION
@@ -240,17 +253,8 @@ fun GroupDetailScreen(
             },
             onAddFolder = {
                 showAddDialog = false
-                showFolderPicker = true
+                folderPickerLauncher.launch(null)
             }
-        )
-    }
-
-    // Folder picker dialog
-    if (showFolderPicker) {
-        FolderPickerDialog(
-            viewModel = viewModel,
-            groupId = groupId,
-            onDismiss = { showFolderPicker = false }
         )
     }
 
@@ -673,91 +677,6 @@ fun GroupSettingsDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
         }
-    )
-}
-
-/**
- * Simple folder picker dialog.
- */
-@Composable
-fun FolderPickerDialog(
-    viewModel: WallpaperViewModel,
-    groupId: Long,
-    onDismiss: () -> Unit
-) {
-    var folders by remember { mutableStateOf<List<ScannedFolder>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
-    var errorMsg by remember { mutableStateOf<String?>(null) }
-    var importedPaths by remember { mutableStateOf(setOf<String>()) }
-
-    LaunchedEffect(Unit) {
-        try {
-            folders = viewModel.scanImageFolders()
-        } catch (e: Exception) {
-            errorMsg = e.message ?: "Error"
-        } finally {
-            isLoading = false
-        }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Add from Folder") },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                if (isLoading) {
-                    Box(
-                        modifier = Modifier.fillMaxWidth().height(100.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(strokeWidth = 2.dp)
-                    }
-                } else if (errorMsg != null) {
-                    Text(errorMsg!!, color = MaterialTheme.colorScheme.error)
-                } else if (folders.isEmpty()) {
-                    Text("No image folders found", modifier = Modifier.padding(16.dp))
-                } else {
-                    Text("${folders.size} folders", style = MaterialTheme.typography.bodySmall)
-                    Spacer(modifier = Modifier.height(8.dp))
-                    LazyColumn(
-                        modifier = Modifier.fillMaxWidth().heightIn(max = 350.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        items(folders) { folder ->
-                            val done = folder.path in importedPaths
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .background(
-                                        if (done) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)
-                                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                        RoundedCornerShape(8.dp)
-                                    )
-                                    .then(
-                                        if (!done) Modifier.clickable {
-                                            viewModel.importScannedFolder(groupId, folder)
-                                            importedPaths = importedPaths + folder.path
-                                        } else Modifier
-                                    )
-                                    .padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(folder.name, fontWeight = FontWeight.Medium)
-                                    Text("${folder.imageCount} images", style = MaterialTheme.typography.bodySmall)
-                                }
-                                if (done) {
-                                    Text("OK", color = MaterialTheme.colorScheme.primary)
-                                } else {
-                                    Text("Import", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } }
     )
 }
 
