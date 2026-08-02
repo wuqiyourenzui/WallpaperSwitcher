@@ -95,16 +95,13 @@ fun GroupDetailScreen(
     val folderPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        try {
-            context.contentResolver.takePersistableUriPermission(
-                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION
-            )
-        } catch (_: Exception) {}
-        try {
-            viewModel.addFolder(groupId, uri)
-        } catch (e: Exception) {
-            android.util.Log.e("GroupDetail", "addFolder launch failed", e)
+        uri?.let {
+            viewModel.addFolder(groupId, it)
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    it, Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {}
         }
     }
 

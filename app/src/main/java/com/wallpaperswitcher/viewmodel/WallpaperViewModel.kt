@@ -204,70 +204,35 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         addFolderJob = viewModelScope.launch {
             try {
                 _toastMessage.emit("正在扫描文件夹...")
-                _scanProgress.value = "扫描中..."
                 var total = 0
-
                 withContext(Dispatchers.IO) {
-                    val context = getApplication<Application>()
-                    val docFile = try {
-                        androidx.documentfile.provider.DocumentFile.fromTreeUri(context, folderUri)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "fromTreeUri failed", e)
-                        null
-                    }
-
-                    if (docFile == null || !docFile.isDirectory) {
-                        _scanProgress.value = ""
-                        return@withContext
-                    }
-
+                    val docFile = androidx.documentfile.provider.DocumentFile
+                        .fromTreeUri(getApplication(), folderUri) ?: return@withContext
+                    if (!docFile.isDirectory) return@withContext
                     val batch = mutableListOf<WallpaperImage>()
-
-                    try {
-                        val files = docFile.listFiles()
-                        val totalFiles = files.size
-                        var processed = 0
-
-                        for (file in files) {
-                            if (!isActive) return@withContext
-                            processed++
-
-                            try {
-                                if (!file.isFile) continue
-                                val name = file.name ?: continue
-                                if (!isSupportedMedia(name)) continue
-
-                                batch.add(WallpaperImage(
-                                    groupId = groupId,
-                                    uri = file.uri.toString(),
-                                    displayName = name,
-                                    mediaType = detectMediaType(name),
-                                    isFromFolder = true,
-                                    folderPath = folderUri.toString()
-                                ))
-
-                                if (batch.size >= 200) {
-                                    imageDao.insertAll(batch.toList())
-                                    total += batch.size
-                                    batch.clear()
-                                    if (totalFiles > 0) {
-                                        _scanProgress.value = "已导入 $total/$totalFiles"
-                                    }
-                                }
-                            } catch (_: Exception) { continue }
+                    docFile.listFiles().forEach { file ->
+                        if (!isActive) return@withContext
+                        if (file.isFile && isSupportedMedia(file.name ?: "")) {
+                            batch.add(WallpaperImage(
+                                groupId = groupId,
+                                uri = file.uri.toString(),
+                                displayName = file.name ?: "untitled",
+                                mediaType = detectMediaType(file.name ?: ""),
+                                isFromFolder = true,
+                                folderPath = folderUri.toString()
+                            ))
+                            if (batch.size >= 100) {
+                                imageDao.insertAll(batch.toList())
+                                total += batch.size
+                                batch.clear()
+                            }
                         }
-
-                        if (batch.isNotEmpty() && isActive) {
-                            imageDao.insertAll(batch)
-                            total += batch.size
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "listFiles failed", e)
                     }
-
-                    _scanProgress.value = ""
+                    if (batch.isNotEmpty() && isActive) {
+                        imageDao.insertAll(batch)
+                        total += batch.size
+                    }
                 }
-
                 if (total > 0) {
                     refreshCount(groupId)
                     _toastMessage.emit("已添加 $total 张图片")
@@ -279,7 +244,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                     Log.e(TAG, "addFolder failed", e)
                     _toastMessage.emit("导入失败: ${e.message}")
                 }
-                _scanProgress.value = ""
             }
         }
     }
