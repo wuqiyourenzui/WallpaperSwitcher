@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import coil.decode.VideoFrameDecoder
 import com.wallpaperswitcher.data.*
 import com.wallpaperswitcher.viewmodel.ScannedFolder
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
@@ -371,6 +372,26 @@ private fun ImageGridItem(
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()
         )
+
+        // Media type indicator for video/GIF
+        if (image.mediaType == "VIDEO" || image.mediaType == "GIF") {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(6.dp)
+                    .size(24.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.8f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    if (image.mediaType == "VIDEO") Icons.Filled.Videocam else Icons.Filled.Gif,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        }
 
         // 选择指示器
         if (selectionMode) {
