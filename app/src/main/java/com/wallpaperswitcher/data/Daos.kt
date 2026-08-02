@@ -112,8 +112,6 @@ interface WallpaperImageDao {
 
     @Query("DELETE FROM wallpaper_images WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)
-}
-
 
     // --- Enabled-groups queries (for cross-group wallpaper switching) ---
 
@@ -137,6 +135,7 @@ interface WallpaperImageDao {
         WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
     """)
     suspend fun countByEnabledGroups(): Int
+}
 
 @Dao
 interface SettingsDao {
