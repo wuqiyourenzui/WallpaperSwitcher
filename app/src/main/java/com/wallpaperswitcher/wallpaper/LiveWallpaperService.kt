@@ -15,22 +15,9 @@ import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.WindowManager
-import com.wallpaperswitcher.data.AppDatabase
-import com.wallpaperswitcher.data.SettingsKeys
-import com.wallpaperswitcher.data.getBool
-import com.wallpaperswitcher.data.getLong
-import com.wallpaperswitcher.data.setLong
+import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.*
 
-/**
- * Live Wallpaper Service.
- *
- * Architecture:
- * - Draws images directly on the surface (no WallpaperManager dependency)
- * - Double-tap detection via GestureDetector on the Engine
- * - Listens for ACTION_SWITCH broadcast from timed service / unlock receiver
- * - Single source of truth: database stores current image index per group
- */
 class LiveWallpaperService : WallpaperService() {
 
     companion object {
@@ -52,9 +39,7 @@ class LiveWallpaperService : WallpaperService() {
 
         private val switchReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                if (intent.action == ACTION_SWITCH) {
-                    doSwitch("broadcast")
-                }
+                if (intent.action == ACTION_SWITCH) doSwitch("broadcast")
             }
         }
 
@@ -72,14 +57,9 @@ class LiveWallpaperService : WallpaperService() {
             super.onCreate(surfaceHolder)
             db = AppDatabase.getInstance(applicationContext)
             setTouchEventsEnabled(true)
-
-            // Register switch broadcast receiver
-            val filter = IntentFilter(ACTION_SWITCH)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                applicationContext.registerReceiver(switchReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-            } else {
-                applicationContext.registerReceiver(switchReceiver, filter)
-            }
+            try {
+                applicationContext.registerReceiver(switchReceiver, IntentFilter(ACTION_SWITCH))
+            } catch (_: Exception) {}
         }
 
         override fun onSurfaceCreated(holder: SurfaceHolder?) {
@@ -106,17 +86,14 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         override fun onDestroy() {
-            try {
-                applicationContext.unregisterReceiver(switchReceiver)
-            } catch (_: Exception) {}
-            currentBitmap?.recycle()
-            currentBitmap = null
+            try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
+            currentBitmap?.recycle(); currentBitmap = null
             scope.cancel()
             super.onDestroy()
         }
 
         /**
-         * Core switch logic: load next image from DB, draw on surface.
+         * Switch to next image per group settings.
          */
         private fun doSwitch(source: String) {
             if (isSwitching) return
@@ -125,82 +102,69 @@ class LiveWallpaperService : WallpaperService() {
                 try {
                     val dao = db.settingsDao()
                     val imageDao = db.wallpaperImageDao()
+                    val groupDao = db.wallpaperGroupDao()
 
-                    // Get enabled groups
-                    val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
-                    if (groups.isEmpty()) {
-                        Log.w(TAG, "No enabled groups")
-                        isSwitching = false
-                        return@launch
-                    }
+                    val groups = groupDao.getEnabledGroupsSync()
+                    if (groups.isEmpty()) { isSwitching = false; return@launch }
 
-                    // Pick primary group
                     val group = groups.first()
-                    val images = imageDao.getImagesByGroupSync(group.id)
-                    if (images.isEmpty()) {
-                        Log.w(TAG, "No images in group")
-                        isSwitching = false
-                        return@launch
+                    val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
+
+                    val nextImage = when (group.switchMode) {
+                        SwitchMode.RANDOM -> {
+                            imageDao.getRandomImageFromGroupExcluding(group.id, lastId)
+                                ?: imageDao.getRandomImageFromGroup(group.id)
+                        }
+                        SwitchMode.SEQUENTIAL -> {
+                            val count = imageDao.countByGroup(group.id)
+                            if (count == 0) null
+                            else {
+                                val idx = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
+                                val next = (idx + 1) % count
+                                dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, next.toLong())
+                                imageDao.getSequentialImageFromGroup(group.id, next)
+                            }
+                        }
+                        SwitchMode.SHUFFLE -> {
+                            imageDao.getRandomImageFromGroupExcluding(group.id, lastId)
+                                ?: imageDao.getRandomImageFromGroup(group.id)
+                        }
                     }
 
-                    // Get current index and advance
-                    val currentIndex = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
-                    val nextIndex = (currentIndex + 1) % images.size
-                    dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, nextIndex.toLong())
+                    if (nextImage == null) { isSwitching = false; return@launch }
 
-                    val nextImage = images[nextIndex]
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
 
-                    // Decode and draw
                     val bitmap = loadBitmap(nextImage.uri)
                     if (bitmap != null) {
-                        mainHandler.post {
-                            showBitmap(bitmap)
-                        }
-                        Log.d(TAG, "$source switch OK: ${nextImage.displayName} (${nextIndex + 1}/${images.size})")
-                    } else {
-                        Log.e(TAG, "$source switch failed: decode error")
+                        mainHandler.post { showBitmap(bitmap) }
+                        Log.d(TAG, "$source: ${nextImage.displayName}")
                     }
                 } catch (e: Exception) {
-                    Log.e(TAG, "$source switch error", e)
+                    Log.e(TAG, "$source error", e)
                 } finally {
                     isSwitching = false
                 }
             }
         }
 
-        /**
-         * Draw the current image (from LAST_IMAGE_ID) on the surface.
-         */
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
             scope.launch {
                 try {
                     val imageId = db.settingsDao().getLong(SettingsKeys.LAST_IMAGE_ID)
                     val image = if (imageId > 0) db.wallpaperImageDao().getImageById(imageId) else null
-
                     if (image != null) {
                         val bitmap = loadBitmap(image.uri)
-                        if (bitmap != null) {
-                            mainHandler.post { showBitmap(bitmap) }
-                            return@launch
-                        }
+                        if (bitmap != null) { mainHandler.post { showBitmap(bitmap) }; return@launch }
                     }
-
-                    // Fallback: load first image from first group
-                    val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
-                    if (groups.isNotEmpty()) {
-                        val images = db.wallpaperImageDao().getImagesByGroupSync(groups.first().id)
-                        if (images.isNotEmpty()) {
-                            val bitmap = loadBitmap(images[0].uri)
-                            if (bitmap != null) {
-                                db.settingsDao().setLong(SettingsKeys.LAST_IMAGE_ID, images[0].id)
-                                mainHandler.post { showBitmap(bitmap) }
-                                return@launch
-                            }
-                        }
+                    // Fallback
+                    val first = db.wallpaperImageDao().getRandomImage()
+                    if (first != null) {
+                        db.settingsDao().setLong(SettingsKeys.LAST_IMAGE_ID, first.id)
+                        val bitmap = loadBitmap(first.uri)
+                        if (bitmap != null) { mainHandler.post { showBitmap(bitmap) }; return@launch }
                     }
-
                     mainHandler.post { showDefault() }
                 } catch (e: Exception) {
                     Log.e(TAG, "drawCurrentImage error", e)
@@ -212,27 +176,19 @@ class LiveWallpaperService : WallpaperService() {
         private fun showBitmap(bitmap: Bitmap) {
             if (!surfaceReady) return
             try {
-                currentBitmap?.recycle()
-                currentBitmap = bitmap
-
+                currentBitmap?.recycle(); currentBitmap = bitmap
                 val canvas = surfaceHolder.lockCanvas() ?: return
                 canvas.drawColor(Color.BLACK)
                 val m = getMetrics()
-                val sw = m.widthPixels.toFloat()
-                val sh = m.heightPixels.toFloat()
+                val sw = m.widthPixels.toFloat(); val sh = m.heightPixels.toFloat()
                 val ratio = bitmap.width.toFloat() / bitmap.height.toFloat()
                 val sr = sw / sh
-                val dw: Float
-                val dh: Float
-                if (ratio > sr) { dh = sh; dw = dh * ratio }
-                else { dw = sw; dh = dw / ratio }
-                val l = (sw - dw) / 2f
-                val t = (sh - dh) / 2f
+                val dw: Float; val dh: Float
+                if (ratio > sr) { dh = sh; dw = dh * ratio } else { dw = sw; dh = dw / ratio }
+                val l = (sw - dw) / 2f; val t = (sh - dh) / 2f
                 canvas.drawBitmap(bitmap, null, RectF(l, t, l + dw, t + dh), null)
                 surfaceHolder.unlockCanvasAndPost(canvas)
-            } catch (e: Exception) {
-                Log.e(TAG, "showBitmap error", e)
-            }
+            } catch (e: Exception) { Log.e(TAG, "showBitmap error", e) }
         }
 
         private fun showDefault() {
@@ -240,9 +196,7 @@ class LiveWallpaperService : WallpaperService() {
             try {
                 val canvas = surfaceHolder.lockCanvas() ?: return
                 canvas.drawColor(Color.DKGRAY)
-                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.WHITE; textSize = 48f; textAlign = Paint.Align.CENTER
-                }
+                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; textSize = 48f; textAlign = Paint.Align.CENTER }
                 val m = getMetrics()
                 canvas.drawText("Wallpaper Switcher", m.widthPixels / 2f, m.heightPixels / 2f, p)
                 surfaceHolder.unlockCanvasAndPost(canvas)
@@ -255,6 +209,7 @@ class LiveWallpaperService : WallpaperService() {
                 val m = getMetrics()
                 val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 contentResolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+                if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
                 var s = 1
                 while (opts.outWidth / s > m.widthPixels * 2 || opts.outHeight / s > m.heightPixels * 2) s *= 2
                 contentResolver.openInputStream(uri)?.use {
