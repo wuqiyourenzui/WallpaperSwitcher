@@ -244,33 +244,180 @@ class LiveWallpaperService : WallpaperService() {
         private fun playVideo(uriStr: String, scaleMode: ScaleMode = ScaleMode.FIT) {
             releaseVideo()
             stopGif()
-            if (!surfaceReady) {
-                Log.w(TAG, "playVideo: surface not ready")
-                return
-            }
+            if (!surfaceReady) return
 
-            lastVideoUri = uriStr
-            currentMediaType = "VIDEO"
-            currentScaleMode = scaleMode
             val uri = Uri.parse(uriStr)
             Log.d(TAG, "playVideo: $uriStr")
 
-            // Step 1: Show first frame immediately
+            // Show first frame immediately, then try continuous playback
             scope.launch {
+                // Always show first frame as fallback
                 val firstFrame = extractFirstFrame(uri)
                 if (firstFrame != null) {
-                    Log.d(TAG, "First frame extracted: ${firstFrame.width}x${firstFrame.height}")
                     mainHandler.post { showBitmap(firstFrame, scaleMode) }
-                } else {
-                    Log.w(TAG, "First frame extraction failed")
                 }
 
-                // Step 2: Start MediaPlayer
-                mainHandler.post { startVideoPlayback(uri) }
+                // Try MediaPlayer first (works on most devices)
+                val mpWorks = tryMediaPlayer(uri, scaleMode)
+                if (!mpWorks) {
+                    Log.d(TAG, "MediaPlayer failed, trying MediaCodec")
+                    // Fallback: use MediaCodec to decode frames
+                    tryMediaCodec(uri, scaleMode)
+                }
             }
         }
 
-        private fun startVideoPlayback(uri: Uri) {
+        private fun tryMediaPlayer(uri: Uri, scaleMode: ScaleMode): Boolean {
+            return try {
+                val surface = surfaceHolder?.surface ?: return false
+                val pfd = contentResolver.openFileDescriptor(uri, "r") ?: return false
+
+                mediaPlayer = MediaPlayer().apply {
+                    setDataSource(pfd.fileDescriptor)
+                    pfd.close()
+                    setSurface(surface)
+                    isLooping = true
+
+                    setOnPreparedListener { mp ->
+                        mp.start()
+                        videoPlaying = true
+                        Log.d(TAG, "MediaPlayer OK: ${mp.videoWidth}x${mp.videoHeight}")
+                    }
+                    setOnErrorListener { _, what, extra ->
+                        Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
+                        videoPlaying = false
+                        false
+                    }
+                    prepare()
+                    start()
+                    videoPlaying = true
+                }
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "tryMediaPlayer failed: ${e.message}")
+                false
+            }
+        }
+
+        private fun tryMediaCodec(uri: Uri, scaleMode: ScaleMode) {
+            try {
+                val extractor = android.media.MediaExtractor()
+                extractor.setDataSource(applicationContext, uri, null)
+
+                var trackIndex = -1
+                var mime = ""
+                for (i in 0 until extractor.trackCount) {
+                    val format = extractor.getTrackFormat(i)
+                    val m = format.getString(android.media.MediaFormat.KEY_MIME) ?: continue
+                    if (m.startsWith("video/")) {
+                        trackIndex = i
+                        mime = m
+                        break
+                    }
+                }
+
+                if (trackIndex < 0) {
+                    Log.e(TAG, "No video track found")
+                    return
+                }
+
+                extractor.selectTrack(trackIndex)
+                val format = extractor.getTrackFormat(trackIndex)
+                val width = format.getInteger(android.media.MediaFormat.KEY_WIDTH)
+                val height = format.getInteger(android.media.MediaFormat.KEY_HEIGHT)
+                val fps = format.getIntegerOrDefault(android.media.MediaFormat.KEY_FRAME_RATE, 30)
+                Log.d(TAG, "MediaCodec: ${width}x${height} $fps fps $mime")
+
+                val codec = android.media.MediaCodec.createDecoderByType(mime)
+                codec.configure(format, null, null, 0)
+                codec.start()
+
+                val bufferInfo = android.media.MediaCodec.BufferInfo()
+                var startTimeNs = System.nanoTime()
+                var isDecoding = true
+
+                // Decode loop on background thread
+                scope.launch {
+                    while (isDecoding && surfaceReady) {
+                        if (!isVisible) { delay(100); continue }
+
+                        // Feed input
+                        val inputIndex = codec.dequeueInputBuffer(10000L)
+                        if (inputIndex >= 0) {
+                            val inputBuffer = codec.getInputBuffer(inputIndex) ?: continue
+                            val sampleSize = extractor.readSampleData(inputBuffer, 0)
+                            if (sampleSize < 0) {
+                                extractor.seekTo(0, android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                                startTimeNs = System.nanoTime()
+                                codec.queueInputBuffer(inputIndex, 0, 0, 0, android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            } else {
+                                codec.queueInputBuffer(inputIndex, 0, sampleSize, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
+
+                        // Get output
+                        val outputIndex = codec.dequeueOutputBuffer(bufferInfo, 10000L)
+                        if (outputIndex >= 0) {
+                            val outputBuffer = codec.getOutputBuffer(outputIndex)
+                            if (outputBuffer != null) {
+                                val bitmap = yuvToBitmap(outputBuffer, format, width, height)
+                                if (bitmap != null) {
+                                    mainHandler.post { showBitmap(bitmap, scaleMode) }
+                                }
+                            }
+                            codec.releaseOutputBuffer(outputIndex, false)
+
+                            // Frame timing
+                            val elapsedNs = System.nanoTime() - startTimeNs
+                            val targetNs = bufferInfo.presentationTimeUs * 1000
+                            val sleepMs = ((targetNs - elapsedNs) / 1_000_000).coerceIn(0, 100)
+                            if (sleepMs > 0) delay(sleepMs)
+                        } else if (outputIndex == android.media.MediaCodec.INFO_TRY_AGAIN_LATER) {
+                            delay(5)
+                        }
+
+                        // End of stream
+                        if (bufferInfo.flags and android.media.MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            extractor.seekTo(0, android.media.MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                            startTimeNs = System.nanoTime()
+                        }
+                    }
+                    codec.stop()
+                    codec.release()
+                    extractor.release()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "tryMediaCodec failed: ${e.message}")
+            }
+        }
+
+        private fun yuvToBitmap(buffer: java.nio.ByteBuffer, format: android.media.MediaFormat, width: Int, height: Int): Bitmap? {
+            return try {
+                val colorFormat = format.getIntegerOrDefault(android.media.MediaFormat.KEY_COLOR_FORMAT,
+                    android.media.MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar)
+
+                val yuv = ByteArray(buffer.remaining())
+                buffer.get(yuv)
+
+                // Use YuvImage (built-in Android class) for reliable conversion
+                val yuvImage = android.graphics.YuvImage(yuv, android.graphics.ImageFormat.NV21, width, height, null)
+                val out = java.io.ByteArrayOutputStream()
+                yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 90, out)
+                val bytes = out.toByteArray()
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            } catch (e: Exception) {
+                Log.e(TAG, "yuvToBitmap error: ${e.message}")
+                null
+            }
+        }
+
+        private fun android.media.MediaFormat.getIntegerOrDefault(key: String, default: Int): Int {
+            return if (containsKey(key)) getInteger(key) else default
+        }
+
+        // startVideoPlayback replaced by tryMediaPlayer + tryMediaCodec
+        private fun startVideoPlayback_unused(uri: Uri) {
             try {
                 val surface = surfaceHolder?.surface
                 if (surface == null || !surface.isValid) {
