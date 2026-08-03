@@ -93,6 +93,7 @@ class WallpaperEngine(private val context: Context) {
                 }
                 else -> decoded
             }
+            } // fd.use
         } catch (e: Exception) {
             Log.e(TAG, "decodeAndScale failed", e)
             null
