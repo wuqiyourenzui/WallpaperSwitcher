@@ -355,35 +355,37 @@ class LiveWallpaperService : WallpaperService() {
                     val width = format.getInteger(MediaFormat.KEY_WIDTH)
                     val height = format.getInteger(MediaFormat.KEY_HEIGHT)
                     val fps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30)
-                    val frameMs = (1000L / fps).coerceIn(16, 100)
+                    val frameDurationUs = 1_000_000L / fps // Microseconds per frame
 
                     val codec = MediaCodec.createDecoderByType(mime)
                     codec.configure(format, null, null, 0)
                     codec.start()
 
                     val info = MediaCodec.BufferInfo()
-                    var startTimeNs = System.nanoTime()
+                    var lastPtsUs = -1L // Track previous PTS for delta timing
+                    var loopBaseUs = 0L  // Accumulated time from previous loops
                     videoPlaying = true
 
                     videoStopFlag = false
                     while (isActive && surfaceReady && !videoStopFlag) {
-                        // Check stop flag at start of each iteration for immediate switch
                         if (videoStopFlag) break
 
-                        // When not visible, stop decoding entirely to save power
                         if (!isVisible) {
                             videoPlaying = false
                             codec.stop(); codec.release(); extractor.release()
                             return@launch
                         }
 
+                        // Feed input
                         val inputIdx = codec.dequeueInputBuffer(10000L)
                         if (inputIdx >= 0) {
                             val buf = codec.getInputBuffer(inputIdx) ?: continue
                             val size = extractor.readSampleData(buf, 0)
                             if (size < 0) {
-                                // End of stream - loop back to start
+                                // End of stream - loop
                                 extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                                loopBaseUs += lastPtsUs + frameDurationUs // Accumulate loop time
+                                lastPtsUs = -1L
                                 codec.queueInputBuffer(inputIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             } else {
                                 codec.queueInputBuffer(inputIdx, 0, size, extractor.sampleTime, 0)
@@ -391,18 +393,16 @@ class LiveWallpaperService : WallpaperService() {
                             }
                         }
 
+                        // Drain output
                         val outputIdx = codec.dequeueOutputBuffer(info, 10000L)
                         if (outputIdx >= 0) {
-                            val isEndOfStream = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-
-                            if (isEndOfStream) {
-                                // Loop: flush codec and reset timing
+                            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                                 codec.releaseOutputBuffer(outputIdx, false)
                                 codec.flush()
-                                startTimeNs = System.nanoTime() // Reset timing for next loop
                                 continue
                             }
 
+                            // Render frame
                             val outBuf = codec.getOutputBuffer(outputIdx)
                             if (outBuf != null && isActive && isVisible) {
                                 val bmp = yuvToBitmap(outBuf, width, height)
@@ -412,13 +412,16 @@ class LiveWallpaperService : WallpaperService() {
                             }
                             codec.releaseOutputBuffer(outputIdx, false)
 
-                            // Frame pacing: use presentation timestamp for accurate timing
-                            val elapsed = (System.nanoTime() - startTimeNs) / 1_000_000
-                            val target = info.presentationTimeUs / 1000
-                            val sleep = (target - elapsed).coerceIn(0, frameMs * 2)
-                            if (sleep > 0) delay(sleep)
+                            // PTS-based frame pacing (standard approach)
+                            val currentPtsUs = info.presentationTimeUs
+                            if (lastPtsUs >= 0) {
+                                val deltaUs = currentPtsUs - lastPtsUs
+                                if (deltaUs > 0 && deltaUs < 1_000_000) { // Sanity check: < 1 second
+                                    delay(deltaUs / 1000) // Convert to ms
+                                }
+                            }
+                            lastPtsUs = currentPtsUs
                         } else {
-                            // No output available, yield briefly to avoid busy loop
                             delay(1)
                         }
                     }
