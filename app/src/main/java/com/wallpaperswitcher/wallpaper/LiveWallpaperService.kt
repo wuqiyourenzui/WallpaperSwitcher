@@ -335,7 +335,7 @@ class LiveWallpaperService : WallpaperService() {
             videoStopFlag = false
             mediaCodecJob = scope.launch {
                 // Loop by re-creating decoder each time (avoids codec.flush PTS issues)
-                while (isActive && surfaceReady && !videoStopFlag && isVisible) {
+                while (coroutineContext.isActive && surfaceReady && !videoStopFlag && isVisible) {
                     playVideoOnce(uriStr, scaleMode)
                 }
                 videoPlaying = false
@@ -381,7 +381,7 @@ class LiveWallpaperService : WallpaperService() {
                 var lastPtsUs = -1L
                 var inputDone = false
 
-                while (isActive && surfaceReady && !videoStopFlag && isVisible) {
+                while (coroutineContext.isActive && surfaceReady && !videoStopFlag && isVisible) {
                     // Feed input
                     if (!inputDone) {
                         val inputIdx = codec.dequeueInputBuffer(10000L)
@@ -407,7 +407,7 @@ class LiveWallpaperService : WallpaperService() {
                         }
 
                         val outBuf = codec.getOutputBuffer(outputIdx)
-                        if (outBuf != null && isActive && isVisible) {
+                        if (outBuf != null && coroutineContext.isActive && isVisible) {
                             val bmp = yuvToBitmap(outBuf, width, height)
                             if (bmp != null) {
                                 mainHandler.post { showBitmap(bmp, scaleMode) }
