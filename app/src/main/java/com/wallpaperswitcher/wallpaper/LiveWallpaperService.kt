@@ -331,106 +331,109 @@ class LiveWallpaperService : WallpaperService() {
         // ======== Video via MediaCodec ========
 
         private fun startVideoDecoder(uriStr: String, scaleMode: ScaleMode) {
-            val uri = Uri.parse(uriStr)
+            videoPlaying = true
+            videoStopFlag = false
             mediaCodecJob = scope.launch {
-                try {
-                    val extractor = MediaExtractor()
-                    extractor.setDataSource(applicationContext, uri, null)
+                // Loop by re-creating decoder each time (avoids codec.flush PTS issues)
+                while (isActive && surfaceReady && !videoStopFlag && isVisible) {
+                    playVideoOnce(uriStr, scaleMode)
+                }
+                videoPlaying = false
+            }
+        }
 
-                    var trackIndex = -1
-                    var mime = ""
-                    for (i in 0 until extractor.trackCount) {
-                        val format = extractor.getTrackFormat(i)
-                        val m = format.getString(MediaFormat.KEY_MIME) ?: continue
-                        if (m.startsWith("video/")) {
-                            trackIndex = i
-                            mime = m
-                            break
-                        }
+        /**
+         * Play video once. Returns when video ends or is stopped.
+         * Caller loops by calling again.
+         */
+        private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode) {
+            var extractor: MediaExtractor? = null
+            var codec: MediaCodec? = null
+            try {
+                val uri = Uri.parse(uriStr)
+                extractor = MediaExtractor()
+                extractor.setDataSource(applicationContext, uri, null)
+
+                var trackIndex = -1
+                var mime = ""
+                for (i in 0 until extractor.trackCount) {
+                    val format = extractor.getTrackFormat(i)
+                    val m = format.getString(MediaFormat.KEY_MIME) ?: continue
+                    if (m.startsWith("video/")) {
+                        trackIndex = i
+                        mime = m
+                        break
                     }
+                }
+                if (trackIndex < 0) return
 
-                    if (trackIndex < 0) { videoPlaying = false; return@launch }
-                    extractor.selectTrack(trackIndex)
-                    val format = extractor.getTrackFormat(trackIndex)
-                    val width = format.getInteger(MediaFormat.KEY_WIDTH)
-                    val height = format.getInteger(MediaFormat.KEY_HEIGHT)
-                    val fps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30)
-                    val frameDurationUs = 1_000_000L / fps // Microseconds per frame
+                extractor.selectTrack(trackIndex)
+                val format = extractor.getTrackFormat(trackIndex)
+                val width = format.getInteger(MediaFormat.KEY_WIDTH)
+                val height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                val fps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30)
 
-                    val codec = MediaCodec.createDecoderByType(mime)
-                    codec.configure(format, null, null, 0)
-                    codec.start()
+                codec = MediaCodec.createDecoderByType(mime)
+                codec.configure(format, null, null, 0)
+                codec.start()
 
-                    val info = MediaCodec.BufferInfo()
-                    var lastPtsUs = -1L // Track previous PTS for delta timing
-                    var loopBaseUs = 0L  // Accumulated time from previous loops
-                    videoPlaying = true
+                val info = MediaCodec.BufferInfo()
+                var lastPtsUs = -1L
+                var inputDone = false
 
-                    videoStopFlag = false
-                    while (isActive && surfaceReady && !videoStopFlag) {
-                        if (videoStopFlag) break
-
-                        if (!isVisible) {
-                            videoPlaying = false
-                            codec.stop(); codec.release(); extractor.release()
-                            return@launch
-                        }
-
-                        // Feed input
+                while (isActive && surfaceReady && !videoStopFlag && isVisible) {
+                    // Feed input
+                    if (!inputDone) {
                         val inputIdx = codec.dequeueInputBuffer(10000L)
                         if (inputIdx >= 0) {
                             val buf = codec.getInputBuffer(inputIdx) ?: continue
                             val size = extractor.readSampleData(buf, 0)
                             if (size < 0) {
-                                // End of stream - loop
-                                extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                                loopBaseUs += lastPtsUs + frameDurationUs // Accumulate loop time
-                                lastPtsUs = -1L
                                 codec.queueInputBuffer(inputIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
                             } else {
                                 codec.queueInputBuffer(inputIdx, 0, size, extractor.sampleTime, 0)
                                 extractor.advance()
                             }
                         }
-
-                        // Drain output
-                        val outputIdx = codec.dequeueOutputBuffer(info, 10000L)
-                        if (outputIdx >= 0) {
-                            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                                codec.releaseOutputBuffer(outputIdx, false)
-                                codec.flush()
-                                continue
-                            }
-
-                            // Render frame
-                            val outBuf = codec.getOutputBuffer(outputIdx)
-                            if (outBuf != null && isActive && isVisible) {
-                                val bmp = yuvToBitmap(outBuf, width, height)
-                                if (bmp != null && isActive) {
-                                    mainHandler.post { showBitmap(bmp, scaleMode) }
-                                }
-                            }
-                            codec.releaseOutputBuffer(outputIdx, false)
-
-                            // PTS-based frame pacing (standard approach)
-                            val currentPtsUs = info.presentationTimeUs
-                            if (lastPtsUs >= 0) {
-                                val deltaUs = currentPtsUs - lastPtsUs
-                                if (deltaUs > 0 && deltaUs < 1_000_000) { // Sanity check: < 1 second
-                                    delay(deltaUs / 1000) // Convert to ms
-                                }
-                            }
-                            lastPtsUs = currentPtsUs
-                        } else {
-                            delay(1)
-                        }
                     }
 
-                    codec.stop(); codec.release(); extractor.release()
-                } catch (e: Exception) {
-                    Log.e(TAG, "MediaCodec error: " + e.message)
+                    // Drain output
+                    val outputIdx = codec.dequeueOutputBuffer(info, 10000L)
+                    if (outputIdx >= 0) {
+                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            codec.releaseOutputBuffer(outputIdx, false)
+                            return // Video done, return to caller for loop
+                        }
+
+                        val outBuf = codec.getOutputBuffer(outputIdx)
+                        if (outBuf != null && isActive && isVisible) {
+                            val bmp = yuvToBitmap(outBuf, width, height)
+                            if (bmp != null) {
+                                mainHandler.post { showBitmap(bmp, scaleMode) }
+                            }
+                        }
+                        codec.releaseOutputBuffer(outputIdx, false)
+
+                        // PTS-based frame pacing
+                        val currentPtsUs = info.presentationTimeUs
+                        if (lastPtsUs >= 0) {
+                            val deltaUs = currentPtsUs - lastPtsUs
+                            if (deltaUs in 1 until 1_000_000) {
+                                delay(deltaUs / 1000)
+                            }
+                        }
+                        lastPtsUs = currentPtsUs
+                    } else {
+                        delay(1)
+                    }
                 }
-                videoPlaying = false
+            } catch (e: Exception) {
+                Log.e(TAG, "playVideoOnce error: " + e.message)
+            } finally {
+                try { codec?.stop() } catch (_: Exception) {}
+                try { codec?.release() } catch (_: Exception) {}
+                try { extractor?.release() } catch (_: Exception) {}
             }
         }
 
