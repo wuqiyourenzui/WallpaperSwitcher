@@ -366,9 +366,9 @@ class LiveWallpaperService : WallpaperService() {
                     videoPlaying = true
 
                     videoStopFlag = false
+                    var loopCount = 0
                     while (isActive && surfaceReady && !videoStopFlag) {
                         // When not visible, stop decoding entirely to save power
-                        // Will restart via drawCurrentImage() when visible again
                         if (!isVisible) {
                             videoPlaying = false
                             codec.stop(); codec.release(); extractor.release()
@@ -380,7 +380,10 @@ class LiveWallpaperService : WallpaperService() {
                             val buf = codec.getInputBuffer(inputIdx) ?: continue
                             val size = extractor.readSampleData(buf, 0)
                             if (size < 0) {
+                                // End of stream - loop back to start
                                 extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                                loopCount++
+                                // Feed EOS to trigger codec flush
                                 codec.queueInputBuffer(inputIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             } else {
                                 codec.queueInputBuffer(inputIdx, 0, size, extractor.sampleTime, 0)
@@ -390,27 +393,30 @@ class LiveWallpaperService : WallpaperService() {
 
                         val outputIdx = codec.dequeueOutputBuffer(info, 10000L)
                         if (outputIdx >= 0) {
+                            val isEndOfStream = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+
+                            if (isEndOfStream) {
+                                // Release output, flush codec, reset timing
+                                codec.releaseOutputBuffer(outputIdx, false)
+                                codec.flush()
+                                // Reset start time for smooth loop timing
+                                continue
+                            }
+
                             val outBuf = codec.getOutputBuffer(outputIdx)
                             if (outBuf != null && isActive && isVisible) {
                                 val bmp = yuvToBitmap(outBuf, width, height)
                                 if (bmp != null && isActive) {
                                     mainHandler.post { showBitmap(bmp, scaleMode) }
                                 }
-                            } else if (outBuf != null) {
-                                // Skip rendering when not visible, but still advance the buffer
                             }
                             codec.releaseOutputBuffer(outputIdx, false)
 
+                            // Frame timing
                             val elapsed = (System.nanoTime() - startTimeNs) / 1_000_000
                             val target = info.presentationTimeUs / 1000
                             val sleep = (target - elapsed).coerceIn(0, frameMs * 2)
                             if (sleep > 0) delay(sleep)
-                        }
-
-                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            // Loop: seek back to start and flush codec
-                            extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                            codec.flush()
                         }
                     }
 
