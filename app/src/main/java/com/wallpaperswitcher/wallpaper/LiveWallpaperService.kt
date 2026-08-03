@@ -362,12 +362,14 @@ class LiveWallpaperService : WallpaperService() {
                     codec.start()
 
                     val info = MediaCodec.BufferInfo()
-                    val startTimeNs = System.nanoTime()
+                    var startTimeNs = System.nanoTime()
                     videoPlaying = true
 
                     videoStopFlag = false
-                    var loopCount = 0
                     while (isActive && surfaceReady && !videoStopFlag) {
+                        // Check stop flag at start of each iteration for immediate switch
+                        if (videoStopFlag) break
+
                         // When not visible, stop decoding entirely to save power
                         if (!isVisible) {
                             videoPlaying = false
@@ -382,8 +384,6 @@ class LiveWallpaperService : WallpaperService() {
                             if (size < 0) {
                                 // End of stream - loop back to start
                                 extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                                loopCount++
-                                // Feed EOS to trigger codec flush
                                 codec.queueInputBuffer(inputIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                             } else {
                                 codec.queueInputBuffer(inputIdx, 0, size, extractor.sampleTime, 0)
@@ -396,10 +396,10 @@ class LiveWallpaperService : WallpaperService() {
                             val isEndOfStream = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
 
                             if (isEndOfStream) {
-                                // Release output, flush codec, reset timing
+                                // Loop: flush codec and reset timing
                                 codec.releaseOutputBuffer(outputIdx, false)
                                 codec.flush()
-                                // Reset start time for smooth loop timing
+                                startTimeNs = System.nanoTime() // Reset timing for next loop
                                 continue
                             }
 
@@ -412,11 +412,14 @@ class LiveWallpaperService : WallpaperService() {
                             }
                             codec.releaseOutputBuffer(outputIdx, false)
 
-                            // Frame timing
+                            // Frame pacing: use presentation timestamp for accurate timing
                             val elapsed = (System.nanoTime() - startTimeNs) / 1_000_000
                             val target = info.presentationTimeUs / 1000
                             val sleep = (target - elapsed).coerceIn(0, frameMs * 2)
                             if (sleep > 0) delay(sleep)
+                        } else {
+                            // No output available, yield briefly to avoid busy loop
+                            delay(1)
                         }
                     }
 
