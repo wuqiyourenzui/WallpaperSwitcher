@@ -429,15 +429,15 @@ class LiveWallpaperService : WallpaperService() {
          * Play video once using SurfaceTexture + OpenGL (GPU accelerated).
          * Supports fill/fit/stretch scale modes.
          */
-        private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode) {
+        private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode): Boolean {
             lastVideoPtsUs = -1L
-            if (!surfaceReady) return
+            if (!surfaceReady) return false
 
             val m = getMetrics()
             val renderer = VideoRenderer(surfaceHolder.surface, m.widthPixels, m.heightPixels)
             if (!renderer.init()) {
                 renderer.release()
-                return
+                return false
             }
 
             var extractor: MediaExtractor? = null
@@ -458,7 +458,7 @@ class LiveWallpaperService : WallpaperService() {
                         break
                     }
                 }
-                if (trackIndex < 0) return
+                if (trackIndex < 0) { renderer.release(); return false }
 
                 extractor.selectTrack(trackIndex)
                 val format = extractor.getTrackFormat(trackIndex)
@@ -468,7 +468,7 @@ class LiveWallpaperService : WallpaperService() {
                 renderer.configureScale(width, height, scaleMode)
 
                 // MediaCodec outputs to SurfaceTexture's Surface
-                val inputSurface = renderer.surfaceTexture?.let { Surface(it) } ?: return
+                val inputSurface = renderer.surfaceTexture?.let { Surface(it) } ?: run { renderer.release(); return false }
                 codec = MediaCodec.createDecoderByType(mime)
                 codec.configure(format, inputSurface, null, 0)
                 codec.start()
@@ -496,7 +496,7 @@ class LiveWallpaperService : WallpaperService() {
                     if (outputIdx >= 0) {
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             codec.releaseOutputBuffer(outputIdx, false)
-                            return
+                            return true
                         }
                         // Render via OpenGL
                         codec.releaseOutputBuffer(outputIdx, true)
@@ -520,6 +520,7 @@ class LiveWallpaperService : WallpaperService() {
                 try { extractor?.release() } catch (_: Exception) {}
                 renderer.release()
             }
+            return false
         }
 
         // Reusable buffers for video decoding (avoids GC pressure)
