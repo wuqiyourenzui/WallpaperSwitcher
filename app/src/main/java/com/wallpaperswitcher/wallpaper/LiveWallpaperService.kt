@@ -336,7 +336,7 @@ class LiveWallpaperService : WallpaperService() {
                 val frameIntervalMs = 1000L / fps.coerceIn(15, 60)
 
                 // ImageReader to capture decoded frames as RGBA Bitmaps
-                imageReader = ImageReader.newInstance(width, height, ImageFormat.RGBA_8888, 2)
+                imageReader = ImageReader.newInstance(width, height, android.graphics.ImageFormat.RGBA_8888, 2)
 
                 codec = MediaCodec.createDecoderByType(mime)
                 codec.configure(format, imageReader.surface, null, 0)
