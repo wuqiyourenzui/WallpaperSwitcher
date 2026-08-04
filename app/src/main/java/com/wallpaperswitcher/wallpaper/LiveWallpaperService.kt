@@ -145,6 +145,9 @@ class LiveWallpaperService : WallpaperService() {
             videoStopFlag = true
             mediaCodecJob?.cancel()
             mediaCodecJob = null
+            // Release VideoRenderer to free SurfaceTexture (prevents Canvas conflict)
+            videoRenderer?.release()
+            videoRenderer = null
             gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
             gifFrameRunnable = null
             try { gifDrawable?.stop() } catch (_: Exception) {}
@@ -259,10 +262,9 @@ class LiveWallpaperService : WallpaperService() {
                         "VIDEO" -> {
                             val newUri = nextImage.uri
                             val scaleMode = currentScaleMode
-                            // Extract first frame for immediate display
+                            releaseAll() // Release old content first
+                            // Show first frame immediately, then start video
                             val firstFrame = extractFirstFrame(Uri.parse(newUri))
-                            // Release old content, show first frame, then start video
-                            releaseAll()
                             if (firstFrame != null) showBitmap(firstFrame, scaleMode)
                             startVideoDecoder(newUri, scaleMode)
                         }
@@ -273,9 +275,9 @@ class LiveWallpaperService : WallpaperService() {
                             playGif(newUri, scaleMode)
                         }
                         else -> {
-                            val bitmap = loadBitmap(nextImage.uri)
                             val scaleMode = currentScaleMode
-                            releaseAll()
+                            releaseAll() // Release video resources first
+                            val bitmap = loadBitmap(nextImage.uri)
                             if (bitmap != null) showBitmap(bitmap, scaleMode)
                         }
                     }
@@ -303,7 +305,7 @@ class LiveWallpaperService : WallpaperService() {
                     if (image != null) {
                         when (image.mediaType ?: "IMAGE") {
                             "VIDEO" -> {
-                                mainHandler.post { startVideoDecoder(image.uri, currentScaleMode) }
+                                startVideoDecoder(image.uri, currentScaleMode)
                                 return@launch
                             }
                             "GIF" -> {
