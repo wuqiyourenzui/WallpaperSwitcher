@@ -141,6 +141,7 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun releaseVideo() {
             videoMode = false
+            videoPlaying = false
             try {
                 mediaPlayer?.let {
                     try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
@@ -194,18 +195,17 @@ class LiveWallpaperService : WallpaperService() {
 
                     when (mediaType) {
                         "VIDEO" -> {
-                            // Release everything, start video on Surface
                             releaseVideo()
                             pauseGif()
-                            delay(30)
+                            resetSurfaceForCanvas() // Clean Surface state
+                            delay(50)
                             startVideo(nextImage.uri)
                         }
                         else -> {
-                            // Release video, reset Surface to Canvas, draw image/GIF
                             releaseVideo()
                             pauseGif()
                             resetSurfaceForCanvas()
-                            delay(30)
+                            delay(50)
                             when (mediaType) {
                                 "GIF" -> mainHandler.post { playGif(nextImage.uri, currentScaleMode) }
                                 else -> {
@@ -278,7 +278,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
             if (isSwitching.get()) return
-            if (videoMode && mediaPlayer?.isPlaying == true) return
+            if (videoMode && mediaPlayer != null) return // Video active, don't interrupt
 
             scope.launch {
                 try {
@@ -312,6 +312,8 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun startVideo(uriStr: String) {
             Log.d(TAG, "startVideo: $uriStr")
+            // Ensure clean state
+            releaseVideo()
             try {
                 videoMode = true
                 val mp = MediaPlayer()
@@ -319,6 +321,9 @@ class LiveWallpaperService : WallpaperService() {
                 mp.setOnErrorListener { _, what, extra ->
                     Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
                     videoMode = false
+                    videoPlaying = false
+                    try { mp.release() } catch (_: Exception) {}
+                    mediaPlayer = null
                     false
                 }
 
@@ -327,14 +332,16 @@ class LiveWallpaperService : WallpaperService() {
                     try {
                         player.isLooping = true
                         player.start()
+                        videoPlaying = true
                     } catch (e: Exception) {
                         Log.e(TAG, "Video start failed: ${e.message}")
                     }
                 }
 
-                mp.setOnInfoListener { _, what, extra ->
+                mp.setOnInfoListener { _, what, _ ->
                     if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
                         Log.d(TAG, "Video first frame rendered")
+                        videoPlaying = true
                     }
                     false
                 }
@@ -347,6 +354,7 @@ class LiveWallpaperService : WallpaperService() {
             } catch (e: Exception) {
                 Log.e(TAG, "startVideo error: ${e.message}")
                 videoMode = false
+                videoPlaying = false
             }
         }
 
