@@ -49,7 +49,6 @@ class LiveWallpaperService : WallpaperService() {
         private var mediaCodecJob: Job? = null
         private var videoPlaying = false
         private var videoStopFlag = false
-        private var videoRenderer: VideoRenderer? = null
 
         // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
@@ -105,13 +104,10 @@ class LiveWallpaperService : WallpaperService() {
             drawCurrentImage()
         }
 
-        override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {
-            videoRenderer?.updateScreenSize(width, height)
-        }
+        override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {}
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
-            releaseVideoRenderer()
         }
 
         override fun onTouchEvent(event: MotionEvent) {
@@ -133,32 +129,9 @@ class LiveWallpaperService : WallpaperService() {
         override fun onDestroy() {
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
             releaseAll()
-            releaseVideoRenderer()
             currentBitmap?.recycle(); currentBitmap = null
             scope.cancel()
             super.onDestroy()
-        }
-
-        private fun initVideoRenderer(): VideoRenderer? {
-            if (videoRenderer != null) return videoRenderer
-            return try {
-                val m = getMetrics()
-                val renderer = VideoRenderer()
-                if (renderer.init(surfaceHolder.surface, m.widthPixels, m.heightPixels)) {
-                    videoRenderer = renderer
-                    renderer
-                } else {
-                    null
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "initVideoRenderer failed", e)
-                null
-            }
-        }
-
-        private fun releaseVideoRenderer() {
-            try { videoRenderer?.release() } catch (_: Exception) {}
-            videoRenderer = null
         }
 
         // ======== Media control ========
@@ -373,8 +346,15 @@ class LiveWallpaperService : WallpaperService() {
          */
         private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode) {
             lastVideoPtsUs = -1L
-            // Initialize renderer on IO thread (EGL must be on same thread as rendering)
-            val renderer = initVideoRenderer() ?: return
+            if (!surfaceReady) return
+
+            val m = getMetrics()
+            val renderer = VideoRenderer(surfaceHolder.surface, m.widthPixels, m.heightPixels)
+            if (!renderer.init()) {
+                renderer.release()
+                return
+            }
+
             var extractor: MediaExtractor? = null
             var codec: MediaCodec? = null
             try {
@@ -386,10 +366,10 @@ class LiveWallpaperService : WallpaperService() {
                 var mime = ""
                 for (i in 0 until extractor.trackCount) {
                     val format = extractor.getTrackFormat(i)
-                    val m = format.getString(MediaFormat.KEY_MIME) ?: continue
-                    if (m.startsWith("video/")) {
+                    val m2 = format.getString(MediaFormat.KEY_MIME) ?: continue
+                    if (m2.startsWith("video/")) {
                         trackIndex = i
-                        mime = m
+                        mime = m2
                         break
                     }
                 }
@@ -399,14 +379,11 @@ class LiveWallpaperService : WallpaperService() {
                 val format = extractor.getTrackFormat(trackIndex)
                 val width = format.getInteger(MediaFormat.KEY_WIDTH)
                 val height = format.getInteger(MediaFormat.KEY_HEIGHT)
-                val fps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30)
 
-                // Configure scale mode
-                renderer.setVideoSize(width, height, scaleMode)
+                renderer.configureScale(width, height, scaleMode)
 
-                // Get SurfaceTexture's Surface for MediaCodec output
-                val inputSurface = renderer.getInputSurface() ?: return
-
+                // MediaCodec outputs to SurfaceTexture's Surface
+                val inputSurface = renderer.surfaceTexture?.let { Surface(it) } ?: return
                 codec = MediaCodec.createDecoderByType(mime)
                 codec.configure(format, inputSurface, null, 0)
                 codec.start()
@@ -436,18 +413,14 @@ class LiveWallpaperService : WallpaperService() {
                             codec.releaseOutputBuffer(outputIdx, false)
                             return
                         }
+                        // Render via OpenGL
+                        codec.releaseOutputBuffer(outputIdx, true)
+                        renderer.drawFrame()
 
-                        // Release buffer and render via OpenGL
-                        codec.releaseOutputBuffer(outputIdx, true) // true = render to SurfaceTexture
-                        renderer.drawFrame() // OpenGL renders with scale mode
-
-                        // PTS-based frame pacing
                         val currentPtsUs = info.presentationTimeUs
                         if (lastVideoPtsUs >= 0) {
                             val deltaUs = currentPtsUs - lastVideoPtsUs
-                            if (deltaUs in 1 until 1_000_000) {
-                                delay(deltaUs / 1000)
-                            }
+                            if (deltaUs in 1 until 1_000_000) delay(deltaUs / 1000)
                         }
                         lastVideoPtsUs = currentPtsUs
                     } else {
@@ -460,6 +433,7 @@ class LiveWallpaperService : WallpaperService() {
                 try { codec?.stop() } catch (_: Exception) {}
                 try { codec?.release() } catch (_: Exception) {}
                 try { extractor?.release() } catch (_: Exception) {}
+                renderer.release()
             }
         }
 
