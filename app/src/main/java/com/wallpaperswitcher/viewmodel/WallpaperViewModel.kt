@@ -286,15 +286,48 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                // For images, set via WallpaperManager directly
-                if ((image.mediaType ?: "IMAGE") != "VIDEO") {
-                    val engine = com.wallpaperswitcher.engine.WallpaperEngine(getApplication())
-                    engine.setWallpaperForImage(image.uri)
-                }
-                // Update live wallpaper surface (works for both image and video)
+                // Update live wallpaper with this image
                 val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH)
                 switchIntent.setPackage(getApplication<Application>().packageName)
                 getApplication<Application>().sendBroadcast(switchIntent)
+                // Also set as system wallpaper via WallpaperManager
+                val engine = com.wallpaperswitcher.engine.WallpaperEngine(getApplication())
+                engine.setWallpaperForImage(image.uri)
+                _toastMessage.emit("壁纸已设置！")
+            } catch (e: Exception) {
+                _toastMessage.emit("设置失败: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Set image as live wallpaper (enables double-tap switching).
+     */
+    fun setAsLiveWallpaper(image: WallpaperImage) {
+        viewModelScope.launch {
+            try {
+                settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
+                // Trigger live wallpaper switch
+                val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH)
+                switchIntent.setPackage(getApplication<Application>().packageName)
+                getApplication<Application>().sendBroadcast(switchIntent)
+                // Launch live wallpaper picker to activate live wallpaper mode
+                try {
+                    val intent = android.content.Intent(android.app.WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
+                        putExtra(
+                            android.app.WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
+                            android.content.ComponentName(getApplication(), com.wallpaperswitcher.wallpaper.LiveWallpaperService::class.java)
+                        )
+                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    }
+                    getApplication<Application>().startActivity(intent)
+                } catch (_: Exception) {
+                    try {
+                        val intent = android.content.Intent(android.app.WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER)
+                        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        getApplication<Application>().startActivity(intent)
+                    } catch (_: Exception) {}
+                }
                 _toastMessage.emit("壁纸已设置！")
             } catch (e: Exception) {
                 _toastMessage.emit("设置失败: ${e.message}")

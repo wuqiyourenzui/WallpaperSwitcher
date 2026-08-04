@@ -254,7 +254,8 @@ fun GroupDetailScreen(
                             }
                         },
                         onDelete = { viewModel.deleteImage(image) },
-                        onSetWallpaper = { previewImage = image }
+                        onSetWallpaper = { previewImage = image },
+                        onSetLiveWallpaper = { viewModel.setAsLiveWallpaper(image) }
                     )
                 }
             }
@@ -375,7 +376,8 @@ private fun ImageGridItem(
     selectionMode: Boolean,
     onClick: () -> Unit,
     onDelete: () -> Unit,
-    onSetWallpaper: () -> Unit
+    onSetWallpaper: () -> Unit,
+    onSetLiveWallpaper: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -483,6 +485,11 @@ private fun ImageGridItem(
                         text = { Text("设为壁纸") },
                         onClick = { showMenu = false; onSetWallpaper() },
                         leadingIcon = { Icon(Icons.Filled.Wallpaper, null) }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("设为动态壁纸") },
+                        onClick = { showMenu = false; onSetLiveWallpaper() },
+                        leadingIcon = { Icon(Icons.Filled.LiveTv, null) }
                     )
                     DropdownMenuItem(
                         text = { Text("删除") },
