@@ -255,30 +255,24 @@ class LiveWallpaperService : WallpaperService() {
                         "VIDEO" -> {
                             val newUri = nextImage.uri
                             val scaleMode = currentScaleMode
-                            // Extract first frame before stopping old
+                            // Extract first frame for immediate display
                             val firstFrame = extractFirstFrame(Uri.parse(newUri))
-                            // Stop old content and show first frame immediately
-                            mainHandler.post {
-                                releaseAll()
-                                if (firstFrame != null) showBitmap(firstFrame, scaleMode)
-                                startVideoDecoder(newUri, scaleMode)
-                            }
+                            // Release old content, show first frame, then start video
+                            releaseAll()
+                            if (firstFrame != null) showBitmap(firstFrame, scaleMode)
+                            startVideoDecoder(newUri, scaleMode)
                         }
                         "GIF" -> {
                             val newUri = nextImage.uri
                             val scaleMode = currentScaleMode
-                            mainHandler.post {
-                                releaseAll()
-                                playGif(newUri, scaleMode)
-                            }
+                            releaseAll()
+                            playGif(newUri, scaleMode)
                         }
                         else -> {
                             val bitmap = loadBitmap(nextImage.uri)
                             val scaleMode = currentScaleMode
-                            mainHandler.post {
-                                releaseAll()
-                                if (bitmap != null) showBitmap(bitmap, scaleMode)
-                            }
+                            releaseAll()
+                            if (bitmap != null) showBitmap(bitmap, scaleMode)
                         }
                     }
                 } catch (e: Exception) {
@@ -335,8 +329,11 @@ class LiveWallpaperService : WallpaperService() {
             videoStopFlag = false
             lastVideoPtsUs = -1L
             mediaCodecJob = scope.launch {
-                // Loop by re-creating decoder each time (avoids codec.flush PTS issues)
-                while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag && isVisible) {
+                while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
+                    if (!isVisible) {
+                        delay(100)
+                        continue
+                    }
                     playVideoOnce(uriStr, scaleMode)
                 }
                 videoPlaying = false
@@ -344,17 +341,14 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         /**
-         * Play video once using Surface rendering (GPU direct, no YUV→Bitmap).
-         * Returns when video ends or is stopped.
+         * Play video once with Bitmap rendering (supports scale modes).
+         * Uses optimized YUV→Bitmap with buffer reuse.
          */
         private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode) {
-            lastVideoPtsUs = -1L // Reset for each playthrough
+            lastVideoPtsUs = -1L
             var extractor: MediaExtractor? = null
             var codec: MediaCodec? = null
             try {
-                if (!surfaceReady) return
-                val surface = surfaceHolder.surface
-
                 val uri = Uri.parse(uriStr)
                 extractor = MediaExtractor()
                 extractor.setDataSource(applicationContext, uri, null)
@@ -374,17 +368,18 @@ class LiveWallpaperService : WallpaperService() {
 
                 extractor.selectTrack(trackIndex)
                 val format = extractor.getTrackFormat(trackIndex)
+                val width = format.getInteger(MediaFormat.KEY_WIDTH)
+                val height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                val fps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30)
 
-                // Configure codec to render directly to Surface (GPU)
                 codec = MediaCodec.createDecoderByType(mime)
-                codec.configure(format, surface, null, 0)
+                codec.configure(format, null, null, 0)
                 codec.start()
 
                 val info = MediaCodec.BufferInfo()
                 var inputDone = false
 
                 while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag && isVisible) {
-                    // Feed input
                     if (!inputDone) {
                         val inputIdx = codec.dequeueInputBuffer(10000L)
                         if (inputIdx >= 0) {
@@ -400,7 +395,6 @@ class LiveWallpaperService : WallpaperService() {
                         }
                     }
 
-                    // Drain output - render directly to Surface
                     val outputIdx = codec.dequeueOutputBuffer(info, 10000L)
                     if (outputIdx >= 0) {
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
@@ -408,8 +402,14 @@ class LiveWallpaperService : WallpaperService() {
                             return
                         }
 
-                        // true = render to Surface (GPU direct, no CPU bitmap conversion)
-                        codec.releaseOutputBuffer(outputIdx, true)
+                        val outBuf = codec.getOutputBuffer(outputIdx)
+                        if (outBuf != null && surfaceReady && isVisible) {
+                            val bmp = yuvToBitmap(outBuf, width, height)
+                            if (bmp != null) {
+                                showBitmap(bmp, scaleMode)
+                            }
+                        }
+                        codec.releaseOutputBuffer(outputIdx, false)
 
                         // PTS-based frame pacing
                         val currentPtsUs = info.presentationTimeUs
@@ -442,7 +442,6 @@ class LiveWallpaperService : WallpaperService() {
             return try {
                 val frameSize = width * height
                 val neededSize = frameSize + frameSize / 2
-                // Reuse buffer
                 val yuv = yuvBuffer?.takeIf { it.size >= neededSize }
                     ?: ByteArray(neededSize).also { yuvBuffer = it }
 
@@ -456,12 +455,12 @@ class LiveWallpaperService : WallpaperService() {
                 }
 
                 val yuvImage = YuvImage(yuv, ImageFormat.NV21, width, height, null)
-                // Reuse stream
                 jpegStream.reset()
-                yuvImage.compressToJpeg(Rect(0, 0, width, height), 95, jpegStream)
+                // Lower quality for speed (video doesn't need high quality per frame)
+                yuvImage.compressToJpeg(Rect(0, 0, width, height), 80, jpegStream)
                 val bytes = jpegStream.toByteArray()
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply {
-                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    inPreferredConfig = Bitmap.Config.RGB_565 // No alpha, half memory
                 })
             } catch (_: Exception) { null }
         }
