@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.graphics.*
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.service.wallpaper.WallpaperService
