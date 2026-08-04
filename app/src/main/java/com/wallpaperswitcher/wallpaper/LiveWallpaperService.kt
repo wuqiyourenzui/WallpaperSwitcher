@@ -145,13 +145,17 @@ class LiveWallpaperService : WallpaperService() {
             videoStopFlag = true
             mediaCodecJob?.cancel()
             mediaCodecJob = null
-            // Release VideoRenderer to free SurfaceTexture (prevents Canvas conflict)
             videoRenderer?.release()
             videoRenderer = null
             gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
             gifFrameRunnable = null
             try { gifDrawable?.stop() } catch (_: Exception) {}
             gifDrawable = null
+            // Reset Surface state: lock/unlock Canvas to clear any pending operations
+            // This ensures the Surface is ready for EGL/SurfaceTexture initialization
+            try {
+                surfaceHolder.lockCanvas()?.let { surfaceHolder.unlockCanvasAndPost(it) }
+            } catch (_: Exception) {}
         }
 
         private fun pauseMedia() {
@@ -338,17 +342,32 @@ class LiveWallpaperService : WallpaperService() {
             videoStopFlag = false
             lastVideoPtsUs = -1L
             mediaCodecJob = scope.launch {
-                // Lazy-init renderer on IO thread (EGL must be on rendering thread)
+                // Small delay to ensure Surface is fully released from Canvas mode
+                delay(50)
+                // Lazy-init renderer on IO thread
                 if (videoRenderer == null || !videoRenderer!!.isInitialized()) {
                     videoRenderer?.release()
                     val m = getMetrics()
                     videoRenderer = VideoRenderer()
                     if (!videoRenderer!!.init(surfaceHolder.surface, m.widthPixels, m.heightPixels)) {
+                        // EGL init failed - Surface might still be in Canvas mode
+                        // Try one more time after releasing and resetting
                         videoRenderer?.release()
                         videoRenderer = null
-                        Log.e(TAG, "VideoRenderer init failed")
-                        videoPlaying = false
-                        return@launch
+                        withContext(Dispatchers.Main) {
+                            try {
+                                surfaceHolder.lockCanvas()?.let { surfaceHolder.unlockCanvasAndPost(it) }
+                            } catch (_: Exception) {}
+                        }
+                        delay(100)
+                        videoRenderer = VideoRenderer()
+                        if (!videoRenderer!!.init(surfaceHolder.surface, m.widthPixels, m.heightPixels)) {
+                            videoRenderer?.release()
+                            videoRenderer = null
+                            Log.e(TAG, "VideoRenderer init failed after retry")
+                            videoPlaying = false
+                            return@launch
+                        }
                     }
                 }
                 while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
