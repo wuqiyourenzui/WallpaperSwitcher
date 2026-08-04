@@ -49,6 +49,7 @@ class LiveWallpaperService : WallpaperService() {
         private var mediaCodecJob: Job? = null
         private var videoPlaying = false
         private var videoStopFlag = false
+        private var videoRenderer: VideoRenderer? = null
 
         // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
@@ -104,10 +105,13 @@ class LiveWallpaperService : WallpaperService() {
             drawCurrentImage()
         }
 
-        override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {}
+        override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {
+            videoRenderer?.updateScreenSize(width, height)
+        }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
+            releaseVideoRenderer()
         }
 
         override fun onTouchEvent(event: MotionEvent) {
@@ -129,9 +133,32 @@ class LiveWallpaperService : WallpaperService() {
         override fun onDestroy() {
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
             releaseAll()
+            releaseVideoRenderer()
             currentBitmap?.recycle(); currentBitmap = null
             scope.cancel()
             super.onDestroy()
+        }
+
+        private fun initVideoRenderer(): VideoRenderer? {
+            if (videoRenderer != null) return videoRenderer
+            return try {
+                val m = getMetrics()
+                val renderer = VideoRenderer()
+                if (renderer.init(surfaceHolder.surface, m.widthPixels, m.heightPixels)) {
+                    videoRenderer = renderer
+                    renderer
+                } else {
+                    null
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "initVideoRenderer failed", e)
+                null
+            }
+        }
+
+        private fun releaseVideoRenderer() {
+            try { videoRenderer?.release() } catch (_: Exception) {}
+            videoRenderer = null
         }
 
         // ======== Media control ========
@@ -341,11 +368,13 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         /**
-         * Play video once with Bitmap rendering (supports scale modes).
-         * Uses optimized YUV→Bitmap with buffer reuse.
+         * Play video once using SurfaceTexture + OpenGL (GPU accelerated).
+         * Supports fill/fit/stretch scale modes.
          */
         private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode) {
             lastVideoPtsUs = -1L
+            // Initialize renderer on IO thread (EGL must be on same thread as rendering)
+            val renderer = initVideoRenderer() ?: return
             var extractor: MediaExtractor? = null
             var codec: MediaCodec? = null
             try {
@@ -372,8 +401,14 @@ class LiveWallpaperService : WallpaperService() {
                 val height = format.getInteger(MediaFormat.KEY_HEIGHT)
                 val fps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30)
 
+                // Configure scale mode
+                renderer.setVideoSize(width, height, scaleMode)
+
+                // Get SurfaceTexture's Surface for MediaCodec output
+                val inputSurface = renderer.getInputSurface() ?: return
+
                 codec = MediaCodec.createDecoderByType(mime)
-                codec.configure(format, null, null, 0)
+                codec.configure(format, inputSurface, null, 0)
                 codec.start()
 
                 val info = MediaCodec.BufferInfo()
@@ -402,14 +437,9 @@ class LiveWallpaperService : WallpaperService() {
                             return
                         }
 
-                        val outBuf = codec.getOutputBuffer(outputIdx)
-                        if (outBuf != null && surfaceReady && isVisible) {
-                            val bmp = yuvToBitmap(outBuf, width, height)
-                            if (bmp != null) {
-                                showBitmap(bmp, scaleMode)
-                            }
-                        }
-                        codec.releaseOutputBuffer(outputIdx, false)
+                        // Release buffer and render via OpenGL
+                        codec.releaseOutputBuffer(outputIdx, true) // true = render to SurfaceTexture
+                        renderer.drawFrame() // OpenGL renders with scale mode
 
                         // PTS-based frame pacing
                         val currentPtsUs = info.presentationTimeUs
