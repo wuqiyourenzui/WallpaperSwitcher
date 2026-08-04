@@ -15,6 +15,7 @@ import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.SurfaceHolder
+import android.view.Surface
 import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.*
 import java.nio.ByteBuffer
