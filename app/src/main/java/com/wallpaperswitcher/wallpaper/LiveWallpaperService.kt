@@ -301,43 +301,51 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private suspend fun playVideoLoop(uriStr: String, scaleMode: ScaleMode) {
-            // Get video duration and FPS
             val retriever = videoRetriever ?: return
             val durationMs = retriever.extractMetadata(
                 MediaMetadataRetriever.METADATA_KEY_DURATION
             )?.toLongOrNull() ?: 0L
-            val fps = retriever.extractMetadata(
-                MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT
-            )?.toLongOrNull()?.let { frameCount ->
-                if (durationMs > 0) (frameCount * 1000 / durationMs).toInt() else 30
-            } ?: 30
-            val frameIntervalMs = 1000L / fps.coerceIn(15, 60)
 
-            Log.d(TAG, "Video: ${durationMs}ms ${fps}fps, interval=${frameIntervalMs}ms")
+            Log.d(TAG, "Video: ${durationMs}ms")
 
             while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
                 if (!isVisible) { delay(100); continue }
-                playVideoOnce(retriever, durationMs, frameIntervalMs, scaleMode)
+                playVideoOnce(retriever, durationMs, scaleMode)
                 if (!videoStopFlag && surfaceReady) delay(16)
             }
         }
 
+        /**
+         * Play video once by extracting frames as fast as possible.
+         * Uses real-time pacing: extract frame, display, measure time, repeat.
+         * No fixed FPS assumption - we extract and display as fast as we can.
+         */
         private suspend fun playVideoOnce(
             retriever: MediaMetadataRetriever,
             durationMs: Long,
-            frameIntervalMs: Long,
             scaleMode: ScaleMode
         ) {
-            var timestampUs = 0L
-            val durationUs = durationMs * 1000
+            var timestampMs = 0L
+            // Step through video at ~33ms intervals (30fps equivalent)
+            // getFrameAtTime with OPTION_CLOSEST gives exact frame at timestamp
+            val stepMs = 33L
 
             while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag && isVisible) {
-                // Extract frame at current timestamp
+                val startMs = System.currentTimeMillis()
+
+                // Extract exact frame at this timestamp (not nearest keyframe)
                 val frame = try {
-                    retriever.getFrameAtTime(
-                        timestampUs * 1000, // microseconds
-                        MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                    )
+                    if (Build.VERSION.SDK_INT >= 27) {
+                        retriever.getFrameAtTime(
+                            timestampMs * 1000, // convert to microseconds
+                            MediaMetadataRetriever.OPTION_CLOSEST
+                        )
+                    } else {
+                        retriever.getFrameAtTime(
+                            timestampMs * 1000,
+                            MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+                        )
+                    }
                 } catch (_: Exception) { null }
 
                 if (frame != null) {
@@ -345,14 +353,14 @@ class LiveWallpaperService : WallpaperService() {
                     frame.recycle()
                 }
 
-                timestampUs += frameIntervalMs * 1000
-
+                timestampMs += stepMs
                 // Loop when reaching end
-                if (timestampUs >= durationUs) {
-                    timestampUs = 0L
-                }
+                if (timestampMs >= durationMs) timestampMs = 0L
 
-                delay(frameIntervalMs)
+                // Pace: sleep for remaining time in this frame's budget
+                val elapsedMs = System.currentTimeMillis() - startMs
+                val sleepMs = (stepMs - elapsedMs).coerceAtLeast(1)
+                delay(sleepMs)
             }
         }
 
