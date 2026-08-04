@@ -5,11 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.*
-import android.media.Image
-import android.media.ImageReader
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -48,10 +44,9 @@ class LiveWallpaperService : WallpaperService() {
         private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
         @Volatile private var shuffleAllCount = 0
 
-        // Video state - pure Canvas, no EGL/OpenGL
-        private var mediaCodecJob: Job? = null
-        @Volatile private var videoPlaying = false
-        @Volatile private var videoStopFlag = false
+        // MediaPlayer for video - handles all decoding, rendering, looping
+        private var mediaPlayer: MediaPlayer? = null
+        @Volatile private var videoMode = false
 
         // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
@@ -83,7 +78,7 @@ class LiveWallpaperService : WallpaperService() {
             setTouchEventsEnabled(true)
             val filter = IntentFilter(ACTION_SWITCH)
             try {
-                if (android.os.Build.VERSION.SDK_INT >= 33) {
+                if (Build.VERSION.SDK_INT >= 33) {
                     applicationContext.registerReceiver(switchReceiver, filter, Context.RECEIVER_EXPORTED)
                 } else {
                     applicationContext.registerReceiver(switchReceiver, filter)
@@ -110,7 +105,15 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
-            if (visible) drawCurrentImage() else pauseMedia()
+            if (visible) {
+                // Resume video/GIF
+                mediaPlayer?.let { if (!it.isPlaying) it.start() }
+                drawCurrentImage()
+            } else {
+                // Pause video/GIF
+                mediaPlayer?.let { if (it.isPlaying) it.pause() }
+                pauseGif()
+            }
         }
 
         override fun onDestroy() {
@@ -123,10 +126,7 @@ class LiveWallpaperService : WallpaperService() {
         // ======== Resource lifecycle ========
 
         private fun releaseAll() {
-            videoPlaying = false
-            videoStopFlag = true
-            mediaCodecJob?.cancel()
-            mediaCodecJob = null
+            releaseMediaPlayer()
             gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
             gifFrameRunnable = null
             try { gifDrawable?.stop() } catch (_: Exception) {}
@@ -134,16 +134,32 @@ class LiveWallpaperService : WallpaperService() {
             gifBitmapBuffer?.recycle(); gifBitmapBuffer = null
         }
 
-        private suspend fun stopVideoAndWait() {
-            videoPlaying = false
-            videoStopFlag = true
-            val job = mediaCodecJob
-            mediaCodecJob = null
-            job?.cancel()
-            try { job?.join() } catch (_: Exception) {}
+        private fun releaseMediaPlayer() {
+            videoMode = false
+            try {
+                mediaPlayer?.let {
+                    if (it.isPlaying) it.stop()
+                    it.release()
+                }
+            } catch (_: Exception) {}
+            mediaPlayer = null
         }
 
-        private fun pauseMedia() {
+        /**
+         * Reset Surface from MediaPlayer mode back to Canvas mode.
+         * Critical: must do this before any lockCanvas() call after MediaPlayer usage.
+         */
+        private fun resetSurfaceForCanvas() {
+            try {
+                val canvas = surfaceHolder.lockCanvas()
+                if (canvas != null) {
+                    canvas.drawColor(Color.BLACK)
+                    surfaceHolder.unlockCanvasAndPost(canvas)
+                }
+            } catch (_: Exception) {}
+        }
+
+        private fun pauseGif() {
             gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
         }
 
@@ -185,17 +201,18 @@ class LiveWallpaperService : WallpaperService() {
                     val mediaType = nextImage.mediaType ?: "IMAGE"
                     Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
 
+                    // Release current media before switching
+                    releaseMediaPlayer()
+                    pauseGif()
+                    // Reset Surface to Canvas mode before drawing images
+                    if (mediaType != "VIDEO") {
+                        withContext(Dispatchers.Main) { resetSurfaceForCanvas() }
+                    }
+
                     when (mediaType) {
-                        "VIDEO" -> {
-                            stopVideoAndWait(); delay(30)
-                            startVideoDecoder(nextImage.uri, currentScaleMode)
-                        }
-                        "GIF" -> {
-                            stopVideoAndWait(); delay(30)
-                            mainHandler.post { playGif(nextImage.uri, currentScaleMode) }
-                        }
+                        "VIDEO" -> startVideo(nextImage.uri, currentScaleMode)
+                        "GIF" -> mainHandler.post { playGif(nextImage.uri, currentScaleMode) }
                         else -> {
-                            stopVideoAndWait(); delay(30)
                             val bitmap = loadBitmap(nextImage.uri)
                             if (bitmap != null) mainHandler.post { showBitmap(bitmap, currentScaleMode) }
                         }
@@ -249,7 +266,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
             if (isSwitching.get()) return
-            if (videoPlaying && mediaCodecJob?.isActive == true) return
+            if (videoMode && mediaPlayer?.isPlaying == true) return
 
             scope.launch {
                 try {
@@ -262,7 +279,7 @@ class LiveWallpaperService : WallpaperService() {
 
                     if (image != null) {
                         when (image.mediaType ?: "IMAGE") {
-                            "VIDEO" -> { startVideoDecoder(image.uri, currentScaleMode); return@launch }
+                            "VIDEO" -> { startVideo(image.uri, currentScaleMode); return@launch }
                             "GIF" -> { mainHandler.post { playGif(image.uri, currentScaleMode) }; return@launch }
                             else -> {
                                 val bitmap = loadBitmap(image.uri)
@@ -277,166 +294,47 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video: MediaCodec → ImageReader → Bitmap → Canvas ========
-        // Hardware decoding via MediaCodec, frame capture via ImageReader.
-        // Pure Canvas rendering. No EGL, no OpenGL.
+        // ======== Video via MediaPlayer ========
+        // MediaPlayer handles: hardware decoding, rendering to Surface, looping, audio
+        // No MediaCodec/ImageReader/EGL/OpenGL needed
 
-        private fun startVideoDecoder(uriStr: String, scaleMode: ScaleMode) {
-            videoPlaying = true
-            videoStopFlag = false
-            mediaCodecJob = scope.launch {
-                try {
-                    playVideoLoop(uriStr, scaleMode)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Video error: ${e.message}")
-                } finally {
-                    videoPlaying = false
-                }
-            }
-        }
-
-        private suspend fun playVideoLoop(uriStr: String, scaleMode: ScaleMode) {
-            while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
-                if (!isVisible) { delay(100); continue }
-                playVideoOnce(uriStr, scaleMode)
-                if (!videoStopFlag && surfaceReady) delay(16)
-            }
-        }
-
-        /**
-         * Play video using MediaCodec for hardware decoding.
-         * Uses ImageReader(YUV_420_888) to capture decoded frames.
-         * YUV→RGB conversion via integer math, then Canvas draw.
-         */
-        private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode) {
-            if (!surfaceReady) return
-
-            var extractor: MediaExtractor? = null
-            var codec: MediaCodec? = null
-            var imageReader: ImageReader? = null
-
+        private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             try {
-                val uri = Uri.parse(uriStr)
-                extractor = MediaExtractor()
-                extractor.setDataSource(applicationContext, uri, null)
+                videoMode = true
+                val mp = MediaPlayer()
 
-                var trackIndex = -1; var mime = ""
-                for (i in 0 until extractor.trackCount) {
-                    val format = extractor.getTrackFormat(i)
-                    val m = format.getString(MediaFormat.KEY_MIME) ?: continue
-                    if (m.startsWith("video/")) { trackIndex = i; mime = m; break }
+                // Error handling - prevent crashes
+                mp.setOnErrorListener { _, what, extra ->
+                    Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
+                    videoMode = false
+                    false
                 }
-                if (trackIndex < 0) { Log.e(TAG, "No video track"); return }
 
-                extractor.selectTrack(trackIndex)
-                val format = extractor.getTrackFormat(trackIndex)
-                val width = format.getIntegerOrDefault(MediaFormat.KEY_WIDTH, 1280)
-                val height = format.getIntegerOrDefault(MediaFormat.KEY_HEIGHT, 720)
-                val fps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30)
-                val frameIntervalMs = 1000L / fps.coerceIn(15, 60)
-
-                // ImageReader with YUV_420_888 - universally supported by all decoders
-                imageReader = ImageReader.newInstance(width, height, android.graphics.ImageFormat.YUV_420_888, 3)
-
-                // Reusable bitmap for decoded frames
-                val frameBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-
-                codec = MediaCodec.createDecoderByType(mime)
-                codec.configure(format, imageReader.surface, null, 0)
-                codec.start()
-
-                Log.d(TAG, "Video: $mime ${width}x${height} ${fps}fps")
-
-                val info = MediaCodec.BufferInfo()
-                var inputDone = false
-
-                while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag && isVisible) {
-                    // Feed compressed data
-                    if (!inputDone) {
-                        val inputIdx = codec.dequeueInputBuffer(10000L)
-                        if (inputIdx >= 0) {
-                            val buf = codec.getInputBuffer(inputIdx) ?: continue
-                            val size = extractor.readSampleData(buf, 0)
-                            if (size < 0) {
-                                codec.queueInputBuffer(inputIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                inputDone = true
-                            } else {
-                                codec.queueInputBuffer(inputIdx, 0, size, extractor.sampleTime, 0)
-                                extractor.advance()
-                            }
-                        }
-                    }
-
-                    // Get decoded frame from ImageReader
-                    val image = imageReader.acquireLatestImage()
-                    if (image != null) {
-                        try {
-                            yuvToBitmap(image, frameBitmap)
-                            showBitmapDirect(frameBitmap, scaleMode)
-                        } finally {
-                            image.close()
-                        }
-                        delay(frameIntervalMs)
-                    } else {
-                        // Check for EOS
-                        val outputIdx = codec.dequeueOutputBuffer(info, 5000L)
-                        if (outputIdx >= 0) {
-                            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                                codec.releaseOutputBuffer(outputIdx, false)
-                                return
-                            }
-                            codec.releaseOutputBuffer(outputIdx, true)
-                        }
-                        delay(1)
-                    }
+                mp.setOnCompletionListener {
+                    // Auto-loop
+                    try {
+                        mp.seekTo(0)
+                        mp.start()
+                    } catch (_: Exception) {}
                 }
-                frameBitmap.recycle()
+
+                mp.setOnPreparedListener { player ->
+                    Log.d(TAG, "Video prepared: ${player.videoWidth}x${player.videoHeight}")
+                    try {
+                        player.isLooping = true
+                        player.start()
+                    } catch (_: Exception) {}
+                }
+
+                mp.setDataSource(applicationContext, Uri.parse(uriStr))
+                mp.setSurface(surfaceHolder.surface)
+                mp.prepareAsync()
+
+                mediaPlayer = mp
             } catch (e: Exception) {
-                Log.e(TAG, "playVideoOnce error: ${e.message}")
-            } finally {
-                try { codec?.stop() } catch (_: Exception) {}
-                try { codec?.release() } catch (_: Exception) {}
-                try { extractor?.release() } catch (_: Exception) {}
-                try { imageReader?.close() } catch (_: Exception) {}
+                Log.e(TAG, "startVideo error: ${e.message}")
+                videoMode = false
             }
-        }
-
-        /**
-         * Convert YUV_420_888 Image to ARGB_8888 Bitmap.
-         * Uses fast integer BT.601 conversion.
-         */
-        private fun yuvToBitmap(image: Image, dst: Bitmap) {
-            val w = image.width; val h = image.height
-            val planes = image.planes
-
-            val yBuf = planes[0].buffer
-            val uBuf = planes[1].buffer
-            val vBuf = planes[2].buffer
-            val yStride = planes[0].rowStride
-            val uvStride = planes[1].rowStride
-            val uvPixelStride = planes[1].pixelStride
-
-            val pixels = IntArray(w * h)
-            var idx = 0
-            for (row in 0 until h) {
-                val uvRow = row shr 1
-                for (col in 0 until w) {
-                    val y = (yBuf.get(row * yStride + col).toInt() and 0xFF) - 16
-                    val uvIdx = uvRow * uvStride + (col shr 1) * uvPixelStride
-                    val u = (uBuf.get(uvIdx).toInt() and 0xFF) - 128
-                    val v = (vBuf.get(uvIdx).toInt() and 0xFF) - 128
-
-                    var r = (298 * y + 409 * v + 128) shr 8
-                    var g = (298 * y - 100 * u - 208 * v + 128) shr 8
-                    var b = (298 * y + 516 * u + 128) shr 8
-
-                    pixels[idx++] = -0x1000000 or
-                            (r.coerceIn(0, 255) shl 16) or
-                            (g.coerceIn(0, 255) shl 8) or
-                            b.coerceIn(0, 255)
-                }
-            }
-            dst.setPixels(pixels, 0, w, 0, 0, w, h)
         }
 
         // ======== GIF via Canvas ========
@@ -444,7 +342,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun playGif(uriStr: String, scaleMode: ScaleMode) {
             if (!surfaceReady) return
             try {
-                if (android.os.Build.VERSION.SDK_INT >= 28) playGif28(uriStr, scaleMode)
+                if (Build.VERSION.SDK_INT >= 28) playGif28(uriStr, scaleMode)
                 else loadBitmap(uriStr)?.let { showBitmap(it, scaleMode) }
             } catch (e: Exception) {
                 loadBitmap(uriStr)?.let { showBitmap(it, scaleMode) }
@@ -553,10 +451,5 @@ class LiveWallpaperService : WallpaperService() {
         private fun getMetrics(): android.util.DisplayMetrics {
             return com.wallpaperswitcher.engine.BitmapUtils.getScreenMetrics(applicationContext)
         }
-
-        private fun MediaFormat.getIntegerOrDefault(key: String, default: Int): Int {
-            return if (containsKey(key)) getInteger(key) else default
-        }
-
     }
 }
