@@ -198,13 +198,23 @@ class LiveWallpaperService : WallpaperService() {
 
                     when (mediaType) {
                         "VIDEO" -> {
-                            releaseVideo()
+                            // Video→Video: release old, start new
+                            // DON'T reset Surface - MediaPlayer needs it
+                            try {
+                                mediaPlayer?.let {
+                                    try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
+                                    it.release()
+                                }
+                            } catch (_: Exception) {}
+                            mediaPlayer = null
+                            videoMode = false
+                            videoPlaying = false
                             pauseGif()
-                            resetSurfaceForCanvas() // Clean Surface state
                             delay(50)
                             startVideo(nextImage.uri)
                         }
                         else -> {
+                            // Video→Image/GIF: release video, reset to Canvas
                             releaseVideo()
                             pauseGif()
                             resetSurfaceForCanvas()
