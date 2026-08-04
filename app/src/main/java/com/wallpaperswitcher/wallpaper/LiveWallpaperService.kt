@@ -262,10 +262,9 @@ class LiveWallpaperService : WallpaperService() {
                         "VIDEO" -> {
                             val newUri = nextImage.uri
                             val scaleMode = currentScaleMode
-                            releaseAll() // Release old content first
-                            // Show first frame immediately, then start video
-                            val firstFrame = extractFirstFrame(Uri.parse(newUri))
-                            if (firstFrame != null) showBitmap(firstFrame, scaleMode)
+                            releaseAll() // Release old content (Canvas + SurfaceTexture)
+                            // Start video decoder directly - VideoRenderer handles first frame via OpenGL
+                            // Do NOT use showBitmap here - Canvas and SurfaceTexture conflict
                             startVideoDecoder(newUri, scaleMode)
                         }
                         "GIF" -> {
@@ -305,6 +304,7 @@ class LiveWallpaperService : WallpaperService() {
                     if (image != null) {
                         when (image.mediaType ?: "IMAGE") {
                             "VIDEO" -> {
+                                // Video: start decoder (no Canvas - SurfaceTexture handles rendering)
                                 startVideoDecoder(image.uri, currentScaleMode)
                                 return@launch
                             }
@@ -313,6 +313,8 @@ class LiveWallpaperService : WallpaperService() {
                                 return@launch
                             }
                             else -> {
+                                // Image: use Canvas (no SurfaceTexture)
+                                releaseAll() // Ensure no SurfaceTexture is active
                                 val bitmap = loadBitmap(image.uri)
                                 if (bitmap != null) {
                                     mainHandler.post { showBitmap(bitmap, currentScaleMode) }
@@ -321,6 +323,7 @@ class LiveWallpaperService : WallpaperService() {
                             }
                         }
                     }
+                    releaseAll()
                     mainHandler.post { showDefault() }
                 } catch (e: Exception) {
                     Log.e(TAG, "drawCurrentImage error", e)
