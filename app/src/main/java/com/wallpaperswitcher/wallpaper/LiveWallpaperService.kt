@@ -110,8 +110,17 @@ class LiveWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
             if (visible) {
-                if (videoMode && videoPlaying) {
-                    // Resume video
+                if (videoMode) {
+                    // Resume video playback + re-init renderer if needed
+                    scope.launch {
+                        val renderer = getOrCreateRenderer()
+                        if (renderer != null && videoPlaying) {
+                            // Video is still playing, just resume
+                        } else {
+                            // Need to restart video
+                            drawCurrentImage()
+                        }
+                    }
                 } else {
                     drawCurrentImage()
                 }
@@ -130,7 +139,14 @@ class LiveWallpaperService : WallpaperService() {
         // ======== Resource lifecycle ========
 
         private fun releaseAll() {
-            stopVideo()
+            videoMode = false
+            videoPlaying = false
+            videoStopFlag = true
+            videoJob?.cancel()
+            videoJob = null
+            videoRenderer?.release()
+            videoRenderer = null
+            resetSurfaceForCanvas()
             pauseGif()
             gifBitmapBuffer?.recycle(); gifBitmapBuffer = null
         }
@@ -147,8 +163,9 @@ class LiveWallpaperService : WallpaperService() {
             videoJob = null
             videoRenderer?.release()
             videoRenderer = null
-            // Reset Surface from EGL mode to Canvas mode
-            resetSurfaceForCanvas()
+            // DON'T reset Surface for Canvas here!
+            // If next media is video, EGL needs the Surface.
+            // If next media is image/GIF, the caller will reset.
         }
 
         /**
@@ -209,7 +226,7 @@ class LiveWallpaperService : WallpaperService() {
 
                     when (mediaType) {
                         "VIDEO" -> {
-                            // Stop video/GIF, DON'T reset Surface (video needs EGL)
+                            // Release video resources, keep Surface in EGL-ready state
                             videoStopFlag = true
                             videoJob?.cancel()
                             videoJob = null
@@ -220,9 +237,16 @@ class LiveWallpaperService : WallpaperService() {
                             startVideo(nextImage.uri, currentScaleMode)
                         }
                         else -> {
-                            // Stop video, reset to Canvas mode
-                            stopVideo()
+                            // Release video + reset Surface to Canvas mode
+                            videoStopFlag = true
+                            videoJob?.cancel()
+                            videoJob = null
+                            videoRenderer?.release()
+                            videoRenderer = null
+                            videoMode = false
+                            videoPlaying = false
                             pauseGif()
+                            resetSurfaceForCanvas()
                             delay(50)
                             when (mediaType) {
                                 "GIF" -> mainHandler.post { playGif(nextImage.uri, currentScaleMode) }
@@ -282,7 +306,8 @@ class LiveWallpaperService : WallpaperService() {
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
             if (isSwitching.get()) return
-            if (videoMode && videoPlaying) return
+            // Only skip if video is actually playing (job is active)
+            if (videoMode && videoJob?.isActive == true) return
 
             scope.launch {
                 try {
