@@ -285,13 +285,19 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun setImageAsWallpaper(image: WallpaperImage) {
         viewModelScope.launch {
             try {
+                // 1. Save target ID first (live wallpaper reads this on start)
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                // Send switch broadcast WITH target ID so doSwitch uses it directly
+
+                // 2. Try broadcast (works if live wallpaper is already running)
                 val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH).apply {
                     setPackage(getApplication<Application>().packageName)
                     putExtra(com.wallpaperswitcher.wallpaper.LiveWallpaperService.EXTRA_TARGET_ID, image.id)
                 }
                 getApplication<Application>().sendBroadcast(switchIntent)
+
+                // 3. Launch live wallpaper picker (activates live wallpaper if not running)
+                launchLiveWallpaperPicker()
+
                 _toastMessage.emit("壁纸已设置！")
             } catch (e: Exception) {
                 _toastMessage.emit("设置失败: ${e.message}")
@@ -299,40 +305,26 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * Set image as live wallpaper (enables double-tap switching).
-     */
     fun setAsLiveWallpaper(image: WallpaperImage) {
-        viewModelScope.launch {
-            try {
-                settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                // Send switch broadcast WITH target ID
-                val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH).apply {
-                    setPackage(getApplication<Application>().packageName)
-                    putExtra(com.wallpaperswitcher.wallpaper.LiveWallpaperService.EXTRA_TARGET_ID, image.id)
-                }
-                getApplication<Application>().sendBroadcast(switchIntent)
-                // Launch live wallpaper picker to activate live wallpaper mode
-                try {
-                    val intent = android.content.Intent(android.app.WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
-                        putExtra(
-                            android.app.WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
-                            android.content.ComponentName(getApplication(), com.wallpaperswitcher.wallpaper.LiveWallpaperService::class.java)
-                        )
-                        addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    getApplication<Application>().startActivity(intent)
-                } catch (_: Exception) {
-                    try {
-                        val intent = android.content.Intent(android.app.WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER)
-                        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
-                        getApplication<Application>().startActivity(intent)
-                    } catch (_: Exception) {}
-                }
-                _toastMessage.emit("壁纸已设置！")
-            } catch (e: Exception) {
-                _toastMessage.emit("设置失败: ${e.message}")
+        setImageAsWallpaper(image) // Same logic
+    }
+
+    private fun launchLiveWallpaperPicker() {
+        try {
+            val intent = android.content.Intent(android.app.WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
+                putExtra(
+                    android.app.WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
+                    android.content.ComponentName(getApplication(), com.wallpaperswitcher.wallpaper.LiveWallpaperService::class.java)
+                )
+                addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             }
+            getApplication<Application>().startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                val intent = android.content.Intent(android.app.WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER)
+                intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                getApplication<Application>().startActivity(intent)
+            } catch (_: Exception) {}
         }
     }
 
