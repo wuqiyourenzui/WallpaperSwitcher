@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.*
 import android.media.Image
+import android.media.ImageFormat
 import android.media.ImageReader
 import android.media.MediaCodec
 import android.media.MediaExtractor
@@ -305,8 +306,8 @@ class LiveWallpaperService : WallpaperService() {
 
         /**
          * Play video using MediaCodec for hardware decoding.
-         * Uses ImageReader to capture decoded frames as Bitmap.
-         * Draws to wallpaper via Canvas. No EGL/OpenGL at all.
+         * Uses ImageReader(YUV_420_888) to capture decoded frames.
+         * YUV→RGB conversion via integer math, then Canvas draw.
          */
         private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode) {
             if (!surfaceReady) return
@@ -335,8 +336,11 @@ class LiveWallpaperService : WallpaperService() {
                 val fps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30)
                 val frameIntervalMs = 1000L / fps.coerceIn(15, 60)
 
-                // ImageReader to capture decoded frames as RGBA Bitmaps
-                imageReader = ImageReader.newInstance(width, height, 1 /*PixelFormat.RGBA_8888*/, 2)
+                // ImageReader with YUV_420_888 - universally supported by all decoders
+                imageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 3)
+
+                // Reusable bitmap for decoded frames
+                val frameBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
 
                 codec = MediaCodec.createDecoderByType(mime)
                 codec.configure(format, imageReader.surface, null, 0)
@@ -348,7 +352,7 @@ class LiveWallpaperService : WallpaperService() {
                 var inputDone = false
 
                 while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag && isVisible) {
-                    // Feed compressed data to decoder
+                    // Feed compressed data
                     if (!inputDone) {
                         val inputIdx = codec.dequeueInputBuffer(10000L)
                         if (inputIdx >= 0) {
@@ -368,11 +372,8 @@ class LiveWallpaperService : WallpaperService() {
                     val image = imageReader.acquireLatestImage()
                     if (image != null) {
                         try {
-                            val bmp = imageToBitmapRGBA(image)
-                            if (bmp != null) {
-                                showBitmapDirect(bmp, scaleMode)
-                                bmp.recycle()
-                            }
+                            yuvToBitmap(image, frameBitmap)
+                            showBitmapDirect(frameBitmap, scaleMode)
                         } finally {
                             image.close()
                         }
@@ -383,13 +384,14 @@ class LiveWallpaperService : WallpaperService() {
                         if (outputIdx >= 0) {
                             if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                                 codec.releaseOutputBuffer(outputIdx, false)
-                                return // Loop restart
+                                return
                             }
                             codec.releaseOutputBuffer(outputIdx, true)
                         }
                         delay(1)
                     }
                 }
+                frameBitmap.recycle()
             } catch (e: Exception) {
                 Log.e(TAG, "playVideoOnce error: ${e.message}")
             } finally {
@@ -401,32 +403,41 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         /**
-         * Convert RGBA Image from ImageReader to Bitmap.
+         * Convert YUV_420_888 Image to ARGB_8888 Bitmap.
+         * Uses fast integer BT.601 conversion.
          */
-        private fun imageToBitmapRGBA(image: Image): Bitmap? {
-            try {
-                val plane = image.planes[0]
-                val buffer = plane.buffer
-                val pixelStride = plane.pixelStride
-                val rowStride = plane.rowStride
-                val rowPadding = rowStride - pixelStride * image.width
-                val w = image.width
-                val h = image.height
+        private fun yuvToBitmap(image: Image, dst: Bitmap) {
+            val w = image.width; val h = image.height
+            val planes = image.planes
 
-                val bmp = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
-                bmp.copyPixelsFromBuffer(buffer)
-                // Crop to actual dimensions if there's row padding
-                return if (rowPadding > 0) {
-                    val cropped = Bitmap.createBitmap(bmp, 0, 0, w, h)
-                    bmp.recycle()
-                    cropped
-                } else {
-                    bmp
+            val yBuf = planes[0].buffer
+            val uBuf = planes[1].buffer
+            val vBuf = planes[2].buffer
+            val yStride = planes[0].rowStride
+            val uvStride = planes[1].rowStride
+            val uvPixelStride = planes[1].pixelStride
+
+            val pixels = IntArray(w * h)
+            var idx = 0
+            for (row in 0 until h) {
+                val uvRow = row shr 1
+                for (col in 0 until w) {
+                    val y = (yBuf.get(row * yStride + col).toInt() and 0xFF) - 16
+                    val uvIdx = uvRow * uvStride + (col shr 1) * uvPixelStride
+                    val u = (uBuf.get(uvIdx).toInt() and 0xFF) - 128
+                    val v = (vBuf.get(uvIdx).toInt() and 0xFF) - 128
+
+                    var r = (298 * y + 409 * v + 128) shr 8
+                    var g = (298 * y - 100 * u - 208 * v + 128) shr 8
+                    var b = (298 * y + 516 * u + 128) shr 8
+
+                    pixels[idx++] = -0x1000000 or
+                            (r.coerceIn(0, 255) shl 16) or
+                            (g.coerceIn(0, 255) shl 8) or
+                            b.coerceIn(0, 255)
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "imageToBitmapRGBA error: ${e.message}")
-                return null
             }
+            dst.setPixels(pixels, 0, w, 0, 0, w, h)
         }
 
         // ======== GIF via Canvas ========
