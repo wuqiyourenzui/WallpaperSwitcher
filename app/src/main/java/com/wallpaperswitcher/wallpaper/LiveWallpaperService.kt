@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.*
 import android.media.Image
-import android.media.ImageFormat
 import android.media.ImageReader
 import android.media.MediaCodec
 import android.media.MediaExtractor
@@ -337,7 +336,7 @@ class LiveWallpaperService : WallpaperService() {
                 val frameIntervalMs = 1000L / fps.coerceIn(15, 60)
 
                 // ImageReader with YUV_420_888 - universally supported by all decoders
-                imageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 3)
+                imageReader = ImageReader.newInstance(width, height, android.graphics.ImageFormat.YUV_420_888, 3)
 
                 // Reusable bitmap for decoded frames
                 val frameBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
