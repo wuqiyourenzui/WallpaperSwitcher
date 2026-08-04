@@ -53,6 +53,10 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile private var videoStopFlag = false
         @Volatile private var videoMode = false
 
+        // Frame buffer: background thread pre-extracts frames, display thread consumes
+        private val frameBuffer = java.util.concurrent.LinkedBlockingQueue<Bitmap>(30) // ~1sec buffer
+        @Volatile private var videoDurationMs = 0L
+
         // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
         private var gifFrameRunnable: Runnable? = null
@@ -142,6 +146,10 @@ class LiveWallpaperService : WallpaperService() {
             videoPlayer = null
             try { videoRetriever?.release() } catch (_: Exception) {}
             videoRetriever = null
+            // Clear frame buffer
+            while (frameBuffer.isNotEmpty()) {
+                try { frameBuffer.poll()?.recycle() } catch (_: Exception) {}
+            }
         }
 
         private fun pauseVideo() {
@@ -284,10 +292,10 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video: MediaPlayer(audio) + MediaMetadataRetriever(frames) + Canvas ========
-        // MediaPlayer handles audio + playback state
-        // MediaMetadataRetriever extracts frames as Bitmap
-        // Canvas draws with proper scaling (fit/fill/stretch)
+        // ======== Video: Buffered extraction + Canvas ========
+        // Background thread pre-extracts frames into a buffer queue.
+        // Display thread consumes from queue at display rate.
+        // Decoupled = no dropped frames from slow extraction.
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             videoMode = true
@@ -296,18 +304,19 @@ class LiveWallpaperService : WallpaperService() {
 
             val uri = Uri.parse(uriStr)
 
-            // MediaPlayer for audio playback (silent for wallpaper, but keeps timing)
+            // MediaPlayer for playback timing + looping
             try {
                 val mp = MediaPlayer()
                 mp.setOnErrorListener { _, _, _ -> false }
                 mp.setDataSource(applicationContext, uri)
-                mp.setVolume(0f, 0f) // Wallpaper = silent
+                mp.setVolume(0f, 0f)
                 mp.isLooping = true
                 mp.prepare()
+                videoDurationMs = mp.duration.toLong()
                 mp.start()
                 videoPlayer = mp
             } catch (e: Exception) {
-                Log.w(TAG, "MediaPlayer init failed (non-fatal): ${e.message}")
+                Log.w(TAG, "MediaPlayer failed: ${e.message}")
             }
 
             // MediaMetadataRetriever for frame extraction
@@ -316,61 +325,67 @@ class LiveWallpaperService : WallpaperService() {
                 retriever.setDataSource(applicationContext, uri)
                 videoRetriever = retriever
             } catch (e: Exception) {
-                Log.e(TAG, "Retriever init failed: ${e.message}")
-                videoPlaying = false
-                videoMode = false
-                return
+                Log.e(TAG, "Retriever failed: ${e.message}")
+                videoPlaying = false; videoMode = false; return
             }
 
-            // Frame rendering loop
             videoJob = scope.launch {
                 try {
-                    renderVideoLoop(scaleMode)
+                    runVideoBuffered(scaleMode)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Video render error: ${e.message}")
+                    Log.e(TAG, "Video error: ${e.message}")
                 } finally {
                     videoPlaying = false
                 }
             }
         }
 
-        private suspend fun renderVideoLoop(scaleMode: ScaleMode) {
+        private suspend fun runVideoBuffered(scaleMode: ScaleMode) {
             val retriever = videoRetriever ?: return
-            val durationMs = retriever.extractMetadata(
-                MediaMetadataRetriever.METADATA_KEY_DURATION
-            )?.toLongOrNull() ?: 0L
+            val durationMs = videoDurationMs
             if (durationMs <= 0) return
 
-            Log.d(TAG, "Video duration: ${durationMs}ms")
+            var extractPosMs = 0L
+            val stepMs = 33L
+            var eofReached = false
 
             while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
                 if (!isVisible) { delay(100); continue }
 
-                // Sync with MediaPlayer position
-                val position = try { videoPlayer?.currentPosition?.toLong() ?: 0L } catch (_: Exception) { 0L }
-                val timestampUs = position * 1000 // ms → μs
-
-                // Extract frame at current position
-                val frame = try {
-                    if (Build.VERSION.SDK_INT >= 27) {
-                        retriever.getFrameAtTime(timestampUs, MediaMetadataRetriever.OPTION_CLOSEST)
-                    } else {
-                        retriever.getFrameAtTime(timestampUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    }
-                } catch (_: Exception) { null }
-
-                if (frame != null) {
-                    showBitmapDirect(frame, scaleMode)
-                    frame.recycle()
+                // Extract frames ahead into buffer (non-blocking)
+                if (!eofReached && frameBuffer.remainingCapacity() > 0) {
+                    val frame = extractFrame(retriever, extractPosMs)
+                    if (frame != null) frameBuffer.offer(frame)
+                    extractPosMs += stepMs
+                    if (extractPosMs >= durationMs) eofReached = true
                 }
 
-                // Loop detection
-                if (position >= durationMs - 100) {
+                // Display from buffer (non-blocking)
+                val displayFrame = frameBuffer.poll()
+                if (displayFrame != null) {
+                    showBitmapDirect(displayFrame, scaleMode)
+                    displayFrame.recycle()
+                }
+
+                // Loop when buffer drained and EOF
+                if (eofReached && frameBuffer.isEmpty()) {
+                    extractPosMs = 0L; eofReached = false
                     try { videoPlayer?.seekTo(0) } catch (_: Exception) {}
                 }
 
-                delay(33) // ~30fps
+                delay(1)
             }
+            while (frameBuffer.isNotEmpty()) { try { frameBuffer.poll()?.recycle() } catch (_: Exception) {} }
+        }
+
+        private fun extractFrame(retriever: MediaMetadataRetriever, timestampMs: Long): Bitmap? {
+            return try {
+                if (Build.VERSION.SDK_INT >= 27) {
+                    retriever.getFrameAtTime(timestampMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST)
+                } else {
+                    retriever.getFrameAtTime(timestampMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                }
+            } catch (_: Exception) { null }
         }
 
         // ======== GIF via Canvas ========
