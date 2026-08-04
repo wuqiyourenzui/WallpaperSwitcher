@@ -111,10 +111,13 @@ class LiveWallpaperService : WallpaperService() {
             Log.d(TAG, "Visibility: $visible")
             if (visible) {
                 if (videoMode && mediaPlayer != null) {
-                    try { mediaPlayer?.start() } catch (_: Exception) {}
-                } else if (videoMode && mediaPlayer == null) {
-                    // Video mode but player was released (error), restart
+                    try {
+                        if (!mediaPlayer!!.isPlaying) mediaPlayer!!.start()
+                    } catch (_: Exception) {}
+                } else if (videoMode) {
+                    // videoMode but no player - reset and redraw
                     videoMode = false
+                    videoPlaying = false
                     drawCurrentImage()
                 } else {
                     drawCurrentImage()
@@ -198,8 +201,8 @@ class LiveWallpaperService : WallpaperService() {
 
                     when (mediaType) {
                         "VIDEO" -> {
-                            // Video→Video: release old, start new
-                            // DON'T reset Surface - MediaPlayer needs it
+                            // Video→Video: release old player, start new
+                            // DON'T reset videoMode or Surface
                             try {
                                 mediaPlayer?.let {
                                     try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
@@ -207,7 +210,6 @@ class LiveWallpaperService : WallpaperService() {
                                 }
                             } catch (_: Exception) {}
                             mediaPlayer = null
-                            videoMode = false
                             videoPlaying = false
                             pauseGif()
                             delay(50)
@@ -291,7 +293,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
             if (isSwitching.get()) return
-            if (videoMode && mediaPlayer != null) return // Video active, don't interrupt
+            if (videoMode) return // Any video state → don't interrupt
 
             scope.launch {
                 try {
@@ -325,7 +327,11 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun startVideo(uriStr: String) {
             Log.d(TAG, "startVideo: $uriStr")
-            // Clean up existing MediaPlayer without resetting videoMode/videoPlaying
+            // Set video mode FIRST to prevent drawCurrentImage interference
+            videoMode = true
+            videoPlaying = false
+
+            // Clean up existing MediaPlayer (without resetting videoMode)
             try {
                 mediaPlayer?.let {
                     try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
