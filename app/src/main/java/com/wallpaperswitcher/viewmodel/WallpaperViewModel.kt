@@ -286,13 +286,12 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                // Update live wallpaper with this image
-                val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH)
-                switchIntent.setPackage(getApplication<Application>().packageName)
+                // Send switch broadcast WITH target ID so doSwitch uses it directly
+                val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH).apply {
+                    setPackage(getApplication<Application>().packageName)
+                    putExtra(com.wallpaperswitcher.wallpaper.LiveWallpaperService.EXTRA_TARGET_ID, image.id)
+                }
                 getApplication<Application>().sendBroadcast(switchIntent)
-                // Also set as system wallpaper via WallpaperManager
-                val engine = com.wallpaperswitcher.engine.WallpaperEngine(getApplication())
-                engine.setWallpaperForImage(image.uri)
                 _toastMessage.emit("壁纸已设置！")
             } catch (e: Exception) {
                 _toastMessage.emit("设置失败: ${e.message}")
@@ -307,9 +306,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                // Trigger live wallpaper switch
-                val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH)
-                switchIntent.setPackage(getApplication<Application>().packageName)
+                // Send switch broadcast WITH target ID
+                val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH).apply {
+                    setPackage(getApplication<Application>().packageName)
+                    putExtra(com.wallpaperswitcher.wallpaper.LiveWallpaperService.EXTRA_TARGET_ID, image.id)
+                }
                 getApplication<Application>().sendBroadcast(switchIntent)
                 // Launch live wallpaper picker to activate live wallpaper mode
                 try {

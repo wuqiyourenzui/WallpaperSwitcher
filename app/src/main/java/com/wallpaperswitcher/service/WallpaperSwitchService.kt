@@ -128,5 +128,13 @@ class WallpaperSwitchService : Service() {
             intent.setPackage(context.packageName)
             context.sendBroadcast(intent)
         }
+
+        fun switchToTarget(context: Context, targetId: Long) {
+            val intent = Intent(LiveWallpaperService.ACTION_SWITCH).apply {
+                setPackage(context.packageName)
+                putExtra(LiveWallpaperService.EXTRA_TARGET_ID, targetId)
+            }
+            context.sendBroadcast(intent)
+        }
     }
 }
