@@ -45,9 +45,9 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile private var shuffleAllCount = 0
 
         // Video: MediaPlayer renders directly to wallpaper Surface
-        // No MediaCodec, no EGL, no SurfaceTexture, no OpenGL
         private var mediaPlayer: MediaPlayer? = null
         @Volatile private var videoMode = false
+        @Volatile private var videoPlaying = false
 
         // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
@@ -110,9 +110,12 @@ class LiveWallpaperService : WallpaperService() {
             isVisible = visible
             Log.d(TAG, "Visibility: $visible")
             if (visible) {
-                if (videoMode) {
-                    // Resume video
+                if (videoMode && mediaPlayer != null) {
                     try { mediaPlayer?.start() } catch (_: Exception) {}
+                } else if (videoMode && mediaPlayer == null) {
+                    // Video mode but player was released (error), restart
+                    videoMode = false
+                    drawCurrentImage()
                 } else {
                     drawCurrentImage()
                 }
@@ -312,8 +315,15 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun startVideo(uriStr: String) {
             Log.d(TAG, "startVideo: $uriStr")
-            // Ensure clean state
-            releaseVideo()
+            // Clean up existing MediaPlayer without resetting videoMode/videoPlaying
+            try {
+                mediaPlayer?.let {
+                    try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
+                    it.release()
+                }
+            } catch (_: Exception) {}
+            mediaPlayer = null
+
             try {
                 videoMode = true
                 val mp = MediaPlayer()
