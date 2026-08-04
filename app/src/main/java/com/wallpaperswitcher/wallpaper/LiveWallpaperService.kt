@@ -11,10 +11,10 @@ import android.os.Handler
 import android.os.Looper
 import android.service.wallpaper.WallpaperService
 import android.util.Log
+import android.util.Size
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.SurfaceHolder
-import android.view.Surface
 import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.*
 import java.util.concurrent.ConcurrentHashMap
@@ -41,17 +41,17 @@ class LiveWallpaperService : WallpaperService() {
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
-        // Shuffle tracking
         private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
         @Volatile private var shuffleAllCount = 0
 
-        // Video state - ALL Canvas based, no EGL
+        // Video state - pure Canvas, no EGL/OpenGL
         private var mediaCodecJob: Job? = null
         @Volatile private var videoPlaying = false
         @Volatile private var videoStopFlag = false
         private var lastVideoPtsUs = -1L
-        private var videoSurfaceTexture: SurfaceTexture? = null
-        private var videoBitmap: Bitmap? = null
+
+        // Reusable Bitmap for video frames (avoids GC pressure)
+        private var videoFrameBitmap: Bitmap? = null
 
         // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
@@ -62,7 +62,6 @@ class LiveWallpaperService : WallpaperService() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action == ACTION_SWITCH) {
                     val targetId = intent.getLongExtra(EXTRA_TARGET_ID, -1L)
-                    Log.d(TAG, "Broadcast received, targetId=$targetId")
                     doSwitch("broadcast", if (targetId > 0) targetId else null)
                 }
             }
@@ -90,12 +89,10 @@ class LiveWallpaperService : WallpaperService() {
                     applicationContext.registerReceiver(switchReceiver, filter)
                 }
             } catch (_: Exception) {}
-            Log.d(TAG, "Engine created")
         }
 
         override fun onSurfaceCreated(holder: SurfaceHolder?) {
             surfaceReady = true
-            Log.d(TAG, "Surface created")
             drawCurrentImage()
         }
 
@@ -113,12 +110,7 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
-            Log.d(TAG, "Visibility: $visible")
-            if (visible) {
-                drawCurrentImage()
-            } else {
-                pauseMedia()
-            }
+            if (visible) drawCurrentImage() else pauseMedia()
         }
 
         override fun onDestroy() {
@@ -128,32 +120,21 @@ class LiveWallpaperService : WallpaperService() {
             super.onDestroy()
         }
 
-        // ======== Media control ========
+        // ======== Resource lifecycle ========
 
-        /**
-         * Release ALL media resources. Canvas-based, no EGL to worry about.
-         */
         private fun releaseAll() {
             videoPlaying = false
             videoStopFlag = true
             mediaCodecJob?.cancel()
             mediaCodecJob = null
-            videoSurfaceTexture?.release()
-            videoSurfaceTexture = null
-            videoBitmap?.recycle()
-            videoBitmap = null
+            videoFrameBitmap?.recycle(); videoFrameBitmap = null
             gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
             gifFrameRunnable = null
             try { gifDrawable?.stop() } catch (_: Exception) {}
             gifDrawable = null
-            gifBitmapBuffer?.recycle()
-            gifBitmapBuffer = null
+            gifBitmapBuffer?.recycle(); gifBitmapBuffer = null
         }
 
-        /**
-         * Stop video playback and wait for the codec thread to finish.
-         * Prevents concurrent Canvas access.
-         */
         private suspend fun stopVideoAndWait() {
             videoPlaying = false
             videoStopFlag = true
@@ -161,10 +142,7 @@ class LiveWallpaperService : WallpaperService() {
             mediaCodecJob = null
             job?.cancel()
             try { job?.join() } catch (_: Exception) {}
-            videoSurfaceTexture?.release()
-            videoSurfaceTexture = null
-            videoBitmap?.recycle()
-            videoBitmap = null
+            videoFrameBitmap?.recycle(); videoFrameBitmap = null
         }
 
         private fun pauseMedia() {
@@ -187,10 +165,7 @@ class LiveWallpaperService : WallpaperService() {
                     val groupDao = db.wallpaperGroupDao()
 
                     val groups = groupDao.getEnabledGroupsSync()
-                    if (groups.isEmpty()) {
-                        Log.d(TAG, "No enabled groups")
-                        return@launch
-                    }
+                    if (groups.isEmpty()) return@launch
 
                     currentScaleMode = try {
                         ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
@@ -206,10 +181,7 @@ class LiveWallpaperService : WallpaperService() {
                         pickNextImage(switchMode, imageDao, lastId, dao)
                     }
 
-                    if (nextImage == null) {
-                        Log.d(TAG, "No next image")
-                        return@launch
-                    }
+                    if (nextImage == null) return@launch
 
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
                     val mediaType = nextImage.mediaType ?: "IMAGE"
@@ -217,22 +189,17 @@ class LiveWallpaperService : WallpaperService() {
 
                     when (mediaType) {
                         "VIDEO" -> {
-                            stopVideoAndWait()
-                            delay(30)
+                            stopVideoAndWait(); delay(30)
                             startVideoDecoder(nextImage.uri, currentScaleMode)
                         }
                         "GIF" -> {
-                            stopVideoAndWait()
-                            delay(30)
+                            stopVideoAndWait(); delay(30)
                             mainHandler.post { playGif(nextImage.uri, currentScaleMode) }
                         }
                         else -> {
-                            stopVideoAndWait()
-                            delay(30)
+                            stopVideoAndWait(); delay(30)
                             val bitmap = loadBitmap(nextImage.uri)
-                            if (bitmap != null) {
-                                mainHandler.post { showBitmap(bitmap, currentScaleMode) }
-                            }
+                            if (bitmap != null) mainHandler.post { showBitmap(bitmap, currentScaleMode) }
                         }
                     }
                 } catch (e: Exception) {
@@ -244,20 +211,14 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private suspend fun pickNextImage(
-            switchMode: SwitchMode,
-            imageDao: WallpaperImageDao,
-            lastId: Long,
-            dao: SettingsDao
+            switchMode: SwitchMode, imageDao: WallpaperImageDao, lastId: Long, dao: SettingsDao
         ): WallpaperImage? {
             return when (switchMode) {
-                SwitchMode.RANDOM -> {
-                    imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
-                        ?: imageDao.getRandomImageFromEnabledGroups()
-                }
+                SwitchMode.RANDOM -> imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                    ?: imageDao.getRandomImageFromEnabledGroups()
                 SwitchMode.SEQUENTIAL -> {
                     val count = imageDao.countByEnabledGroups()
-                    if (count == 0) null
-                    else {
+                    if (count == 0) null else {
                         val idx = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
                         val next = idx % count
                         dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, (next + 1).toLong())
@@ -267,22 +228,17 @@ class LiveWallpaperService : WallpaperService() {
                 }
                 SwitchMode.SHUFFLE -> {
                     val totalCount = imageDao.countByEnabledGroups()
-                    if (totalCount == 0) null
-                    else {
+                    if (totalCount == 0) null else {
                         if (shuffleAllCount != totalCount || shuffleShownIds.size >= totalCount) {
-                            shuffleShownIds.clear()
-                            shuffleAllCount = totalCount
+                            shuffleShownIds.clear(); shuffleAllCount = totalCount
                         }
-                        var attempts = 0
-                        var candidate: WallpaperImage? = null
+                        var attempts = 0; var candidate: WallpaperImage? = null
                         while (attempts < 10 && candidate == null) {
                             val img = imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
                                 ?: imageDao.getRandomImageFromEnabledGroups()
-                            if (img != null && img.id !in shuffleShownIds) {
-                                candidate = img
-                            } else if (img != null && shuffleShownIds.size >= totalCount) {
-                                shuffleShownIds.clear()
-                                candidate = img
+                            if (img != null && img.id !in shuffleShownIds) candidate = img
+                            else if (img != null && shuffleShownIds.size >= totalCount) {
+                                shuffleShownIds.clear(); candidate = img
                             }
                             attempts++
                         }
@@ -308,20 +264,11 @@ class LiveWallpaperService : WallpaperService() {
 
                     if (image != null) {
                         when (image.mediaType ?: "IMAGE") {
-                            "VIDEO" -> {
-                                startVideoDecoder(image.uri, currentScaleMode)
-                                return@launch
-                            }
-                            "GIF" -> {
-                                mainHandler.post { playGif(image.uri, currentScaleMode) }
-                                return@launch
-                            }
+                            "VIDEO" -> { startVideoDecoder(image.uri, currentScaleMode); return@launch }
+                            "GIF" -> { mainHandler.post { playGif(image.uri, currentScaleMode) }; return@launch }
                             else -> {
                                 val bitmap = loadBitmap(image.uri)
-                                if (bitmap != null) {
-                                    mainHandler.post { showBitmap(bitmap, currentScaleMode) }
-                                    return@launch
-                                }
+                                if (bitmap != null) { mainHandler.post { showBitmap(bitmap, currentScaleMode) }; return@launch }
                             }
                         }
                     }
@@ -332,46 +279,36 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video via MediaCodec → Bitmap → Canvas ========
-        // No OpenGL, no EGL, no SurfaceTexture/Surface conflict with Canvas
+        // ======== Video: MediaCodec → ImageReader → Bitmap → Canvas ========
+        // Pure Canvas rendering. No EGL, no OpenGL, no SurfaceTexture.
 
         private fun startVideoDecoder(uriStr: String, scaleMode: ScaleMode) {
             videoPlaying = true
             videoStopFlag = false
             lastVideoPtsUs = -1L
-
             mediaCodecJob = scope.launch {
                 try {
                     playVideoLoop(uriStr, scaleMode)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Video playback error: ${e.message}")
+                    Log.e(TAG, "Video error: ${e.message}")
                 } finally {
                     videoPlaying = false
+                    videoFrameBitmap?.recycle(); videoFrameBitmap = null
                 }
             }
         }
 
-        /**
-         * Play video in a loop. Restarts automatically when reaching EOS.
-         * Uses Canvas for ALL rendering - no EGL conflict with images/GIF.
-         */
         private suspend fun playVideoLoop(uriStr: String, scaleMode: ScaleMode) {
             while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
-                if (!isVisible) {
-                    delay(100)
-                    continue
-                }
+                if (!isVisible) { delay(100); continue }
                 playVideoOnce(uriStr, scaleMode)
-                // Loop: if EOS reached, restart from beginning
-                if (!videoStopFlag && surfaceReady) {
-                    delay(16) // Brief pause between loops
-                }
+                if (!videoStopFlag && surfaceReady) delay(16) // Brief pause, then loop
             }
         }
 
         /**
-         * Play video once using MediaCodec → SurfaceTexture → Bitmap → Canvas.
-         * All rendering through Canvas. No EGL at all.
+         * Play video once. Decodes via MediaCodec, reads frames via ImageReader,
+         * converts to Bitmap, draws to Canvas. Zero OpenGL.
          */
         private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode) {
             lastVideoPtsUs = -1L
@@ -379,23 +316,20 @@ class LiveWallpaperService : WallpaperService() {
 
             var extractor: MediaExtractor? = null
             var codec: MediaCodec? = null
+            var imageReader: ImageReader? = null
+
             try {
                 val uri = Uri.parse(uriStr)
                 extractor = MediaExtractor()
                 extractor.setDataSource(applicationContext, uri, null)
 
-                // Find video track
-                var trackIndex = -1
-                var mime = ""
+                var trackIndex = -1; var mime = ""
                 for (i in 0 until extractor.trackCount) {
                     val format = extractor.getTrackFormat(i)
                     val m = format.getString(MediaFormat.KEY_MIME) ?: continue
                     if (m.startsWith("video/")) { trackIndex = i; mime = m; break }
                 }
-                if (trackIndex < 0) {
-                    Log.e(TAG, "No video track in: $uriStr")
-                    return
-                }
+                if (trackIndex < 0) { Log.e(TAG, "No video track"); return }
 
                 extractor.selectTrack(trackIndex)
                 val format = extractor.getTrackFormat(trackIndex)
@@ -403,34 +337,46 @@ class LiveWallpaperService : WallpaperService() {
                 val height = format.getInteger(MediaFormat.KEY_HEIGHT)
                 val fps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30)
 
-                // Create SurfaceTexture for MediaCodec output
-                // We don't render via EGL - we convert to Bitmap and use Canvas
-                videoSurfaceTexture?.release()
-                videoSurfaceTexture = SurfaceTexture(0)
-                videoBitmap?.recycle()
-                videoBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                // Limit decode resolution to save memory (max 1080p)
+                val scale = if (width > 1920 || height > 1080) {
+                    val sx = width.toFloat() / 1280f
+                    val sy = height.toFloat() / 720f
+                    maxOf(sx, sy)
+                } else 1f
+                val decodeW = (width / scale).toInt().let { it - it % 2 }  // Ensure even
+                val decodeH = (height / scale).toInt().let { it - it % 2 }
 
-                val inputSurface = Surface(videoSurfaceTexture!!)
+                // ImageReader to receive decoded frames - YUV_420_888 is widely supported
+                imageReader = ImageReader.newInstance(decodeW, decodeH, ImageFormat.YUV_420_888, 2)
+                val readerSurface = imageReader.surface
+
                 codec = MediaCodec.createDecoderByType(mime)
-                codec.configure(format, inputSurface, null, 0)
+                // Request scaled output if supported
+                if (scale > 1f) {
+                    format.setInteger(MediaFormat.KEY_WIDTH, decodeW)
+                    format.setInteger(MediaFormat.KEY_HEIGHT, decodeH)
+                }
+                codec.configure(format, readerSurface, null, 0)
                 codec.start()
-                inputSurface.release()
 
-                Log.d(TAG, "Video started: $mime ${width}x${height} ${fps}fps")
+                // Reusable Bitmap for video frames
+                videoFrameBitmap?.recycle()
+                videoFrameBitmap = Bitmap.createBitmap(decodeW, decodeH, Bitmap.Config.ARGB_8888)
+
+                Log.d(TAG, "Video: $mime ${width}x${height} → ${decodeW}x${decodeH} ${fps}fps")
 
                 val info = MediaCodec.BufferInfo()
                 var inputDone = false
-                val frameIntervalMs = (1000L / fps.coerceIn(1, 60))
+                val frameIntervalMs = 1000L / fps.coerceIn(1, 60)
 
                 while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag && isVisible) {
-                    // Feed compressed data to decoder
+                    // Feed compressed data
                     if (!inputDone) {
                         val inputIdx = codec.dequeueInputBuffer(10000L)
                         if (inputIdx >= 0) {
                             val buf = codec.getInputBuffer(inputIdx) ?: continue
                             val size = extractor.readSampleData(buf, 0)
                             if (size < 0) {
-                                // End of stream - signal loop restart
                                 codec.queueInputBuffer(inputIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 inputDone = true
                             } else {
@@ -440,47 +386,28 @@ class LiveWallpaperService : WallpaperService() {
                         }
                     }
 
-                    // Get decoded frame
-                    val outputIdx = codec.dequeueOutputBuffer(info, 10000L)
-                    if (outputIdx >= 0) {
-                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            codec.releaseOutputBuffer(outputIdx, false)
-                            Log.d(TAG, "Video EOS, will loop")
-                            return // Return to playVideoLoop for restart
+                    // Get decoded frame from ImageReader
+                    val image = withTimeoutOrNull(100) { imageReader.acquireLatestImage() }
+                    if (image != null) {
+                        try {
+                            val bmp = imageToBitmap(image, videoFrameBitmap)
+                            if (bmp != null) showBitmapDirect(bmp, scaleMode)
+                        } finally {
+                            image.close()
                         }
-
-                        // Update SurfaceTexture with new frame
-                        codec.releaseOutputBuffer(outputIdx, true)
-                        videoSurfaceTexture?.updateTexImage()
-
-                        // Convert SurfaceTexture frame to Bitmap
-                        val bmp = videoBitmap
-                        val st = videoSurfaceTexture
-                        if (bmp != null && st != null) {
-                            val canvas = Canvas(bmp)
-                            val texMatrix = FloatArray(16)
-                            st.getTransformMatrix(texMatrix)
-                            // Draw the OES texture to our Bitmap canvas
-                            // Use a simple approach: draw the texture via a temporary GL context
-                            // Actually, we need a different approach for pure Canvas mode
-                            drawSurfaceTextureToBitmap(st, bmp)
-                            // Now draw the Bitmap to wallpaper Canvas
-                            showBitmapDirect(bmp, scaleMode)
-                        }
-
                         // Frame pacing
-                        val currentPtsUs = info.presentationTimeUs
-                        if (lastVideoPtsUs >= 0) {
-                            val deltaUs = currentPtsUs - lastVideoPtsUs
-                            val deltaMs = deltaUs / 1000
-                            if (deltaMs in 1..frameIntervalMs * 2) {
-                                delay(deltaMs)
-                            } else {
-                                delay(frameIntervalMs)
-                            }
-                        }
-                        lastVideoPtsUs = currentPtsUs
+                        delay(frameIntervalMs)
                     } else {
+                        // No frame available yet, check codec for EOS
+                        val outputIdx = codec.dequeueOutputBuffer(info, 5000L)
+                        if (outputIdx >= 0) {
+                            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                                codec.releaseOutputBuffer(outputIdx, false)
+                                Log.d(TAG, "Video EOS, will loop")
+                                return
+                            }
+                            codec.releaseOutputBuffer(outputIdx, true)
+                        }
                         delay(1)
                     }
                 }
@@ -490,146 +417,54 @@ class LiveWallpaperService : WallpaperService() {
                 try { codec?.stop() } catch (_: Exception) {}
                 try { codec?.release() } catch (_: Exception) {}
                 try { extractor?.release() } catch (_: Exception) {}
+                try { imageReader?.close() } catch (_: Exception) {}
             }
         }
 
         /**
-         * Draw SurfaceTexture content to Bitmap using a temporary EGL context.
-         * This is a mini OpenGL render just for the pixel readback,
-         * completely separate from the wallpaper Canvas.
+         * Convert YUV_420_888 Image to Bitmap using fast integer math.
+         * Reuses the provided Bitmap to avoid GC pressure.
          */
-        private fun drawSurfaceTextureToBitmap(st: SurfaceTexture, dst: Bitmap) {
-            try {
-                // Use OpenGL to render SurfaceTexture to a temporary FBO,
-                // then read pixels back to Bitmap
-                val w = dst.width
-                val h = dst.height
+        private fun imageToBitmap(image: Image, dst: Bitmap?): Bitmap? {
+            if (dst == null) return null
+            val w = image.width; val h = image.height
+            if (w != dst.width || h != dst.height) return null
 
-                // Minimal EGL setup for offscreen rendering
-                val eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-                val ver = IntArray(2)
-                EGL14.eglInitialize(eglDisplay, ver, 0, ver, 1)
+            val planes = image.planes
+            val yBuf = planes[0].buffer
+            val uBuf = planes[1].buffer
+            val vBuf = planes[2].buffer
+            val yRowStride = planes[0].rowStride
+            val uvRowStride = planes[1].rowStride
+            val uvPixelStride = planes[1].pixelStride
 
-                val cfgAttr = intArrayOf(
-                    EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8,
-                    EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
-                    EGL14.EGL_RENDERABLE_TYPE, 4, EGL14.EGL_SURFACE_TYPE, 4,
-                    EGL14.EGL_NONE
-                )
-                val cfgs = arrayOfNulls<android.opengl.EGLConfig>(1)
-                val num = IntArray(1)
-                EGL14.eglChooseConfig(eglDisplay, cfgAttr, 0, cfgs, 0, 1, num, 0)
-                val cfg = cfgs[0] ?: run {
-                    EGL14.eglTerminate(eglDisplay)
-                    return
+            val pixels = IntArray(w * h)
+            var idx = 0
+            for (row in 0 until h) {
+                for (col in 0 until w) {
+                    val yIdx = row * yRowStride + col
+                    val uvRow = row / 2
+                    val uvCol = col / 2
+                    val uvIdx = uvRow * uvRowStride + uvCol * uvPixelStride
+
+                    val y = (yBuf.get(yIdx).toInt() and 0xFF) - 16
+                    val u = (uBuf.get(uvIdx).toInt() and 0xFF) - 128
+                    val v = (vBuf.get(uvIdx).toInt() and 0xFF) - 128
+
+                    // BT.601 full range (integer math, no float)
+                    var r = (298 * y + 409 * v + 128) shr 8
+                    var g = (298 * y - 100 * u - 208 * v + 128) shr 8
+                    var b = (298 * y + 516 * u + 128) shr 8
+
+                    r = r.coerceIn(0, 255)
+                    g = g.coerceIn(0, 255)
+                    b = b.coerceIn(0, 255)
+
+                    pixels[idx++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
                 }
-
-                val ctxAttr = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
-                val eglCtx = EGL14.eglCreateContext(eglDisplay, cfg, EGL14.EGL_NO_CONTEXT, ctxAttr, 0)
-
-                // Pbuffer surface for offscreen rendering
-                val pbufAttr = intArrayOf(EGL14.EGL_WIDTH, w, EGL14.EGL_HEIGHT, h, EGL14.EGL_NONE)
-                val pbufSurface = EGL14.eglCreatePbufferSurface(eglDisplay, cfg, pbufAttr)
-                EGL14.eglMakeCurrent(eglDisplay, pbufSurface, pbufSurface, eglCtx)
-
-                // Create OES texture
-                val texIds = IntArray(1)
-                android.opengl.GLES20.glGenTextures(1, texIds, 0)
-                android.opengl.GLES20.glBindTexture(android.opengl.GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texIds[0])
-                android.opengl.GLES20.glTexParameteri(android.opengl.GLES11Ext.GL_TEXTURE_EXTERNAL_OES, android.opengl.GLES20.GL_TEXTURE_MIN_FILTER, android.opengl.GLES20.GL_LINEAR)
-                android.opengl.GLES20.glTexParameteri(android.opengl.GLES11Ext.GL_TEXTURE_EXTERNAL_OES, android.opengl.GLES20.GL_TEXTURE_MAG_FILTER, android.opengl.GLES20.GL_LINEAR)
-
-                // Attach texture to SurfaceTexture
-                st.attachToGLContext(texIds[0])
-                st.updateTexImage()
-
-                // Simple shader to render OES texture
-                val vs = """
-                    attribute vec4 aPos;
-                    attribute vec2 aTex;
-                    varying vec2 vTex;
-                    void main() { gl_Position = aPos; vTex = aTex; }
-                """
-                val fs = """
-                    #extension GL_OES_EGL_image_external : require
-                    precision mediump float;
-                    varying vec2 vTex;
-                    uniform samplerExternalOES uTex;
-                    void main() { gl_FragColor = texture2D(uTex, vTex); }
-                """
-                val vsId = loadShader(android.opengl.GLES20.GL_VERTEX_SHADER, vs)
-                val fsId = loadShader(android.opengl.GLES20.GL_FRAGMENT_SHADER, fs)
-                val prog = android.opengl.GLES20.glCreateProgram()
-                android.opengl.GLES20.glAttachShader(prog, vsId)
-                android.opengl.GLES20.glAttachShader(prog, fsId)
-                android.opengl.GLES20.glLinkProgram(prog)
-                android.opengl.GLES20.glDeleteShader(vsId)
-                android.opengl.GLES20.glDeleteShader(fsId)
-
-                android.opengl.GLES20.glViewport(0, 0, w, h)
-                android.opengl.GLES20.glClearColor(0f, 0f, 0f, 1f)
-                android.opengl.GLES20.glClear(android.opengl.GLES20.GL_COLOR_BUFFER_BIT)
-                android.opengl.GLES20.glUseProgram(prog)
-
-                val vb = java.nio.ByteBuffer.allocateDirect(32).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-                vb.put(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)); vb.position(0)
-                val tb = java.nio.ByteBuffer.allocateDirect(32).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
-                tb.put(floatArrayOf(0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f)); tb.position(0)
-
-                val pLoc = android.opengl.GLES20.glGetAttribLocation(prog, "aPos")
-                val tLoc = android.opengl.GLES20.glGetAttribLocation(prog, "aTex")
-                val uLoc = android.opengl.GLES20.glGetUniformLocation(prog, "uTex")
-                android.opengl.GLES20.glActiveTexture(android.opengl.GLES20.GL_TEXTURE0)
-                android.opengl.GLES20.glBindTexture(android.opengl.GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texIds[0])
-                android.opengl.GLES20.glUniform1i(uLoc, 0)
-                android.opengl.GLES20.glEnableVertexAttribArray(pLoc)
-                android.opengl.GLES20.glVertexAttribPointer(pLoc, 2, android.opengl.GLES20.GL_FLOAT, false, 0, vb)
-                android.opengl.GLES20.glEnableVertexAttribArray(tLoc)
-                android.opengl.GLES20.glVertexAttribPointer(tLoc, 2, android.opengl.GLES20.GL_FLOAT, false, 0, tb)
-                android.opengl.GLES20.glDrawArrays(android.opengl.GLES20.GL_TRIANGLE_STRIP, 0, 4)
-
-                // Read pixels from GL framebuffer to Bitmap
-                val buf = java.nio.ByteBuffer.allocateDirect(w * h * 4).order(java.nio.ByteOrder.nativeOrder())
-                android.opengl.GLES20.glReadPixels(0, 0, w, h, android.opengl.GLES20.GL_RGBA, android.opengl.GLES20.GL_UNSIGNED_BYTE, buf)
-                buf.position(0)
-                dst.copyPixelsFromBuffer(buf)
-
-                // Cleanup
-                st.detachFromGLContext()
-                android.opengl.GLES20.glDeleteTextures(1, texIds, 0)
-                android.opengl.GLES20.glDeleteProgram(prog)
-                EGL14.eglDestroySurface(eglDisplay, pbufSurface)
-                EGL14.eglDestroyContext(eglDisplay, eglCtx)
-                EGL14.eglTerminate(eglDisplay)
-            } catch (e: Exception) {
-                Log.e(TAG, "drawSurfaceTextureToBitmap error: ${e.message}")
             }
-        }
-
-        private fun loadShader(type: Int, src: String): Int {
-            val s = android.opengl.GLES20.glCreateShader(type)
-            android.opengl.GLES20.glShaderSource(s, src)
-            android.opengl.GLES20.glCompileShader(s)
-            return s
-        }
-
-        /**
-         * Draw Bitmap directly to wallpaper Canvas.
-         * Used for video frames that have been converted from SurfaceTexture.
-         */
-        private fun showBitmapDirect(bitmap: Bitmap, scaleMode: ScaleMode) {
-            if (!surfaceReady) return
-            try {
-                val canvas = surfaceHolder.lockCanvas() ?: return
-                canvas.drawColor(Color.BLACK)
-                val m = getMetrics()
-                val dest = calcDestRect(
-                    bitmap.width.toFloat(), bitmap.height.toFloat(),
-                    m.widthPixels.toFloat(), m.heightPixels.toFloat(), scaleMode
-                )
-                canvas.drawBitmap(bitmap, null, dest, null)
-                surfaceHolder.unlockCanvasAndPost(canvas)
-            } catch (_: Exception) {}
+            dst.setPixels(pixels, 0, w, 0, 0, w, h)
+            return dst
         }
 
         // ======== GIF via Canvas ========
@@ -678,20 +513,30 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Image rendering via Canvas ========
+        // ======== Canvas rendering ========
 
         private fun showBitmap(bitmap: Bitmap, scaleMode: ScaleMode = ScaleMode.FIT) {
             if (!surfaceReady) return
             try {
-                currentBitmap?.recycle()
-                currentBitmap = bitmap
+                currentBitmap?.recycle(); currentBitmap = bitmap
                 val canvas = surfaceHolder.lockCanvas() ?: return
                 canvas.drawColor(Color.BLACK)
                 val m = getMetrics()
-                val dest = calcDestRect(
-                    bitmap.width.toFloat(), bitmap.height.toFloat(),
-                    m.widthPixels.toFloat(), m.heightPixels.toFloat(), scaleMode
-                )
+                val dest = calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(),
+                    m.widthPixels.toFloat(), m.heightPixels.toFloat(), scaleMode)
+                canvas.drawBitmap(bitmap, null, dest, null)
+                surfaceHolder.unlockCanvasAndPost(canvas)
+            } catch (_: Exception) {}
+        }
+
+        private fun showBitmapDirect(bitmap: Bitmap, scaleMode: ScaleMode) {
+            if (!surfaceReady) return
+            try {
+                val canvas = surfaceHolder.lockCanvas() ?: return
+                canvas.drawColor(Color.BLACK)
+                val m = getMetrics()
+                val dest = calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(),
+                    m.widthPixels.toFloat(), m.heightPixels.toFloat(), scaleMode)
                 canvas.drawBitmap(bitmap, null, dest, null)
                 surfaceHolder.unlockCanvasAndPost(canvas)
             } catch (_: Exception) {}
@@ -728,8 +573,6 @@ class LiveWallpaperService : WallpaperService() {
                 surfaceHolder.unlockCanvasAndPost(canvas)
             } catch (_: Exception) {}
         }
-
-        // ======== Utilities ========
 
         private fun loadBitmap(uriStr: String): Bitmap? {
             return com.wallpaperswitcher.engine.BitmapUtils.loadBitmap(applicationContext, uriStr)
