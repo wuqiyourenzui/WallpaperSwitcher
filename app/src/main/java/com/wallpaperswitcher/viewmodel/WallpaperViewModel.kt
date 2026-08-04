@@ -286,10 +286,12 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                // Set via WallpaperManager (works for both live wallpaper and regular mode)
-                val engine = com.wallpaperswitcher.engine.WallpaperEngine(getApplication())
-                engine.setWallpaperForImage(image.uri)
-                // Also update live wallpaper surface if active
+                // For images, set via WallpaperManager directly
+                if ((image.mediaType ?: "IMAGE") != "VIDEO") {
+                    val engine = com.wallpaperswitcher.engine.WallpaperEngine(getApplication())
+                    engine.setWallpaperForImage(image.uri)
+                }
+                // Update live wallpaper surface (works for both image and video)
                 val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH)
                 switchIntent.setPackage(getApplication<Application>().packageName)
                 getApplication<Application>().sendBroadcast(switchIntent)

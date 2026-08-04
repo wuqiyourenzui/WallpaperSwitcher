@@ -335,9 +335,93 @@ class LiveWallpaperService : WallpaperService() {
                         delay(100)
                         continue
                     }
-                    playVideoOnce(uriStr, scaleMode)
+                    val played = playVideoOnce(uriStr, scaleMode)
+                    if (!played) {
+                        // Fallback: use bitmap-based video rendering
+                        Log.d(TAG, "SurfaceTexture failed, using bitmap fallback")
+                        playVideoBitmapFallback(uriStr, scaleMode)
+                        break
+                    }
                 }
                 videoPlaying = false
+            }
+        }
+
+        /**
+         * Bitmap-based video rendering fallback.
+         * Used when SurfaceTexture/OpenGL fails.
+         */
+        private suspend fun playVideoBitmapFallback(uriStr: String, scaleMode: ScaleMode) {
+            lastVideoPtsUs = -1L
+            var extractor: MediaExtractor? = null
+            var codec: MediaCodec? = null
+            try {
+                val uri = Uri.parse(uriStr)
+                extractor = MediaExtractor()
+                extractor.setDataSource(applicationContext, uri, null)
+                var trackIndex = -1
+                var mime = ""
+                for (i in 0 until extractor.trackCount) {
+                    val format = extractor.getTrackFormat(i)
+                    val m = format.getString(MediaFormat.KEY_MIME) ?: continue
+                    if (m.startsWith("video/")) { trackIndex = i; mime = m; break }
+                }
+                if (trackIndex < 0) return
+                extractor.selectTrack(trackIndex)
+                val format = extractor.getTrackFormat(trackIndex)
+                val width = format.getInteger(MediaFormat.KEY_WIDTH)
+                val height = format.getInteger(MediaFormat.KEY_HEIGHT)
+
+                codec = MediaCodec.createDecoderByType(mime)
+                codec.configure(format, null, null, 0)
+                codec.start()
+
+                val info = MediaCodec.BufferInfo()
+                var inputDone = false
+
+                while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag && isVisible) {
+                    if (!inputDone) {
+                        val inputIdx = codec.dequeueInputBuffer(10000L)
+                        if (inputIdx >= 0) {
+                            val buf = codec.getInputBuffer(inputIdx) ?: continue
+                            val size = extractor.readSampleData(buf, 0)
+                            if (size < 0) {
+                                codec.queueInputBuffer(inputIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                codec.queueInputBuffer(inputIdx, 0, size, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                    val outputIdx = codec.dequeueOutputBuffer(info, 10000L)
+                    if (outputIdx >= 0) {
+                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            codec.releaseOutputBuffer(outputIdx, false)
+                            return
+                        }
+                        val outBuf = codec.getOutputBuffer(outputIdx)
+                        if (outBuf != null && surfaceReady && isVisible) {
+                            val bmp = yuvToBitmap(outBuf, width, height)
+                            if (bmp != null) showBitmap(bmp, scaleMode)
+                        }
+                        codec.releaseOutputBuffer(outputIdx, false)
+                        val currentPtsUs = info.presentationTimeUs
+                        if (lastVideoPtsUs >= 0) {
+                            val deltaUs = currentPtsUs - lastVideoPtsUs
+                            if (deltaUs in 1 until 1_000_000) delay(deltaUs / 1000)
+                        }
+                        lastVideoPtsUs = currentPtsUs
+                    } else {
+                        delay(1)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "playVideoBitmapFallback error: " + e.message)
+            } finally {
+                try { codec?.stop() } catch (_: Exception) {}
+                try { codec?.release() } catch (_: Exception) {}
+                try { extractor?.release() } catch (_: Exception) {}
             }
         }
 

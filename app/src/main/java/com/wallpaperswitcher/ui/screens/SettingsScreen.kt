@@ -1,7 +1,5 @@
 package com.wallpaperswitcher.ui.screens
 
-import android.app.WallpaperManager
-import android.content.ComponentName
 import android.content.Intent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -23,7 +21,6 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.data.ScaleMode
 import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
-import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -129,68 +126,6 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 checked = doubleTapEnabled,
                 onCheckedChange = { viewModel.toggleDoubleTap(it) }
             )
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                        // Set as Live Wallpaper button
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        var success = false
-                        try {
-                            val intent = Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
-                                putExtra(
-                                    WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT,
-                                    ComponentName(context, LiveWallpaperService::class.java)
-                                )
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
-                            context.startActivity(intent)
-                            success = true
-                        } catch (_: Exception) {}
-                        if (!success) {
-                            try {
-                                val intent = Intent(WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER)
-                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                context.startActivity(intent)
-                                success = true
-                            } catch (_: Exception) {}
-                        }
-                        if (!success) {
-                            try {
-                                val intent = Intent(Intent.ACTION_SET_WALLPAPER)
-                                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                context.startActivity(intent)
-                            } catch (_: Exception) {
-                                android.widget.Toast.makeText(context, "请手动设置壁纸：设置 > 壁纸 > 动态壁纸", android.widget.Toast.LENGTH_LONG).show()
-                            }
-                        }
-                    }
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    Icons.Filled.Wallpaper,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(24.dp)
-                )
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("设置为动态壁纸", style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        "双击切换功能需要此设置",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Icon(
-                    Icons.Filled.ChevronRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
         }
 
         Spacer(modifier = Modifier.height(8.dp))
@@ -199,12 +134,12 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
         SettingsSection(title = "使用指南") {
             SettingsInfoItem(
                 icon = Icons.Outlined.Info,
-                title = "两种模式",
+                title = "如何使用",
                 subtitle = buildString {
-                    appendLine("1. 服务模式：开启「自动切换服务」和「解锁切换」，实现定时/解锁切换。")
-                    appendLine("2. 动态壁纸模式：点击上方「设置为动态壁纸」，双击屏幕即可切换。")
-                    appendLine("")
-                    appendLine("两种模式可以同时使用。")
+                    appendLine("1. 创建分组，添加图片或视频。")
+                    appendLine("2. 长按图片/视频 → 设为壁纸。")
+                    appendLine("3. 开启自动切换服务，壁纸会定时自动切换。")
+                    appendLine("4. 解锁切换和双击切换可在下方开启。")
                 }
             )
 

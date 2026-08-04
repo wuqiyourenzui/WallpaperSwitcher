@@ -590,9 +590,14 @@ fun WallpaperPreviewDialog(
                 AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(Uri.parse(image.uri))
-                        .size(800, 800) // Preview: limit to 800px
+                        .size(800, 800)
                         .crossfade(200)
                         .allowHardware(false)
+                        .apply {
+                            if (image.mediaType == "VIDEO") {
+                                decoderFactory(coil.decode.VideoFrameDecoder.Factory())
+                            }
+                        }
                         .build(),
                     contentDescription = image.displayName,
                     contentScale = ContentScale.Fit,
@@ -614,7 +619,7 @@ fun WallpaperPreviewDialog(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    "将此图片设置为壁纸",
+                    if ((image.mediaType ?: "IMAGE") == "VIDEO") "将此视频设置为壁纸" else "将此图片设置为壁纸",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
