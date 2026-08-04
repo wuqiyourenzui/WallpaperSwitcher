@@ -50,6 +50,7 @@ class LiveWallpaperService : WallpaperService() {
         private var mediaCodecJob: Job? = null
         private var videoPlaying = false
         private var videoStopFlag = false
+        private var videoRenderer: VideoRenderer? = null
 
         // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
@@ -130,6 +131,8 @@ class LiveWallpaperService : WallpaperService() {
         override fun onDestroy() {
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
             releaseAll()
+            videoRenderer?.release()
+            videoRenderer = null
             currentBitmap?.recycle(); currentBitmap = null
             scope.cancel()
             super.onDestroy()
@@ -330,115 +333,38 @@ class LiveWallpaperService : WallpaperService() {
             videoStopFlag = false
             lastVideoPtsUs = -1L
             mediaCodecJob = scope.launch {
+                // Lazy-init renderer on IO thread (EGL must be on rendering thread)
+                if (videoRenderer == null || !videoRenderer!!.isInitialized()) {
+                    videoRenderer?.release()
+                    val m = getMetrics()
+                    videoRenderer = VideoRenderer()
+                    if (!videoRenderer!!.init(surfaceHolder.surface, m.widthPixels, m.heightPixels)) {
+                        videoRenderer?.release()
+                        videoRenderer = null
+                        Log.e(TAG, "VideoRenderer init failed")
+                        videoPlaying = false
+                        return@launch
+                    }
+                }
                 while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
                     if (!isVisible) {
                         delay(100)
                         continue
                     }
-                    val played = playVideoOnce(uriStr, scaleMode)
-                    if (!played) {
-                        // Fallback: use bitmap-based video rendering
-                        Log.d(TAG, "SurfaceTexture failed, using bitmap fallback")
-                        playVideoBitmapFallback(uriStr, scaleMode)
-                        break
-                    }
+                    playVideoOnce(uriStr, scaleMode)
                 }
                 videoPlaying = false
             }
         }
 
         /**
-         * Bitmap-based video rendering fallback.
-         * Used when SurfaceTexture/OpenGL fails.
-         */
-        private suspend fun playVideoBitmapFallback(uriStr: String, scaleMode: ScaleMode) {
-            lastVideoPtsUs = -1L
-            var extractor: MediaExtractor? = null
-            var codec: MediaCodec? = null
-            try {
-                val uri = Uri.parse(uriStr)
-                extractor = MediaExtractor()
-                extractor.setDataSource(applicationContext, uri, null)
-                var trackIndex = -1
-                var mime = ""
-                for (i in 0 until extractor.trackCount) {
-                    val format = extractor.getTrackFormat(i)
-                    val m = format.getString(MediaFormat.KEY_MIME) ?: continue
-                    if (m.startsWith("video/")) { trackIndex = i; mime = m; break }
-                }
-                if (trackIndex < 0) return
-                extractor.selectTrack(trackIndex)
-                val format = extractor.getTrackFormat(trackIndex)
-                val width = format.getInteger(MediaFormat.KEY_WIDTH)
-                val height = format.getInteger(MediaFormat.KEY_HEIGHT)
-
-                codec = MediaCodec.createDecoderByType(mime)
-                codec.configure(format, null, null, 0)
-                codec.start()
-
-                val info = MediaCodec.BufferInfo()
-                var inputDone = false
-
-                while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag && isVisible) {
-                    if (!inputDone) {
-                        val inputIdx = codec.dequeueInputBuffer(10000L)
-                        if (inputIdx >= 0) {
-                            val buf = codec.getInputBuffer(inputIdx) ?: continue
-                            val size = extractor.readSampleData(buf, 0)
-                            if (size < 0) {
-                                codec.queueInputBuffer(inputIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                inputDone = true
-                            } else {
-                                codec.queueInputBuffer(inputIdx, 0, size, extractor.sampleTime, 0)
-                                extractor.advance()
-                            }
-                        }
-                    }
-                    val outputIdx = codec.dequeueOutputBuffer(info, 10000L)
-                    if (outputIdx >= 0) {
-                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            codec.releaseOutputBuffer(outputIdx, false)
-                            return
-                        }
-                        val outBuf = codec.getOutputBuffer(outputIdx)
-                        if (outBuf != null && surfaceReady && isVisible) {
-                            val bmp = yuvToBitmap(outBuf, width, height)
-                            if (bmp != null) showBitmap(bmp, scaleMode)
-                        }
-                        codec.releaseOutputBuffer(outputIdx, false)
-                        val currentPtsUs = info.presentationTimeUs
-                        if (lastVideoPtsUs >= 0) {
-                            val deltaUs = currentPtsUs - lastVideoPtsUs
-                            if (deltaUs in 1 until 1_000_000) delay(deltaUs / 1000)
-                        }
-                        lastVideoPtsUs = currentPtsUs
-                    } else {
-                        delay(1)
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "playVideoBitmapFallback error: " + e.message)
-            } finally {
-                try { codec?.stop() } catch (_: Exception) {}
-                try { codec?.release() } catch (_: Exception) {}
-                try { extractor?.release() } catch (_: Exception) {}
-            }
-        }
-
-        /**
          * Play video once using SurfaceTexture + OpenGL (GPU accelerated).
-         * Supports fill/fit/stretch scale modes.
+         * Reuses shared VideoRenderer instance across video switches.
          */
-        private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode): Boolean {
+        private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode) {
             lastVideoPtsUs = -1L
-            if (!surfaceReady) return false
-
-            val m = getMetrics()
-            val renderer = VideoRenderer(surfaceHolder.surface, m.widthPixels, m.heightPixels)
-            if (!renderer.init()) {
-                renderer.release()
-                return false
-            }
+            val renderer = videoRenderer ?: return
+            if (!surfaceReady) return
 
             var extractor: MediaExtractor? = null
             var codec: MediaCodec? = null
@@ -452,23 +378,18 @@ class LiveWallpaperService : WallpaperService() {
                 for (i in 0 until extractor.trackCount) {
                     val format = extractor.getTrackFormat(i)
                     val m2 = format.getString(MediaFormat.KEY_MIME) ?: continue
-                    if (m2.startsWith("video/")) {
-                        trackIndex = i
-                        mime = m2
-                        break
-                    }
+                    if (m2.startsWith("video/")) { trackIndex = i; mime = m2; break }
                 }
-                if (trackIndex < 0) { renderer.release(); return false }
+                if (trackIndex < 0) return
 
                 extractor.selectTrack(trackIndex)
                 val format = extractor.getTrackFormat(trackIndex)
                 val width = format.getInteger(MediaFormat.KEY_WIDTH)
                 val height = format.getInteger(MediaFormat.KEY_HEIGHT)
+                val m = getMetrics()
+                renderer.configureScale(width, height, m.widthPixels, m.heightPixels, scaleMode)
 
-                renderer.configureScale(width, height, scaleMode)
-
-                // MediaCodec outputs to SurfaceTexture's Surface
-                val inputSurface = renderer.surfaceTexture?.let { Surface(it) } ?: run { renderer.release(); return false }
+                val inputSurface = renderer.surfaceTexture?.let { Surface(it) } ?: return
                 codec = MediaCodec.createDecoderByType(mime)
                 codec.configure(format, inputSurface, null, 0)
                 codec.start()
@@ -496,11 +417,10 @@ class LiveWallpaperService : WallpaperService() {
                     if (outputIdx >= 0) {
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             codec.releaseOutputBuffer(outputIdx, false)
-                            return true
+                            return // Return to startVideoDecoder loop for next iteration
                         }
-                        // Render via OpenGL
-                        codec.releaseOutputBuffer(outputIdx, true)
-                        renderer.drawFrame()
+                        codec.releaseOutputBuffer(outputIdx, true) // Render to SurfaceTexture
+                        renderer.drawFrame(m.widthPixels, m.heightPixels)
 
                         val currentPtsUs = info.presentationTimeUs
                         if (lastVideoPtsUs >= 0) {
@@ -518,9 +438,8 @@ class LiveWallpaperService : WallpaperService() {
                 try { codec?.stop() } catch (_: Exception) {}
                 try { codec?.release() } catch (_: Exception) {}
                 try { extractor?.release() } catch (_: Exception) {}
-                renderer.release()
+                // Do NOT release renderer - reused across video switches
             }
-            return false
         }
 
         // Reusable buffers for video decoding (avoids GC pressure)
