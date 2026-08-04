@@ -333,6 +333,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun startVideoDecoder(uriStr: String, scaleMode: ScaleMode) {
             videoPlaying = true
             videoStopFlag = false
+            lastVideoPtsUs = -1L
             mediaCodecJob = scope.launch {
                 // Loop by re-creating decoder each time (avoids codec.flush PTS issues)
                 while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag && isVisible) {
@@ -343,13 +344,17 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         /**
-         * Play video once. Returns when video ends or is stopped.
-         * Caller loops by calling again.
+         * Play video once using Surface rendering (GPU direct, no YUV→Bitmap).
+         * Returns when video ends or is stopped.
          */
         private suspend fun playVideoOnce(uriStr: String, scaleMode: ScaleMode) {
+            lastVideoPtsUs = -1L // Reset for each playthrough
             var extractor: MediaExtractor? = null
             var codec: MediaCodec? = null
             try {
+                if (!surfaceReady) return
+                val surface = surfaceHolder.surface
+
                 val uri = Uri.parse(uriStr)
                 extractor = MediaExtractor()
                 extractor.setDataSource(applicationContext, uri, null)
@@ -369,16 +374,13 @@ class LiveWallpaperService : WallpaperService() {
 
                 extractor.selectTrack(trackIndex)
                 val format = extractor.getTrackFormat(trackIndex)
-                val width = format.getInteger(MediaFormat.KEY_WIDTH)
-                val height = format.getInteger(MediaFormat.KEY_HEIGHT)
-                val fps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30)
 
+                // Configure codec to render directly to Surface (GPU)
                 codec = MediaCodec.createDecoderByType(mime)
-                codec.configure(format, null, null, 0)
+                codec.configure(format, surface, null, 0)
                 codec.start()
 
                 val info = MediaCodec.BufferInfo()
-                var lastPtsUs = -1L
                 var inputDone = false
 
                 while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag && isVisible) {
@@ -398,32 +400,26 @@ class LiveWallpaperService : WallpaperService() {
                         }
                     }
 
-                    // Drain output
+                    // Drain output - render directly to Surface
                     val outputIdx = codec.dequeueOutputBuffer(info, 10000L)
                     if (outputIdx >= 0) {
                         if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             codec.releaseOutputBuffer(outputIdx, false)
-                            return // Video done, return to caller for loop
+                            return
                         }
 
-                        val outBuf = codec.getOutputBuffer(outputIdx)
-                        if (outBuf != null && currentCoroutineContext().isActive && isVisible) {
-                            val bmp = yuvToBitmap(outBuf, width, height)
-                            if (bmp != null) {
-                                mainHandler.post { showBitmap(bmp, scaleMode) }
-                            }
-                        }
-                        codec.releaseOutputBuffer(outputIdx, false)
+                        // true = render to Surface (GPU direct, no CPU bitmap conversion)
+                        codec.releaseOutputBuffer(outputIdx, true)
 
                         // PTS-based frame pacing
                         val currentPtsUs = info.presentationTimeUs
-                        if (lastPtsUs >= 0) {
-                            val deltaUs = currentPtsUs - lastPtsUs
+                        if (lastVideoPtsUs >= 0) {
+                            val deltaUs = currentPtsUs - lastVideoPtsUs
                             if (deltaUs in 1 until 1_000_000) {
                                 delay(deltaUs / 1000)
                             }
                         }
-                        lastPtsUs = currentPtsUs
+                        lastVideoPtsUs = currentPtsUs
                     } else {
                         delay(1)
                     }
@@ -440,6 +436,7 @@ class LiveWallpaperService : WallpaperService() {
         // Reusable buffers for video decoding (avoids GC pressure)
         private var yuvBuffer: ByteArray? = null
         private var jpegStream = java.io.ByteArrayOutputStream()
+        private var lastVideoPtsUs = -1L
 
         private fun yuvToBitmap(buffer: ByteBuffer, width: Int, height: Int): Bitmap? {
             return try {
