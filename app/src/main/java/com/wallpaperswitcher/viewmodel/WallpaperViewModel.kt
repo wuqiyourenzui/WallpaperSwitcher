@@ -327,9 +327,12 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 getApplication<Application>().sendBroadcast(switchIntent)
 
-                // 3. Only launch picker if live wallpaper might not be running
-                //    The broadcast handles the case where it IS running
-                launchLiveWallpaperPicker()
+                // 3. Only launch picker if live wallpaper engine is NOT running
+                //    The picker sets the live wallpaper as system wallpaper (first time only)
+                //    Launching it when the engine IS running destroys the engine and breaks video
+                if (!com.wallpaperswitcher.wallpaper.LiveWallpaperService.engineRunning) {
+                    launchLiveWallpaperPicker()
+                }
 
                 _toastMessage.emit("壁纸已设置！")
             } catch (e: Exception) {

@@ -26,6 +26,10 @@ class LiveWallpaperService : WallpaperService() {
         private const val TAG = "LiveWallpaperService"
         const val ACTION_SWITCH = "com.wallpaperswitcher.ACTION_SWITCH"
         const val EXTRA_TARGET_ID = "target_id"
+
+        @Volatile
+        var engineRunning = false
+            private set
     }
 
     override fun onCreateEngine(): Engine = LiveWallpaperEngine()
@@ -83,6 +87,7 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onCreate(surfaceHolder: SurfaceHolder?) {
             super.onCreate(surfaceHolder)
+            engineRunning = true
             db = AppDatabase.getInstance(applicationContext)
             setTouchEventsEnabled(true)
             val filter = IntentFilter(ACTION_SWITCH)
@@ -125,6 +130,7 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         override fun onDestroy() {
+            engineRunning = false
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
             releaseAll()
             scope.cancel()
@@ -145,10 +151,8 @@ class LiveWallpaperService : WallpaperService() {
             videoStopFlag = true
             val job = videoJob
             videoJob = null
-            // Wait for the decode coroutine to finish and release all resources
-            runBlocking {
-                try { job?.cancelAndJoin() } catch (_: Exception) {}
-            }
+            // Cancel the job; the finally block in decodeAndPlay will release resources
+            job?.cancel()
         }
 
         private fun pauseVideo() {
@@ -390,7 +394,6 @@ class LiveWallpaperService : WallpaperService() {
                             val inputBuffer = decoder.getInputBuffer(inputIndex) ?: continue
                             val sampleSize = extractor.readSampleData(inputBuffer, 0)
                             if (sampleSize < 0) {
-                                // End of stream — loop
                                 decoder.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                                 inputDone = true
                             } else {
@@ -404,28 +407,35 @@ class LiveWallpaperService : WallpaperService() {
                     val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 10_000)
                     if (outputIndex >= 0) {
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            // End of stream — loop infinitely
+                            // End of stream — release buffer, seek, restart input
                             decoder.releaseOutputBuffer(outputIndex, false)
                             extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                             inputDone = false
                             continue
                         }
 
-                        // IMPORTANT: acquire image BEFORE releasing buffer
+                        // CRITICAL: render=true sends frame to ImageReader's Surface
+                        decoder.releaseOutputBuffer(outputIndex, true)
+
+                        // Now acquire the rendered frame from ImageReader
                         val image = imageReader.acquireLatestImage()
                         if (image != null) {
-                            val bitmap = yuvToBitmap(image, width, height)
-                            image.close()
-                            if (bitmap != null) {
-                                showVideoFrame(bitmap, scaleMode)
-                                bitmap.recycle()
+                            try {
+                                val bitmap = yuvToBitmap(image, width, height)
+                                if (bitmap != null) {
+                                    showVideoFrame(bitmap, scaleMode)
+                                    bitmap.recycle()
+                                }
+                            } finally {
+                                image.close()
                             }
                         }
 
-                        decoder.releaseOutputBuffer(outputIndex, false)
-
                         // Frame pacing
                         delay(frameIntervalUs / 1000)
+                    } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        // No output available yet, small delay to avoid busy loop
+                        delay(1)
                     }
                 }
             } finally {
@@ -439,6 +449,7 @@ class LiveWallpaperService : WallpaperService() {
         /**
          * Convert YUV_420_888 Image to ARGB_8888 Bitmap.
          * Uses integer arithmetic for performance.
+         * Uses absolute buffer positions to handle non-zero position().
          */
         private fun yuvToBitmap(image: Image, width: Int, height: Int): Bitmap? {
             return try {
@@ -454,6 +465,11 @@ class LiveWallpaperService : WallpaperService() {
                 val uvRowStride = uPlane.rowStride
                 val uvPixelStride = uPlane.pixelStride
 
+                // Reset buffer positions to ensure consistent reads
+                yBuffer.position(0)
+                uBuffer.position(0)
+                vBuffer.position(0)
+
                 val argb = IntArray(width * height)
 
                 for (y in 0 until height) {
@@ -468,7 +484,7 @@ class LiveWallpaperService : WallpaperService() {
                         val uVal = uBuffer.get(uvOffset).toInt() and 0xFF
                         val vVal = vBuffer.get(uvOffset).toInt() and 0xFF
 
-                        // Integer YUV to RGB (fixed-point, 10-bit precision)
+                        // Integer YUV to RGB (BT.601, fixed-point 10-bit)
                         val c = yVal - 16
                         val d = uVal - 128
                         val e = vVal - 128
