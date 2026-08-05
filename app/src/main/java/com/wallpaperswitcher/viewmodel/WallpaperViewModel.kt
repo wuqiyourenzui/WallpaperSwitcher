@@ -291,6 +291,25 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Delete images by IDs directly — works across all pages, not just loaded ones.
+     */
+    fun deleteImagesByIds(ids: Set<Long>) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            imageDao.deleteByIds(ids.toList())
+            _selectedGroupId.value?.let { refreshCount(it) }
+            refreshImages()
+        }
+    }
+
+    /**
+     * Get ALL image IDs in a group (across all pages) for select-all + batch delete.
+     */
+    suspend fun getAllImageIds(groupId: Long): List<Long> {
+        return imageDao.getImageIdsByGroup(groupId)
+    }
+
     fun switchNow() {
         WallpaperSwitchService.switchNow(getApplication())
     }

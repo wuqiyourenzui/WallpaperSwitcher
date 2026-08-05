@@ -51,8 +51,9 @@ fun GroupDetailScreen(
 
     var showAddDialog by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<WallpaperImage?>(null) }
-    var selectedImages by remember { mutableStateOf(setOf<Long>()) }
+    var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     var isSelectionMode by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     // Derive load-more state to avoid recomposition on every scroll
     val shouldLoadMore by remember {
@@ -154,7 +155,7 @@ fun GroupDetailScreen(
                 OutlinedButton(
                     onClick = {
                         isSelectionMode = !isSelectionMode
-                        if (!isSelectionMode) selectedImages = emptySet()
+                        if (!isSelectionMode) selectedIds = emptySet()
                     },
                     modifier = Modifier.weight(1f)
                 ) {
@@ -170,31 +171,55 @@ fun GroupDetailScreen(
         }
 
         // 选择模式操作栏
-        AnimatedVisibility(visible = isSelectionMode && selectedImages.isNotEmpty()) {
+        AnimatedVisibility(visible = isSelectionMode) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // 全选/取消全选
+                val isAllSelected = selectedIds.size == totalCount && totalCount > 0
+                TextButton(
+                    onClick = {
+                        if (isAllSelected) {
+                            selectedIds = emptySet()
+                        } else {
+                            coroutineScope.launch {
+                                val ids = viewModel.getAllImageIds(groupId)
+                                selectedIds = ids.toSet()
+                            }
+                        }
+                    }
+                ) {
+                    Icon(
+                        if (isAllSelected) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank,
+                        null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(if (isAllSelected) "取消全选" else "全选")
+                }
+
                 Text(
-                    "已选 ${selectedImages.size} 张",
+                    "已选 ${selectedIds.size} 张",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.align(Alignment.CenterVertically)
                 )
                 Spacer(modifier = Modifier.weight(1f))
-                FilledTonalButton(
-                    onClick = {
-                        val toDelete = images.filter { it.id in selectedImages }
-                        viewModel.deleteImages(toDelete)
-                        selectedImages = emptySet()
-                        isSelectionMode = false
+                if (selectedIds.isNotEmpty()) {
+                    FilledTonalButton(
+                        onClick = {
+                            viewModel.deleteImagesByIds(selectedIds)
+                            selectedIds = emptySet()
+                            isSelectionMode = false
+                        }
+                    ) {
+                        Icon(Icons.Filled.Delete, "删除", modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("删除所选")
                     }
-                ) {
-                    Icon(Icons.Filled.Delete, "删除", modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("删除所选")
                 }
             }
         }
@@ -240,17 +265,17 @@ fun GroupDetailScreen(
             ) {
                 itemsIndexed(images, key = { _, image -> image.id }) { _, image ->
                     // Stable selection check - only recompose when THIS image's selection changes
-                    val isImageSelected = remember(selectedImages) { image.id in selectedImages }
+                    val isImageSelected = remember(selectedIds) { image.id in selectedIds }
                     ImageGridItem(
                         image = image,
                         isSelected = isImageSelected,
                         selectionMode = isSelectionMode,
                         onClick = {
                             if (isSelectionMode) {
-                                selectedImages = if (image.id in selectedImages)
-                                    selectedImages - image.id
+                                selectedIds = if (image.id in selectedIds)
+                                    selectedIds - image.id
                                 else
-                                    selectedImages + image.id
+                                    selectedIds + image.id
                             }
                         },
                         onDelete = { viewModel.deleteImage(image) },

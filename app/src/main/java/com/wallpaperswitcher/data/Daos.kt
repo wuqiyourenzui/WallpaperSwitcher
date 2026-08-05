@@ -46,6 +46,9 @@ interface WallpaperImageDao {
     @Query("SELECT COUNT(*) FROM wallpaper_images WHERE groupId = :groupId")
     suspend fun getImageCountByGroup(groupId: Long): Int
 
+    @Query("SELECT id FROM wallpaper_images WHERE groupId = :groupId")
+    suspend fun getImageIdsByGroup(groupId: Long): List<Long>
+
     @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC")
     suspend fun getImagesByGroupSync(groupId: Long): List<WallpaperImage>
 
