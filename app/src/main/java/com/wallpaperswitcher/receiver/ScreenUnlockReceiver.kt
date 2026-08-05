@@ -11,6 +11,7 @@ import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 /**
  * Unlock screen receiver.
@@ -37,14 +38,17 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val db = AppDatabase.getInstance(context)
-                val enabled = db.settingsDao().getBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, false)
-                Log.d(TAG, "unlockEnabled=$enabled")
-                if (enabled) {
-                    val switchIntent = Intent(LiveWallpaperService.ACTION_SWITCH)
-                    switchIntent.setPackage(context.packageName)
-                    context.sendBroadcast(switchIntent)
-                    Log.d(TAG, "Switch broadcast sent")
+                // goAsync() has ~10s timeout; wrap with safety margin
+                withTimeout(8_000L) {
+                    val db = AppDatabase.getInstance(context)
+                    val enabled = db.settingsDao().getBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, false)
+                    Log.d(TAG, "unlockEnabled=$enabled")
+                    if (enabled) {
+                        val switchIntent = Intent(LiveWallpaperService.ACTION_SWITCH)
+                        switchIntent.setPackage(context.packageName)
+                        context.sendBroadcast(switchIntent)
+                        Log.d(TAG, "Switch broadcast sent")
+                    }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Switch failed", e)

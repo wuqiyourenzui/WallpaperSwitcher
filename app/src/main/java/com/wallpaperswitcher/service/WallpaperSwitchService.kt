@@ -64,13 +64,16 @@ class WallpaperSwitchService : Service() {
                     val db = AppDatabase.getInstance(applicationContext)
                     val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
                     if (groups.isEmpty()) {
-                        delay(300_000L) // 5 min when no groups, save power
-                        continue
+                        // No enabled groups — stop service to save power.
+                        // User can re-enable via toggle, which calls start() again.
+                        Log.d(TAG, "No enabled groups, stopping service")
+                        withContext(Dispatchers.Main) { stopSelf() }
+                        return@launch
                     }
                     // Get global interval
                     val interval = db.settingsDao().getLong(SettingsKeys.GLOBAL_INTERVAL_MS, 60_000L)
                         .coerceAtLeast(10_000L)
-                    delay(interval.toLong())
+                    delay(interval)
                     sendSwitchBroadcast()
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {

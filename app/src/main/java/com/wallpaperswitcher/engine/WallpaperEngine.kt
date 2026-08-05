@@ -33,8 +33,9 @@ class WallpaperEngine(private val context: Context) {
                     ScaleMode.FILL, ScaleMode.STRETCH -> {
                         val bitmap = decodeAndScale(uri, scaleMode)
                         if (bitmap != null) {
+                            // setBitmap is async — do NOT recycle immediately.
+                            // Let GC handle it after WallpaperManager is done.
                             wallpaperManager.setBitmap(bitmap)
-                            bitmap.recycle()
                         } else {
                             context.contentResolver.openInputStream(uri)?.use { stream ->
                                 wallpaperManager.setStream(stream)

@@ -242,6 +242,14 @@ class LiveWallpaperService : WallpaperService() {
                 SwitchMode.SHUFFLE -> {
                     val totalCount = imageDao.countByEnabledGroups()
                     if (totalCount == 0) null else {
+                        // Restore shuffle state from DB if needed (survives engine recreation)
+                        if (shuffleShownIds.isEmpty()) {
+                            val saved = dao.getString(SettingsKeys.SHUFFLE_SHOWN_IDS, "")
+                            if (saved.isNotEmpty()) {
+                                saved.split(",").mapNotNull { it.toLongOrNull() }.forEach { shuffleShownIds.add(it) }
+                            }
+                            shuffleAllCount = dao.getLong(SettingsKeys.SHUFFLE_ALL_COUNT, 0L).toInt()
+                        }
                         if (shuffleAllCount != totalCount || shuffleShownIds.size >= totalCount) {
                             shuffleShownIds.clear(); shuffleAllCount = totalCount
                         }
@@ -255,7 +263,12 @@ class LiveWallpaperService : WallpaperService() {
                             }
                             attempts++
                         }
-                        candidate?.also { shuffleShownIds.add(it.id) }
+                        candidate?.also {
+                            shuffleShownIds.add(it.id)
+                            // Persist shuffle state to survive engine recreation
+                            dao.setString(SettingsKeys.SHUFFLE_SHOWN_IDS, shuffleShownIds.joinToString(","))
+                            dao.setLong(SettingsKeys.SHUFFLE_ALL_COUNT, shuffleAllCount.toLong())
+                        }
                     }
                 }
             }

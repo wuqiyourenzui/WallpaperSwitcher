@@ -16,7 +16,7 @@ import kotlinx.coroutines.withContext
 
 class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
-    private val db = (app as WallpaperSwitcherApp).database
+    private val db = (getApplication() as WallpaperSwitcherApp).database
     private val groupDao = db.wallpaperGroupDao()
     private val imageDao = db.wallpaperImageDao()
     private val settingsDao = db.settingsDao()
@@ -210,6 +210,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 _toastMessage.emit("正在扫描文件夹...")
                 var total = 0
+                val batch = mutableListOf<WallpaperImage>()
                 withContext(Dispatchers.IO) {
                     val docFile = try {
                         androidx.documentfile.provider.DocumentFile
@@ -221,37 +222,44 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
                     if (!docFile.isDirectory) return@withContext
 
-                    val files = try {
-                        docFile.listFiles()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "listFiles failed", e)
-                        emptyArray()
+                    // Recursive scan helper
+                    suspend fun scanDir(dir: androidx.documentfile.provider.DocumentFile) {
+                        if (!isActive) return
+                        val files = try {
+                            dir.listFiles()
+                        } catch (e: Exception) {
+                            Log.e(TAG, "listFiles failed", e)
+                            emptyArray()
+                        }
+                        for (file in files) {
+                            if (!isActive) return
+                            try {
+                                if (file.isDirectory) {
+                                    scanDir(file) // recurse into subdirectory
+                                } else if (file.isFile && isSupportedMedia(file.name ?: "")) {
+                                    batch.add(WallpaperImage(
+                                        groupId = groupId,
+                                        uri = file.uri.toString(),
+                                        displayName = file.name ?: "untitled",
+                                        mediaType = detectMediaType(file.name ?: ""),
+                                        isFromFolder = true,
+                                        folderPath = folderUri.toString()
+                                    ))
+                                    if (batch.size >= 100) {
+                                        imageDao.insertAll(batch.toList())
+                                        total += batch.size
+                                        batch.clear()
+                                    }
+                                }
+                            } catch (_: Exception) { continue }
+                        }
                     }
 
-                    val batch = mutableListOf<WallpaperImage>()
-                    for (file in files) {
-                        if (!isActive) return@withContext
-                        try {
-                            if (file.isFile && isSupportedMedia(file.name ?: "")) {
-                                batch.add(WallpaperImage(
-                                    groupId = groupId,
-                                    uri = file.uri.toString(),
-                                    displayName = file.name ?: "untitled",
-                                    mediaType = detectMediaType(file.name ?: ""),
-                                    isFromFolder = true,
-                                    folderPath = folderUri.toString()
-                                ))
-                                if (batch.size >= 100) {
-                                    imageDao.insertAll(batch.toList())
-                                    total += batch.size
-                                    batch.clear()
-                                }
-                            }
-                        } catch (_: Exception) { continue }
-                    }
+                    scanDir(docFile)
                     if (batch.isNotEmpty() && isActive) {
                         imageDao.insertAll(batch)
                         total += batch.size
+                        batch.clear()
                     }
                 }
                 if (total > 0) {
@@ -365,11 +373,14 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             val folderNames = mutableMapOf<String, String>()
             val contentResolver = getApplication<Application>().contentResolver
 
-            // Try RELATIVE_PATH first (API 29+), fall back to DATA
-            val projection = arrayOf(
-                MediaStore.Images.Media._ID,
-                MediaStore.Images.Media.DATA
-            )
+            // Use RELATIVE_PATH on API 29+, fall back to DATA on older versions
+            val useRelativePath = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+            val projection = if (useRelativePath) {
+                arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.RELATIVE_PATH)
+            } else {
+                @Suppress("DEPRECATION")
+                arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATA)
+            }
 
             contentResolver.query(
                 MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
@@ -379,16 +390,21 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
             )?.use { cursor ->
                 val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                val dataCol = cursor.getColumnIndex(MediaStore.Images.Media.DATA)
+                val pathCol = cursor.getColumnIndex(if (useRelativePath) MediaStore.Images.Media.RELATIVE_PATH else MediaStore.Images.Media.DATA)
 
                 while (cursor.moveToNext()) {
                     try {
                         val id = cursor.getLong(idCol)
+                        val rawPath = if (pathCol >= 0) cursor.getString(pathCol) else null
+                        if (rawPath.isNullOrBlank()) continue
 
-                        // Get folder path from DATA column
-                        val dataPath = if (dataCol >= 0) cursor.getString(dataCol) else null
-                        if (dataPath.isNullOrBlank()) continue
-                        val folderKey = dataPath.substringBeforeLast('/')
+                        // Normalize folder key: RELATIVE_PATH ends with '/', DATA is absolute
+                        val folderKey = if (useRelativePath) {
+                            rawPath.trimEnd('/')
+                        } else {
+                            @Suppress("DEPRECATION")
+                            rawPath.substringBeforeLast('/')
+                        }
                         if (folderKey.isEmpty()) continue
 
                         // Count images per folder
