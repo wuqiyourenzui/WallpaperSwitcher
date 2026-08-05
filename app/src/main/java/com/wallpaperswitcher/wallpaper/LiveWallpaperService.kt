@@ -61,6 +61,10 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile private var videoWidth = 0
         @Volatile private var videoHeight = 0
 
+        // Frame buffer: extractor thread produces, main thread consumes
+        private val frameBuffer = java.util.concurrent.LinkedBlockingQueue<Bitmap>(3)
+        private var frameRenderJob: Job? = null
+
         // Reusable display objects to reduce GC pressure
         private val destRect = RectF()
         private var cachedScreenW = 0f
@@ -159,10 +163,18 @@ class LiveWallpaperService : WallpaperService() {
             videoPlaying = false
             videoStopFlag = true
 
-            // Cancel the decode job
+            // Cancel jobs
             val job = videoJob
             videoJob = null
             job?.cancel()
+            val renderJob = frameRenderJob
+            frameRenderJob = null
+            renderJob?.cancel()
+
+            // Clear frame buffer
+            while (frameBuffer.isNotEmpty()) {
+                try { frameBuffer.poll()?.recycle() } catch (_: Exception) {}
+            }
 
             // Release MediaPlayer (must happen on main thread for safety)
             val oldPlayer = videoPlayer
@@ -180,7 +192,6 @@ class LiveWallpaperService : WallpaperService() {
             // Release MediaMetadataRetriever
             val oldRetriever = videoRetriever
             videoRetriever = null
-            // Retriever can be released from any thread
             scope.launch {
                 try { oldRetriever?.release() } catch (_: Exception) {}
             }
@@ -407,29 +418,32 @@ class LiveWallpaperService : WallpaperService() {
             // Start frame extraction loop
             videoJob = scope.launch {
                 try {
-                    runVideoLoop(scaleMode)
+                    runVideoExtractor()
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (e: Exception) {
-                    Log.e(TAG, "Video loop error: ${e.message}")
+                    Log.e(TAG, "Video extractor error: ${e.message}")
                 } finally {
                     videoPlaying = false
                 }
             }
+
+            // Start frame render loop (on main thread via handler)
+            startFrameRenderer(scaleMode)
         }
 
         /**
          * Frame extraction loop. Runs on IO thread.
-         * Uses OPTION_CLOSEST_SYNC for fast keyframe extraction.
-         * Frame pacing ensures smooth playback at video's native fps.
+         * Extracts frames ahead into a buffer queue.
+         * Uses OPTION_CLOSEST for accurate frame-by-frame extraction.
          */
-        private suspend fun runVideoLoop(scaleMode: ScaleMode) {
+        private suspend fun runVideoExtractor() {
             val retriever = videoRetriever ?: return
             val durationMs = videoDurationMs
             if (durationMs <= 0) return
 
-            val frameIntervalMs = (1000L / videoFps).coerceAtLeast(16L)
-            var currentPosMs = 0L
+            val frameIntervalUs = (1_000_000L / videoFps).coerceAtLeast(16_000L)
+            var currentPosUs = 0L
 
             while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
                 if (!isVisible || !videoPlaying) {
@@ -437,37 +451,59 @@ class LiveWallpaperService : WallpaperService() {
                     continue
                 }
 
-                val frameStart = System.nanoTime()
+                // If buffer is full, wait for consumer to drain it
+                if (frameBuffer.remainingCapacity() <= 0) {
+                    delay(1)
+                    continue
+                }
 
-                // Extract frame — use main thread for Canvas operations
+                // Extract frame with OPTION_CLOSEST for accurate per-frame decoding
                 val frame = try {
-                    retriever.getFrameAtTime(currentPosMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    retriever.getFrameAtTime(currentPosUs, MediaMetadataRetriever.OPTION_CLOSEST)
                 } catch (_: Exception) { null }
 
                 if (frame != null) {
-                    // Post to main thread for Canvas rendering
-                    val drawComplete = CompletableDeferred<Boolean>()
-                    mainHandler.post {
-                        if (surfaceReady && !videoStopFlag) {
-                            showVideoFrame(frame, scaleMode)
-                            drawComplete.complete(true)
-                        } else {
-                            drawComplete.complete(false)
-                        }
-                        frame.recycle()
+                    // Drop oldest frame if buffer is full (prevents lag buildup)
+                    if (frameBuffer.remainingCapacity() <= 0) {
+                        try { frameBuffer.poll()?.recycle() } catch (_: Exception) {}
                     }
-                    // Wait for draw to complete before extracting next frame
-                    if (!drawComplete.await()) break
+                    frameBuffer.offer(frame)
                 }
 
                 // Advance position
-                currentPosMs += frameIntervalMs
-                if (currentPosMs >= durationMs) currentPosMs = 0L
+                currentPosUs += frameIntervalUs
+                if (currentPosUs >= durationMs * 1000) currentPosUs = 0L
 
-                // Frame pacing
-                val elapsed = (System.nanoTime() - frameStart) / 1_000_000
-                val sleepMs = frameIntervalMs - elapsed
-                if (sleepMs > 0) delay(sleepMs)
+                // Small yield to prevent CPU hogging
+                delay(1)
+            }
+        }
+
+        /**
+         * Frame render loop. Runs on main thread via Handler.
+         * Consumes frames from the buffer queue and draws to Canvas.
+         */
+        private fun startFrameRenderer(scaleMode: ScaleMode) {
+            val renderRunnable = object : Runnable {
+                override fun run() {
+                    if (!surfaceReady || !videoPlaying || videoStopFlag) return
+
+                    val frame = frameBuffer.poll()
+                    if (frame != null) {
+                        try {
+                            showVideoFrame(frame, scaleMode)
+                        } catch (_: Exception) {}
+                        frame.recycle()
+                    }
+
+                    // Schedule next frame at video fps rate
+                    val intervalMs = (1000L / videoFps).coerceAtLeast(16L)
+                    mainHandler.postDelayed(this, intervalMs)
+                }
+            }
+            frameRenderJob = scope.launch {
+                // Post the first render call to main thread
+                mainHandler.post(renderRunnable)
             }
         }
 
