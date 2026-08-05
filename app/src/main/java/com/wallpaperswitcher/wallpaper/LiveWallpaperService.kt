@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.*
 import android.media.MediaMetadataRetriever
-import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -45,17 +44,19 @@ class LiveWallpaperService : WallpaperService() {
         private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
         @Volatile private var shuffleAllCount = 0
 
-        // Video state
-        private var videoPlayer: MediaPlayer? = null
+        // Video state — single MediaMetadataRetriever, no MediaPlayer
         private var videoRetriever: MediaMetadataRetriever? = null
         private var videoJob: Job? = null
         @Volatile private var videoPlaying = false
         @Volatile private var videoStopFlag = false
         @Volatile private var videoMode = false
-
-        // Frame buffer: background thread pre-extracts frames, display thread consumes
-        private val frameBuffer = java.util.concurrent.LinkedBlockingQueue<Bitmap>(30) // ~1sec buffer
         @Volatile private var videoDurationMs = 0L
+        private var videoFps = 30
+
+        // Reusable display objects to reduce GC pressure
+        private val destRect = RectF()
+        private var cachedScreenW = 0f
+        private var cachedScreenH = 0f
 
         // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
@@ -100,7 +101,10 @@ class LiveWallpaperService : WallpaperService() {
             drawCurrentImage()
         }
 
-        override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {}
+        override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {
+            cachedScreenW = width.toFloat()
+            cachedScreenH = height.toFloat()
+        }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
@@ -142,22 +146,16 @@ class LiveWallpaperService : WallpaperService() {
             videoStopFlag = true
             videoJob?.cancel()
             videoJob = null
-            try { videoPlayer?.release() } catch (_: Exception) {}
-            videoPlayer = null
             try { videoRetriever?.release() } catch (_: Exception) {}
             videoRetriever = null
-            // Clear frame buffer
-            while (frameBuffer.isNotEmpty()) {
-                try { frameBuffer.poll()?.recycle() } catch (_: Exception) {}
-            }
         }
 
         private fun pauseVideo() {
-            try { videoPlayer?.pause() } catch (_: Exception) {}
+            videoPlaying = false
         }
 
         private fun resumeVideo() {
-            try { videoPlayer?.start() } catch (_: Exception) {}
+            videoPlaying = true
         }
 
         private fun pauseGif() {
@@ -305,38 +303,34 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video: Buffered extraction + Canvas ========
-        // Background thread pre-extracts frames into a buffer queue.
-        // Display thread consumes from queue at display rate.
-        // Decoupled = no dropped frames from slow extraction.
+        // ======== Video: Single-decoder frame-stepping + Canvas ========
+        // Uses only MediaMetadataRetriever (no MediaPlayer = half the resource usage).
+        // OPTION_CLOSEST_SYNC for fast keyframe extraction.
+        // Proper frame pacing with nanoTime-based timing.
+        // Supports FIT, FILL, STRETCH scale modes.
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             videoMode = true
             videoPlaying = true
             videoStopFlag = false
 
-            val uri = Uri.parse(uriStr)
+            // Pre-cache screen metrics once
+            val metrics = getMetrics()
+            cachedScreenW = metrics.widthPixels.toFloat()
+            cachedScreenH = metrics.heightPixels.toFloat()
 
-            // MediaPlayer for playback timing + looping
-            try {
-                val mp = MediaPlayer()
-                mp.setOnErrorListener { _, _, _ -> false }
-                mp.setDataSource(applicationContext, uri)
-                mp.setVolume(0f, 0f)
-                mp.isLooping = true
-                mp.prepare()
-                videoDurationMs = mp.duration.toLong()
-                mp.start()
-                videoPlayer = mp
-            } catch (e: Exception) {
-                Log.w(TAG, "MediaPlayer failed: ${e.message}")
-            }
-
-            // MediaMetadataRetriever for frame extraction
             try {
                 val retriever = MediaMetadataRetriever()
-                retriever.setDataSource(applicationContext, uri)
+                retriever.setDataSource(applicationContext, Uri.parse(uriStr))
                 videoRetriever = retriever
+
+                // Read video metadata
+                val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                videoDurationMs = durationStr?.toLongOrNull() ?: 0L
+                val fpsStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)
+                videoFps = (fpsStr?.toFloatOrNull()?.toInt() ?: 30).coerceIn(15, 60)
+
+                Log.d(TAG, "Video: ${videoDurationMs}ms, ${videoFps}fps")
             } catch (e: Exception) {
                 Log.e(TAG, "Retriever failed: ${e.message}")
                 videoPlaying = false; videoMode = false; return
@@ -344,7 +338,7 @@ class LiveWallpaperService : WallpaperService() {
 
             videoJob = scope.launch {
                 try {
-                    runVideoBuffered(scaleMode)
+                    runVideoPaced(scaleMode)
                 } catch (e: Exception) {
                     Log.e(TAG, "Video error: ${e.message}")
                 } finally {
@@ -353,52 +347,64 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        private suspend fun runVideoBuffered(scaleMode: ScaleMode) {
+        private suspend fun runVideoPaced(scaleMode: ScaleMode) {
             val retriever = videoRetriever ?: return
             val durationMs = videoDurationMs
             if (durationMs <= 0) return
 
+            val frameIntervalMs = (1000L / videoFps).coerceAtLeast(16L)
             var extractPosMs = 0L
-            val stepMs = 33L
-            var eofReached = false
 
             while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
-                if (!isVisible) { delay(100); continue }
-
-                // Extract frames ahead into buffer (non-blocking)
-                if (!eofReached && frameBuffer.remainingCapacity() > 0) {
-                    val frame = extractFrame(retriever, extractPosMs)
-                    if (frame != null) frameBuffer.offer(frame)
-                    extractPosMs += stepMs
-                    if (extractPosMs >= durationMs) eofReached = true
+                if (!isVisible || !videoPlaying) {
+                    delay(50)
+                    continue
                 }
 
-                // Display from buffer (non-blocking)
-                val displayFrame = frameBuffer.poll()
-                if (displayFrame != null) {
-                    showBitmapDirect(displayFrame, scaleMode)
-                    displayFrame.recycle()
+                val frameStart = System.nanoTime()
+
+                // Extract frame (OPTION_CLOSEST_SYNC = nearest keyframe, fast)
+                val frame = extractFrame(retriever, extractPosMs)
+
+                if (frame != null) {
+                    showVideoFrame(frame, scaleMode)
+                    frame.recycle()
                 }
 
-                // Loop when buffer drained and EOF
-                if (eofReached && frameBuffer.isEmpty()) {
-                    extractPosMs = 0L; eofReached = false
-                    try { videoPlayer?.seekTo(0) } catch (_: Exception) {}
-                }
+                // Advance position
+                extractPosMs += frameIntervalMs
+                if (extractPosMs >= durationMs) extractPosMs = 0L
 
-                delay(1)
+                // Frame pacing: sleep for remaining time in frame budget
+                val elapsed = (System.nanoTime() - frameStart) / 1_000_000
+                val sleepMs = frameIntervalMs - elapsed
+                if (sleepMs > 0) delay(sleepMs)
             }
-            while (frameBuffer.isNotEmpty()) { try { frameBuffer.poll()?.recycle() } catch (_: Exception) {} }
         }
 
         private fun extractFrame(retriever: MediaMetadataRetriever, timestampMs: Long): Bitmap? {
             return try {
-                if (Build.VERSION.SDK_INT >= 27) {
-                    retriever.getFrameAtTime(timestampMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST)
-                } else {
-                    retriever.getFrameAtTime(timestampMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                }
+                // OPTION_CLOSEST_SYNC: returns nearest keyframe — much faster than OPTION_CLOSEST.
+                // For wallpaper use case, smooth motion matters more than frame-accurate seeking.
+                retriever.getFrameAtTime(timestampMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
             } catch (_: Exception) { null }
+        }
+
+        /**
+         * Draw a video frame to the wallpaper canvas.
+         * Uses pre-cached screen metrics and reusable destRect.
+         */
+        private fun showVideoFrame(bitmap: Bitmap, scaleMode: ScaleMode) {
+            if (!surfaceReady) return
+            try {
+                val canvas = surfaceHolder.lockCanvas() ?: return
+                canvas.drawColor(Color.BLACK)
+                val sw = cachedScreenW
+                val sh = cachedScreenH
+                calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(), sw, sh, scaleMode)
+                canvas.drawBitmap(bitmap, null, destRect, null)
+                surfaceHolder.unlockCanvasAndPost(canvas)
+            } catch (_: Exception) {}
         }
 
         // ======== GIF via Canvas ========
@@ -456,9 +462,9 @@ class LiveWallpaperService : WallpaperService() {
                 val canvas = surfaceHolder.lockCanvas() ?: return
                 canvas.drawColor(Color.BLACK)
                 val m = getMetrics()
-                val dest = calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(),
+                calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(),
                     m.widthPixels.toFloat(), m.heightPixels.toFloat(), scaleMode)
-                canvas.drawBitmap(bitmap, null, dest, null)
+                canvas.drawBitmap(bitmap, null, destRect, null)
                 surfaceHolder.unlockCanvasAndPost(canvas)
             } catch (_: Exception) {}
         }
@@ -468,29 +474,30 @@ class LiveWallpaperService : WallpaperService() {
             try {
                 val canvas = surfaceHolder.lockCanvas() ?: return
                 canvas.drawColor(Color.BLACK)
-                val m = getMetrics()
-                val dest = calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(),
-                    m.widthPixels.toFloat(), m.heightPixels.toFloat(), scaleMode)
-                canvas.drawBitmap(bitmap, null, dest, null)
+                val sw = cachedScreenW.takeIf { it > 0 } ?: getMetrics().let { cachedScreenW = it.widthPixels.toFloat(); cachedScreenW }
+                val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().let { cachedScreenH = it.heightPixels.toFloat(); cachedScreenH }
+                calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(), sw, sh, scaleMode)
+                canvas.drawBitmap(bitmap, null, destRect, null)
                 surfaceHolder.unlockCanvasAndPost(canvas)
             } catch (_: Exception) {}
         }
 
-        private fun calcDestRect(bw: Float, bh: Float, sw: Float, sh: Float, scaleMode: ScaleMode): RectF {
-            return when (scaleMode) {
+        /** Writes into reusable [destRect] to avoid per-frame allocation. */
+        private fun calcDestRect(bw: Float, bh: Float, sw: Float, sh: Float, scaleMode: ScaleMode) {
+            when (scaleMode) {
                 ScaleMode.FIT -> {
                     val r = bw / bh; val sr = sw / sh
                     val dw: Float; val dh: Float
                     if (r > sr) { dw = sw; dh = dw / r } else { dh = sh; dw = dh * r }
-                    RectF((sw - dw) / 2f, (sh - dh) / 2f, (sw + dw) / 2f, (sh + dh) / 2f)
+                    destRect.set((sw - dw) / 2f, (sh - dh) / 2f, (sw + dw) / 2f, (sh + dh) / 2f)
                 }
                 ScaleMode.FILL -> {
                     val r = bw / bh; val sr = sw / sh
                     val dw: Float; val dh: Float
                     if (r < sr) { dw = sw; dh = dw / r } else { dh = sh; dw = dh * r }
-                    RectF((sw - dw) / 2f, (sh - dh) / 2f, (sw + dw) / 2f, (sh + dh) / 2f)
+                    destRect.set((sw - dw) / 2f, (sh - dh) / 2f, (sw + dw) / 2f, (sh + dh) / 2f)
                 }
-                ScaleMode.STRETCH -> RectF(0f, 0f, sw, sh)
+                ScaleMode.STRETCH -> destRect.set(0f, 0f, sw, sh)
             }
         }
 
