@@ -248,17 +248,18 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private fun releaseCurrentMedia() {
-            // Release MediaPlayer on main thread
+            // Capture locally to avoid race with concurrent mediaPlayer assignment
+            val oldPlayer = mediaPlayer
+            mediaPlayer = null
+            videoPlaying = false
             mainHandler.post {
                 try {
-                    mediaPlayer?.let {
+                    oldPlayer?.let {
                         try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
                         it.release()
                     }
                 } catch (_: Exception) {}
-                mediaPlayer = null
             }
-            videoPlaying = false
             // Stop GIF
             gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
             gifFrameRunnable = null
@@ -275,13 +276,18 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun resetSurface() {
             mainHandler.post {
+                var canvas: android.graphics.Canvas? = null
                 try {
-                    val canvas = surfaceHolder.lockCanvas()
+                    canvas = surfaceHolder.lockCanvas()
                     if (canvas != null) {
                         canvas.drawColor(Color.BLACK)
-                        surfaceHolder.unlockCanvasAndPost(canvas)
                     }
                 } catch (_: Exception) {}
+                finally {
+                    if (canvas != null) {
+                        try { surfaceHolder.unlockCanvasAndPost(canvas) } catch (_: Exception) {}
+                    }
+                }
             }
         }
 
@@ -290,6 +296,11 @@ class LiveWallpaperService : WallpaperService() {
         private fun startVideoInternal(uriStr: String) {
             Log.d(TAG, "startVideo: $uriStr")
             if (!surfaceReady) return
+            val surface = surfaceHolder.surface
+            if (surface == null || !surface.isValid) {
+                Log.e(TAG, "startVideo: surface not valid")
+                return
+            }
 
             try {
                 val mp = MediaPlayer()
@@ -322,7 +333,7 @@ class LiveWallpaperService : WallpaperService() {
                 }
 
                 mp.setDataSource(applicationContext, Uri.parse(uriStr))
-                mp.setSurface(surfaceHolder.surface)
+                mp.setSurface(surface)
                 mp.prepareAsync()
 
                 mediaPlayer = mp
@@ -480,16 +491,18 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private fun releaseAll() {
+            // Capture locally to avoid race with concurrent mediaPlayer assignment
+            val oldPlayer = mediaPlayer
+            mediaPlayer = null
+            videoPlaying = false
             mainHandler.post {
                 try {
-                    mediaPlayer?.let {
+                    oldPlayer?.let {
                         try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
                         it.release()
                     }
                 } catch (_: Exception) {}
-                mediaPlayer = null
             }
-            videoPlaying = false
             gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
             gifFrameRunnable = null
             try { gifDrawable?.stop() } catch (_: Exception) {}
