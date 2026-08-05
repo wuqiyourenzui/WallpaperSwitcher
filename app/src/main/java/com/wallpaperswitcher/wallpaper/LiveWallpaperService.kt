@@ -172,23 +172,28 @@ class LiveWallpaperService : WallpaperService() {
                         try { gifDrawable?.stop() } catch (_: Exception) {}
                         gifDrawable = null
 
-                        // 2. Reset surface
-                        try {
-                            val canvas = surfaceHolder.lockCanvas()
-                            if (canvas != null) {
-                                canvas.drawColor(Color.BLACK)
-                                surfaceHolder.unlockCanvasAndPost(canvas)
-                            }
-                        } catch (_: Exception) {}
-
-                        // 3. Start new content
                         if (!surfaceReady) return@post
+
+                        // 2. Start new content (NO resetSurface for video!)
                         when (image.mediaType ?: "IMAGE") {
                             "VIDEO" -> startVideoInternal(image.uri)
-                            "GIF" -> playGif(image.uri, currentScaleMode)
                             else -> {
-                                val bitmap = loadBitmap(image.uri)
-                                if (bitmap != null) showBitmap(bitmap, currentScaleMode)
+                                // Only reset surface for Canvas-based content
+                                try {
+                                    val canvas = surfaceHolder.lockCanvas()
+                                    if (canvas != null) {
+                                        canvas.drawColor(Color.BLACK)
+                                        surfaceHolder.unlockCanvasAndPost(canvas)
+                                    }
+                                } catch (_: Exception) {}
+
+                                when (image.mediaType) {
+                                    "GIF" -> playGif(image.uri, currentScaleMode)
+                                    else -> {
+                                        val bitmap = loadBitmap(image.uri)
+                                        if (bitmap != null) showBitmap(bitmap, currentScaleMode)
+                                    }
+                                }
                             }
                         }
                     }
