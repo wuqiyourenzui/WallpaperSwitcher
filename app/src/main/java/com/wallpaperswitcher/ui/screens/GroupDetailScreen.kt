@@ -34,6 +34,7 @@ import coil.request.ImageRequest
 import coil.decode.VideoFrameDecoder
 import com.wallpaperswitcher.data.*
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
