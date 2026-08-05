@@ -62,8 +62,10 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile private var videoHeight = 0
 
         // Frame buffer: extractor thread produces, main thread consumes
-        private val frameBuffer = java.util.concurrent.LinkedBlockingQueue<Bitmap>(3)
+        private val frameBuffer = java.util.concurrent.LinkedBlockingQueue<Bitmap>(8)
         private var frameRenderJob: Job? = null
+        // Reusable bitmap for video frames to reduce GC pressure
+        private var videoBitmap: Bitmap? = null
 
         // Reusable display objects to reduce GC pressure
         private val destRect = RectF()
@@ -175,6 +177,10 @@ class LiveWallpaperService : WallpaperService() {
             while (frameBuffer.isNotEmpty()) {
                 try { frameBuffer.poll()?.recycle() } catch (_: Exception) {}
             }
+
+            // Release reusable bitmap
+            videoBitmap?.recycle()
+            videoBitmap = null
 
             // Release MediaPlayer (must happen on main thread for safety)
             val oldPlayer = videoPlayer
@@ -436,6 +442,7 @@ class LiveWallpaperService : WallpaperService() {
          * Frame extraction loop. Runs on IO thread.
          * Extracts frames ahead into a buffer queue.
          * Uses OPTION_CLOSEST for accurate frame-by-frame extraction.
+         * No delays — runs as fast as possible, buffer backpressure handles pacing.
          */
         private suspend fun runVideoExtractor() {
             val retriever = videoRetriever ?: return
@@ -451,20 +458,20 @@ class LiveWallpaperService : WallpaperService() {
                     continue
                 }
 
-                // If buffer is full, wait for consumer to drain it
-                if (frameBuffer.remainingCapacity() <= 0) {
-                    delay(1)
+                // Backpressure: if buffer nearly full, yield to let consumer drain
+                if (frameBuffer.remainingCapacity() <= 1) {
+                    yield() // cooperative yield, resumes immediately when consumer drains
                     continue
                 }
 
-                // Extract frame with OPTION_CLOSEST for accurate per-frame decoding
+                // Extract frame — OPTION_CLOSEST for accurate per-frame decoding
                 val frame = try {
                     retriever.getFrameAtTime(currentPosUs, MediaMetadataRetriever.OPTION_CLOSEST)
                 } catch (_: Exception) { null }
 
                 if (frame != null) {
-                    // Drop oldest frame if buffer is full (prevents lag buildup)
-                    if (frameBuffer.remainingCapacity() <= 0) {
+                    // Drop oldest if buffer full (prevents lag buildup)
+                    while (frameBuffer.remainingCapacity() <= 0) {
                         try { frameBuffer.poll()?.recycle() } catch (_: Exception) {}
                     }
                     frameBuffer.offer(frame)
@@ -473,22 +480,29 @@ class LiveWallpaperService : WallpaperService() {
                 // Advance position
                 currentPosUs += frameIntervalUs
                 if (currentPosUs >= durationMs * 1000) currentPosUs = 0L
-
-                // Small yield to prevent CPU hogging
-                delay(1)
+                // No delay — extraction runs at full speed, backpressure handles pacing
             }
         }
 
         /**
          * Frame render loop. Runs on main thread via Handler.
-         * Consumes frames from the buffer queue and draws to Canvas.
+         * Drains up to 2 frames per tick to catch up if extraction is ahead.
          */
         private fun startFrameRenderer(scaleMode: ScaleMode) {
             val renderRunnable = object : Runnable {
                 override fun run() {
                     if (!surfaceReady || !videoPlaying || videoStopFlag) return
 
-                    val frame = frameBuffer.poll()
+                    // Drain up to 2 frames per tick (keep latest, drop intermediate)
+                    var frame: Bitmap? = null
+                    var drained = 0
+                    while (drained < 2) {
+                        val f = frameBuffer.poll() ?: break
+                        if (frame != null) frame.recycle() // discard previous
+                        frame = f
+                        drained++
+                    }
+
                     if (frame != null) {
                         try {
                             showVideoFrame(frame, scaleMode)
@@ -496,7 +510,7 @@ class LiveWallpaperService : WallpaperService() {
                         frame.recycle()
                     }
 
-                    // Schedule next frame at video fps rate
+                    // Schedule next frame — use postDelayed for consistent timing
                     val intervalMs = (1000L / videoFps).coerceAtLeast(16L)
                     mainHandler.postDelayed(this, intervalMs)
                 }
