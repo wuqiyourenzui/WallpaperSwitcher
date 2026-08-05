@@ -174,26 +174,22 @@ class LiveWallpaperService : WallpaperService() {
 
                         if (!surfaceReady) return@post
 
-                        // 2. Start new content (NO resetSurface for video!)
+                        // 2. Reset surface to clean state (ALL types)
+                        try {
+                            val canvas = surfaceHolder.lockCanvas()
+                            if (canvas != null) {
+                                canvas.drawColor(Color.BLACK)
+                                surfaceHolder.unlockCanvasAndPost(canvas)
+                            }
+                        } catch (_: Exception) {}
+
+                        // 3. Start new content
                         when (image.mediaType ?: "IMAGE") {
                             "VIDEO" -> startVideoInternal(image.uri)
+                            "GIF" -> playGif(image.uri, currentScaleMode)
                             else -> {
-                                // Only reset surface for Canvas-based content
-                                try {
-                                    val canvas = surfaceHolder.lockCanvas()
-                                    if (canvas != null) {
-                                        canvas.drawColor(Color.BLACK)
-                                        surfaceHolder.unlockCanvasAndPost(canvas)
-                                    }
-                                } catch (_: Exception) {}
-
-                                when (image.mediaType) {
-                                    "GIF" -> playGif(image.uri, currentScaleMode)
-                                    else -> {
-                                        val bitmap = loadBitmap(image.uri)
-                                        if (bitmap != null) showBitmap(bitmap, currentScaleMode)
-                                    }
-                                }
+                                val bitmap = loadBitmap(image.uri)
+                                if (bitmap != null) showBitmap(bitmap, currentScaleMode)
                             }
                         }
                     }
