@@ -108,26 +108,10 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
-            Log.d(TAG, "Visibility: $visible, videoMode=$videoMode, mp=${mediaPlayer != null}")
+            Log.d(TAG, "Visibility: $visible")
             if (visible) {
-                if (videoMode && mediaPlayer != null) {
-                    try {
-                        if (!mediaPlayer!!.isPlaying) mediaPlayer!!.start()
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Resume video failed: ${e.message}")
-                        // MediaPlayer broken → reset and restart
-                        releaseVideo()
-                        drawCurrentImage()
-                    }
-                } else if (videoMode && mediaPlayer == null) {
-                    // Inconsistent state → fully reset
-                    Log.w(TAG, "videoMode=true but mediaPlayer=null, resetting")
-                    videoMode = false
-                    videoPlaying = false
-                    drawCurrentImage()
-                } else {
-                    drawCurrentImage()
-                }
+                // Always call drawCurrentImage - it checks ID and handles all states
+                drawCurrentImage()
             } else {
                 if (videoMode && mediaPlayer != null) {
                     try { mediaPlayer?.pause() } catch (_: Exception) {}
@@ -205,6 +189,7 @@ class LiveWallpaperService : WallpaperService() {
                     }
 
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
+                    lastDisplayedId = nextImage.id
                     val mediaType = nextImage.mediaType ?: "IMAGE"
                     Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType, uri=${nextImage.uri})")
 
@@ -293,10 +278,11 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
+        private var lastDisplayedId = -1L // Track what's currently displayed
+
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
             if (isSwitching.get()) return
-            if (videoMode) return
 
             scope.launch {
                 try {
@@ -308,11 +294,23 @@ class LiveWallpaperService : WallpaperService() {
                     val image = if (imageId > 0) db.wallpaperImageDao().getImageById(imageId) else null
 
                     if (image != null) {
-                        Log.d(TAG, "drawCurrent: ${image.displayName} (${image.mediaType})")
+                        // If ID didn't change and video is playing, skip
+                        if (imageId == lastDisplayedId && videoMode && mediaPlayer != null) return@launch
+
+                        Log.d(TAG, "drawCurrent: ${image.displayName} (${image.mediaType}), id=$imageId, last=$lastDisplayedId")
+                        lastDisplayedId = imageId
+
                         when (image.mediaType ?: "IMAGE") {
                             "VIDEO" -> { startVideo(image.uri); return@launch }
-                            "GIF" -> { mainHandler.post { playGif(image.uri, currentScaleMode) }; return@launch }
+                            "GIF" -> {
+                                releaseVideo()
+                                resetSurfaceForCanvas()
+                                mainHandler.post { playGif(image.uri, currentScaleMode) }
+                                return@launch
+                            }
                             else -> {
+                                releaseVideo()
+                                resetSurfaceForCanvas()
                                 val bitmap = loadBitmap(image.uri)
                                 if (bitmap != null) { mainHandler.post { showBitmap(bitmap, currentScaleMode) }; return@launch }
                             }
