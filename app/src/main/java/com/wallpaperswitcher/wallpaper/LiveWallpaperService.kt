@@ -158,9 +158,10 @@ class LiveWallpaperService : WallpaperService() {
 
                     // ALL media operations in ONE mainHandler.post - atomic, no race
                     mainHandler.post {
-                        // 1. Release old media
+                        // 1. Release old media - disconnect from Surface first
                         try {
                             mediaPlayer?.let {
+                                try { it.setSurface(null) } catch (_: Exception) {} // Disconnect
                                 try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
                                 it.release()
                             }
@@ -174,22 +175,26 @@ class LiveWallpaperService : WallpaperService() {
 
                         if (!surfaceReady) return@post
 
-                        // 2. Reset surface to clean state (ALL types)
-                        try {
-                            val canvas = surfaceHolder.lockCanvas()
-                            if (canvas != null) {
-                                canvas.drawColor(Color.BLACK)
-                                surfaceHolder.unlockCanvasAndPost(canvas)
-                            }
-                        } catch (_: Exception) {}
-
-                        // 3. Start new content
+                        // 2. Start new content (no lockCanvas needed)
                         when (image.mediaType ?: "IMAGE") {
                             "VIDEO" -> startVideoInternal(image.uri)
-                            "GIF" -> playGif(image.uri, currentScaleMode)
                             else -> {
-                                val bitmap = loadBitmap(image.uri)
-                                if (bitmap != null) showBitmap(bitmap, currentScaleMode)
+                                // Reset surface for Canvas (only when switching to Canvas mode)
+                                try {
+                                    val canvas = surfaceHolder.lockCanvas()
+                                    if (canvas != null) {
+                                        canvas.drawColor(Color.BLACK)
+                                        surfaceHolder.unlockCanvasAndPost(canvas)
+                                    }
+                                } catch (_: Exception) {}
+
+                                when (image.mediaType) {
+                                    "GIF" -> playGif(image.uri, currentScaleMode)
+                                    else -> {
+                                        val bitmap = loadBitmap(image.uri)
+                                        if (bitmap != null) showBitmap(bitmap, currentScaleMode)
+                                    }
+                                }
                             }
                         }
                     }
