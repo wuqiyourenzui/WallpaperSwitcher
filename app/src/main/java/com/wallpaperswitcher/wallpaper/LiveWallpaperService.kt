@@ -143,8 +143,12 @@ class LiveWallpaperService : WallpaperService() {
             videoMode = false
             videoPlaying = false
             videoStopFlag = true
-            videoJob?.cancel()
+            val job = videoJob
             videoJob = null
+            // Wait for the decode coroutine to finish and release all resources
+            runBlocking {
+                try { job?.cancelAndJoin() } catch (_: Exception) {}
+            }
         }
 
         private fun pauseVideo() {
@@ -370,11 +374,9 @@ class LiveWallpaperService : WallpaperService() {
 
             val bufferInfo = MediaCodec.BufferInfo()
             var inputDone = false
-            var outputDone = false
-            var loopCount = 0
 
             try {
-                while (!outputDone && currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
+                while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
                     // Pause
                     if (!isVisible || !videoPlaying) {
                         delay(50)
@@ -402,19 +404,14 @@ class LiveWallpaperService : WallpaperService() {
                     val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 10_000)
                     if (outputIndex >= 0) {
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            // End of stream — loop
+                            // End of stream — loop infinitely
                             decoder.releaseOutputBuffer(outputIndex, false)
-                            loopCount++
-                            if (loopCount < 3) { // Limit loops to prevent infinite
-                                extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                                inputDone = false
-                            } else {
-                                outputDone = true
-                            }
+                            extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                            inputDone = false
                             continue
                         }
 
-                        // Convert decoded frame to Bitmap and display
+                        // IMPORTANT: acquire image BEFORE releasing buffer
                         val image = imageReader.acquireLatestImage()
                         if (image != null) {
                             val bitmap = yuvToBitmap(image, width, height)
@@ -441,6 +438,7 @@ class LiveWallpaperService : WallpaperService() {
 
         /**
          * Convert YUV_420_888 Image to ARGB_8888 Bitmap.
+         * Uses integer arithmetic for performance.
          */
         private fun yuvToBitmap(image: Image, width: Int, height: Int): Bitmap? {
             return try {
@@ -459,17 +457,29 @@ class LiveWallpaperService : WallpaperService() {
                 val argb = IntArray(width * height)
 
                 for (y in 0 until height) {
-                    for (x in 0 until width) {
-                        val yVal = yBuffer.get(y * yRowStride + x).toInt() and 0xFF
-                        val uvX = x / 2
-                        val uvY = y / 2
-                        val uVal = uBuffer.get(uvY * uvRowStride + uvX * uvPixelStride).toInt() and 0xFF
-                        val vVal = vBuffer.get(uvY * uvRowStride + uvX * uvPixelStride).toInt() and 0xFF
+                    val uvY = y / 2
+                    val yRowOffset = y * yRowStride
+                    val uvRowOffset = uvY * uvRowStride
 
-                        // YUV to RGB
-                        val r = (yVal + 1.370705f * (vVal - 128)).toInt().coerceIn(0, 255)
-                        val g = (yVal - 0.337633f * (uVal - 128) - 0.698001f * (vVal - 128)).toInt().coerceIn(0, 255)
-                        val b = (yVal + 1.732446f * (uVal - 128)).toInt().coerceIn(0, 255)
+                    for (x in 0 until width) {
+                        val yVal = yBuffer.get(yRowOffset + x).toInt() and 0xFF
+                        val uvX = x / 2
+                        val uvOffset = uvRowOffset + uvX * uvPixelStride
+                        val uVal = uBuffer.get(uvOffset).toInt() and 0xFF
+                        val vVal = vBuffer.get(uvOffset).toInt() and 0xFF
+
+                        // Integer YUV to RGB (fixed-point, 10-bit precision)
+                        val c = yVal - 16
+                        val d = uVal - 128
+                        val e = vVal - 128
+
+                        var r = (298 * c + 409 * e + 128) shr 8
+                        var g = (298 * c - 100 * d - 208 * e + 128) shr 8
+                        var b = (298 * c + 516 * d + 128) shr 8
+
+                        if (r < 0) r = 0 else if (r > 255) r = 255
+                        if (g < 0) g = 0 else if (g > 255) g = 255
+                        if (b < 0) b = 0 else if (b > 255) b = 255
 
                         argb[y * width + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
                     }
