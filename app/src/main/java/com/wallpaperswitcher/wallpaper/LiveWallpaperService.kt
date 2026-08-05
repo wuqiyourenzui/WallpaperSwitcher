@@ -156,23 +156,39 @@ class LiveWallpaperService : WallpaperService() {
                     Log.d(TAG, "syncDisplay: ${image.displayName} (${image.mediaType}), id=$imageId, was=$displayedId")
                     displayedId = imageId
 
-                    when (image.mediaType ?: "IMAGE") {
-                        "VIDEO" -> {
-                            releaseCurrentMedia()
-                            resetSurface()
-                            startVideoOnMain(image.uri)
-                        }
-                        "GIF" -> {
-                            releaseCurrentMedia()
-                            resetSurface()
-                            mainHandler.post { playGif(image.uri, currentScaleMode) }
-                        }
-                        else -> {
-                            releaseCurrentMedia()
-                            resetSurface()
-                            val bitmap = loadBitmap(image.uri)
-                            if (bitmap != null) {
-                                mainHandler.post { showBitmap(bitmap, currentScaleMode) }
+                    // ALL media operations in ONE mainHandler.post - atomic, no race
+                    mainHandler.post {
+                        // 1. Release old media
+                        try {
+                            mediaPlayer?.let {
+                                try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
+                                it.release()
+                            }
+                        } catch (_: Exception) {}
+                        mediaPlayer = null
+                        videoPlaying = false
+                        gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
+                        gifFrameRunnable = null
+                        try { gifDrawable?.stop() } catch (_: Exception) {}
+                        gifDrawable = null
+
+                        // 2. Reset surface
+                        try {
+                            val canvas = surfaceHolder.lockCanvas()
+                            if (canvas != null) {
+                                canvas.drawColor(Color.BLACK)
+                                surfaceHolder.unlockCanvasAndPost(canvas)
+                            }
+                        } catch (_: Exception) {}
+
+                        // 3. Start new content
+                        if (!surfaceReady) return@post
+                        when (image.mediaType ?: "IMAGE") {
+                            "VIDEO" -> startVideoInternal(image.uri)
+                            "GIF" -> playGif(image.uri, currentScaleMode)
+                            else -> {
+                                val bitmap = loadBitmap(image.uri)
+                                if (bitmap != null) showBitmap(bitmap, currentScaleMode)
                             }
                         }
                     }
@@ -269,54 +285,50 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video via MediaPlayer (main thread) ========
+        // ======== Video via MediaPlayer (called on main thread) ========
 
-        private fun startVideoOnMain(uriStr: String) {
-            mainHandler.post {
-                if (!surfaceReady) return@post
+        private fun startVideoInternal(uriStr: String) {
+            Log.d(TAG, "startVideo: $uriStr")
+            if (!surfaceReady) return
 
-                Log.d(TAG, "startVideo: $uriStr")
-                videoPlaying = false
+            try {
+                val mp = MediaPlayer()
 
-                try {
-                    val mp = MediaPlayer()
-
-                    mp.setOnErrorListener { _, what, extra ->
-                        Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
-                        videoPlaying = false
-                        try { mp.release() } catch (_: Exception) {}
-                        if (mediaPlayer === mp) mediaPlayer = null
-                        false
-                    }
-
-                    mp.setOnPreparedListener { player ->
-                        Log.d(TAG, "Video prepared: ${player.videoWidth}x${player.videoHeight}")
-                        try {
-                            player.isLooping = true
-                            player.start()
-                            videoPlaying = true
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Video start failed: ${e.message}")
-                        }
-                    }
-
-                    mp.setOnInfoListener { _, what, _ ->
-                        if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
-                            Log.d(TAG, "Video rendering started")
-                            videoPlaying = true
-                        }
-                        false
-                    }
-
-                    mp.setDataSource(applicationContext, Uri.parse(uriStr))
-                    mp.setSurface(surfaceHolder.surface)
-                    mp.prepareAsync()
-
-                    mediaPlayer = mp
-                } catch (e: Exception) {
-                    Log.e(TAG, "startVideo error: ${e.message}")
+                mp.setOnErrorListener { _, what, extra ->
+                    Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
                     videoPlaying = false
+                    try { mp.release() } catch (_: Exception) {}
+                    if (mediaPlayer === mp) mediaPlayer = null
+                    false
                 }
+
+                mp.setOnPreparedListener { player ->
+                    Log.d(TAG, "Video prepared: ${player.videoWidth}x${player.videoHeight}")
+                    try {
+                        player.isLooping = true
+                        player.start()
+                        videoPlaying = true
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Video start failed: ${e.message}")
+                    }
+                }
+
+                mp.setOnInfoListener { _, what, _ ->
+                    if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                        Log.d(TAG, "Video rendering started")
+                        videoPlaying = true
+                    }
+                    false
+                }
+
+                mp.setDataSource(applicationContext, Uri.parse(uriStr))
+                mp.setSurface(surfaceHolder.surface)
+                mp.prepareAsync()
+
+                mediaPlayer = mp
+            } catch (e: Exception) {
+                Log.e(TAG, "startVideo error: ${e.message}")
+                videoPlaying = false
             }
         }
 
