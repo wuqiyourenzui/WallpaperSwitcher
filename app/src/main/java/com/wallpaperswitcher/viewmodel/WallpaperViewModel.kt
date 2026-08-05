@@ -285,17 +285,18 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun setImageAsWallpaper(image: WallpaperImage) {
         viewModelScope.launch {
             try {
-                // 1. Save target ID first (live wallpaper reads this on start)
+                // 1. Save target ID (live wallpaper reads this from DB)
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
 
-                // 2. Try broadcast (works if live wallpaper is already running)
+                // 2. Send broadcast to running live wallpaper
                 val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH).apply {
                     setPackage(getApplication<Application>().packageName)
                     putExtra(com.wallpaperswitcher.wallpaper.LiveWallpaperService.EXTRA_TARGET_ID, image.id)
                 }
                 getApplication<Application>().sendBroadcast(switchIntent)
 
-                // 3. Launch live wallpaper picker (activates live wallpaper if not running)
+                // 3. Only launch picker if live wallpaper might not be running
+                //    The broadcast handles the case where it IS running
                 launchLiveWallpaperPicker()
 
                 _toastMessage.emit("壁纸已设置！")

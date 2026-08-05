@@ -44,7 +44,7 @@ class LiveWallpaperService : WallpaperService() {
         private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
         @Volatile private var shuffleAllCount = 0
 
-        // Video: MediaPlayer renders directly to wallpaper Surface
+        // Video state
         private var mediaPlayer: MediaPlayer? = null
         @Volatile private var videoMode = false
         @Volatile private var videoPlaying = false
@@ -108,14 +108,20 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
-            Log.d(TAG, "Visibility: $visible")
+            Log.d(TAG, "Visibility: $visible, videoMode=$videoMode, mp=${mediaPlayer != null}")
             if (visible) {
                 if (videoMode && mediaPlayer != null) {
                     try {
                         if (!mediaPlayer!!.isPlaying) mediaPlayer!!.start()
-                    } catch (_: Exception) {}
-                } else if (videoMode) {
-                    // videoMode but no player - reset and redraw
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Resume video failed: ${e.message}")
+                        // MediaPlayer broken → reset and restart
+                        releaseVideo()
+                        drawCurrentImage()
+                    }
+                } else if (videoMode && mediaPlayer == null) {
+                    // Inconsistent state → fully reset
+                    Log.w(TAG, "videoMode=true but mediaPlayer=null, resetting")
                     videoMode = false
                     videoPlaying = false
                     drawCurrentImage()
@@ -123,7 +129,7 @@ class LiveWallpaperService : WallpaperService() {
                     drawCurrentImage()
                 }
             } else {
-                if (videoMode) {
+                if (videoMode && mediaPlayer != null) {
                     try { mediaPlayer?.pause() } catch (_: Exception) {}
                 }
                 pauseGif()
@@ -193,16 +199,18 @@ class LiveWallpaperService : WallpaperService() {
                         pickNextImage(switchMode, imageDao, lastId, dao)
                     }
 
-                    if (nextImage == null) return@launch
+                    if (nextImage == null) {
+                        Log.d(TAG, "No next image found")
+                        return@launch
+                    }
 
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
                     val mediaType = nextImage.mediaType ?: "IMAGE"
-                    Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
+                    Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType, uri=${nextImage.uri})")
 
                     when (mediaType) {
                         "VIDEO" -> {
-                            // Video→Video: release old player, start new
-                            // DON'T reset videoMode or Surface
+                            // Release old player but keep videoMode=true
                             try {
                                 mediaPlayer?.let {
                                     try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
@@ -216,7 +224,6 @@ class LiveWallpaperService : WallpaperService() {
                             startVideo(nextImage.uri)
                         }
                         else -> {
-                            // Video→Image/GIF: release video, reset to Canvas
                             releaseVideo()
                             pauseGif()
                             resetSurfaceForCanvas()
@@ -238,10 +245,6 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        /**
-         * Reset Surface from MediaPlayer mode to Canvas mode.
-         * Must call this before any lockCanvas() after MediaPlayer usage.
-         */
         private fun resetSurfaceForCanvas() {
             try {
                 val canvas = surfaceHolder.lockCanvas()
@@ -293,7 +296,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
             if (isSwitching.get()) return
-            if (videoMode) return // Any video state → don't interrupt
+            if (videoMode) return
 
             scope.launch {
                 try {
@@ -305,6 +308,7 @@ class LiveWallpaperService : WallpaperService() {
                     val image = if (imageId > 0) db.wallpaperImageDao().getImageById(imageId) else null
 
                     if (image != null) {
+                        Log.d(TAG, "drawCurrent: ${image.displayName} (${image.mediaType})")
                         when (image.mediaType ?: "IMAGE") {
                             "VIDEO" -> { startVideo(image.uri); return@launch }
                             "GIF" -> { mainHandler.post { playGif(image.uri, currentScaleMode) }; return@launch }
@@ -322,16 +326,13 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         // ======== Video via MediaPlayer ========
-        // MediaPlayer renders directly to the wallpaper Surface.
-        // Hardware accelerated, automatic looping, zero complexity.
 
         private fun startVideo(uriStr: String) {
             Log.d(TAG, "startVideo: $uriStr")
-            // Set video mode FIRST to prevent drawCurrentImage interference
             videoMode = true
             videoPlaying = false
 
-            // Clean up existing MediaPlayer (without resetting videoMode)
+            // Clean up existing MediaPlayer
             try {
                 mediaPlayer?.let {
                     try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
@@ -340,8 +341,13 @@ class LiveWallpaperService : WallpaperService() {
             } catch (_: Exception) {}
             mediaPlayer = null
 
+            if (!surfaceReady) {
+                Log.w(TAG, "Surface not ready, abort startVideo")
+                videoMode = false
+                return
+            }
+
             try {
-                videoMode = true
                 val mp = MediaPlayer()
 
                 mp.setOnErrorListener { _, what, extra ->
@@ -349,7 +355,8 @@ class LiveWallpaperService : WallpaperService() {
                     videoMode = false
                     videoPlaying = false
                     try { mp.release() } catch (_: Exception) {}
-                    mediaPlayer = null
+                    if (mediaPlayer === mp) mediaPlayer = null
+                    // Don't auto-restart here - let onVisibilityChanged handle it
                     false
                 }
 
@@ -361,6 +368,8 @@ class LiveWallpaperService : WallpaperService() {
                         videoPlaying = true
                     } catch (e: Exception) {
                         Log.e(TAG, "Video start failed: ${e.message}")
+                        videoMode = false
+                        videoPlaying = false
                     }
                 }
 
@@ -377,6 +386,7 @@ class LiveWallpaperService : WallpaperService() {
                 mp.prepareAsync()
 
                 mediaPlayer = mp
+                Log.d(TAG, "MediaPlayer created, waiting for prepare")
             } catch (e: Exception) {
                 Log.e(TAG, "startVideo error: ${e.message}")
                 videoMode = false
@@ -430,7 +440,7 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Canvas rendering (image + GIF) ========
+        // ======== Canvas rendering ========
 
         private fun showBitmap(bitmap: Bitmap, scaleMode: ScaleMode = ScaleMode.FIT) {
             if (!surfaceReady) return
