@@ -194,14 +194,16 @@ class LiveWallpaperService : WallpaperService() {
 
                     when (mediaType) {
                         "VIDEO" -> {
-                            // Release old player but keep videoMode=true
-                            try {
-                                mediaPlayer?.let {
-                                    try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
-                                    it.release()
-                                }
-                            } catch (_: Exception) {}
-                            mediaPlayer = null
+                            // Release old player on main thread
+                            mainHandler.post {
+                                try {
+                                    mediaPlayer?.let {
+                                        try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
+                                        it.release()
+                                    }
+                                } catch (_: Exception) {}
+                                mediaPlayer = null
+                            }
                             videoPlaying = false
                             pauseGif()
                             delay(50)
@@ -329,65 +331,66 @@ class LiveWallpaperService : WallpaperService() {
             videoMode = true
             videoPlaying = false
 
-            // Clean up existing MediaPlayer
-            try {
-                mediaPlayer?.let {
-                    try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
-                    it.release()
-                }
-            } catch (_: Exception) {}
-            mediaPlayer = null
+            // Post to main thread - MediaPlayer callbacks need a Looper
+            mainHandler.post {
+                // Clean up existing MediaPlayer
+                try {
+                    mediaPlayer?.let {
+                        try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
+                        it.release()
+                    }
+                } catch (_: Exception) {}
+                mediaPlayer = null
 
-            if (!surfaceReady) {
-                Log.w(TAG, "Surface not ready, abort startVideo")
-                videoMode = false
-                return
-            }
-
-            try {
-                val mp = MediaPlayer()
-
-                mp.setOnErrorListener { _, what, extra ->
-                    Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
+                if (!surfaceReady) {
+                    Log.w(TAG, "Surface not ready")
                     videoMode = false
-                    videoPlaying = false
-                    try { mp.release() } catch (_: Exception) {}
-                    if (mediaPlayer === mp) mediaPlayer = null
-                    // Don't auto-restart here - let onVisibilityChanged handle it
-                    false
+                    return@post
                 }
 
-                mp.setOnPreparedListener { player ->
-                    Log.d(TAG, "Video prepared: ${player.videoWidth}x${player.videoHeight}")
-                    try {
-                        player.isLooping = true
-                        player.start()
-                        videoPlaying = true
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Video start failed: ${e.message}")
+                try {
+                    val mp = MediaPlayer()
+
+                    mp.setOnErrorListener { _, what, extra ->
+                        Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
                         videoMode = false
                         videoPlaying = false
+                        try { mp.release() } catch (_: Exception) {}
+                        if (mediaPlayer === mp) mediaPlayer = null
+                        false
                     }
-                }
 
-                mp.setOnInfoListener { _, what, _ ->
-                    if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
-                        Log.d(TAG, "Video first frame rendered")
-                        videoPlaying = true
+                    mp.setOnPreparedListener { player ->
+                        Log.d(TAG, "Video prepared: ${player.videoWidth}x${player.videoHeight}")
+                        try {
+                            player.isLooping = true
+                            player.start()
+                            videoPlaying = true
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Video start failed: ${e.message}")
+                            videoMode = false
+                        }
                     }
-                    false
+
+                    mp.setOnInfoListener { _, what, _ ->
+                        if (what == MediaPlayer.MEDIA_INFO_VIDEO_RENDERING_START) {
+                            Log.d(TAG, "Video first frame rendered")
+                            videoPlaying = true
+                        }
+                        false
+                    }
+
+                    mp.setDataSource(applicationContext, Uri.parse(uriStr))
+                    mp.setSurface(surfaceHolder.surface)
+                    mp.prepareAsync()
+
+                    mediaPlayer = mp
+                    Log.d(TAG, "MediaPlayer created on main thread")
+                } catch (e: Exception) {
+                    Log.e(TAG, "startVideo error: ${e.message}")
+                    videoMode = false
+                    videoPlaying = false
                 }
-
-                mp.setDataSource(applicationContext, Uri.parse(uriStr))
-                mp.setSurface(surfaceHolder.surface)
-                mp.prepareAsync()
-
-                mediaPlayer = mp
-                Log.d(TAG, "MediaPlayer created, waiting for prepare")
-            } catch (e: Exception) {
-                Log.e(TAG, "startVideo error: ${e.message}")
-                videoMode = false
-                videoPlaying = false
             }
         }
 
