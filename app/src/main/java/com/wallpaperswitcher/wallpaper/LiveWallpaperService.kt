@@ -110,7 +110,6 @@ class LiveWallpaperService : WallpaperService() {
             isVisible = visible
             Log.d(TAG, "Visibility: $visible")
             if (visible) {
-                // Always call drawCurrentImage - it checks ID and handles all states
                 drawCurrentImage()
             } else {
                 if (videoMode && mediaPlayer != null) {

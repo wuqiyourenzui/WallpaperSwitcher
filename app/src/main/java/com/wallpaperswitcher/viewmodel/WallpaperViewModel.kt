@@ -170,7 +170,12 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addImage(groupId: Long, uri: Uri, displayName: String) {
         viewModelScope.launch {
-            imageDao.insert(WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = displayName))
+            imageDao.insert(WallpaperImage(
+                groupId = groupId,
+                uri = uri.toString(),
+                displayName = displayName,
+                mediaType = detectMediaType(displayName)
+            ))
             refreshCount(groupId)
         }
     }
