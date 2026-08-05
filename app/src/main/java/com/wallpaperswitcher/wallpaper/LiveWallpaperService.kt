@@ -238,11 +238,58 @@ class LiveWallpaperService : WallpaperService() {
                         }
 
                         if (nextImage != null) {
-                            Log.d(TAG, "doSwitch to: ${nextImage.displayName} (${nextImage.mediaType})")
+                            Log.d(TAG, "doSwitch: ${nextImage.displayName} (${nextImage.mediaType})")
                             dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
-                            // syncDisplay will pick up the change
-                            displayedId = -1 // Force re-display
-                            mainHandler.post { syncDisplay() }
+
+                            currentScaleMode = try {
+                                ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
+                            } catch (_: Exception) { ScaleMode.FIT }
+
+                            val mediaType = nextImage.mediaType ?: "IMAGE"
+                            val uri = nextImage.uri
+
+                            // Do everything in one mainHandler.post - no syncDisplay dependency
+                            mainHandler.post {
+                                displayedId = nextImage.id
+
+                                // Release old media
+                                try {
+                                    mediaPlayer?.let {
+                                        try { it.setSurface(null) } catch (_: Exception) {}
+                                        try { if (it.isPlaying) it.stop() } catch (_: Exception) {}
+                                        it.release()
+                                    }
+                                } catch (_: Exception) {}
+                                mediaPlayer = null
+                                videoPlaying = false
+                                gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
+                                gifFrameRunnable = null
+                                try { gifDrawable?.stop() } catch (_: Exception) {}
+                                gifDrawable = null
+
+                                if (!surfaceReady) return@post
+
+                                // Start new content
+                                when (mediaType) {
+                                    "VIDEO" -> startVideoInternal(uri)
+                                    else -> {
+                                        try {
+                                            val canvas = surfaceHolder.lockCanvas()
+                                            if (canvas != null) {
+                                                canvas.drawColor(Color.BLACK)
+                                                surfaceHolder.unlockCanvasAndPost(canvas)
+                                            }
+                                        } catch (_: Exception) {}
+                                        when (mediaType) {
+                                            "GIF" -> playGif(uri, currentScaleMode)
+                                            else -> {
+                                                val bitmap = loadBitmap(uri)
+                                                if (bitmap != null) showBitmap(bitmap, currentScaleMode)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     } catch (e: Exception) {
                         Log.e(TAG, "doSwitch error", e)
