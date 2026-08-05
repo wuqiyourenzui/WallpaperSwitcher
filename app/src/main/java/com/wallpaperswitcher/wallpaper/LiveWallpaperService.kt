@@ -5,7 +5,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.*
-import android.media.*
+import android.media.MediaMetadataRetriever
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -48,13 +49,17 @@ class LiveWallpaperService : WallpaperService() {
         private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
         @Volatile private var shuffleAllCount = 0
 
-        // Video state — MediaCodec software decoder
+        // Video state — MediaPlayer for audio sync + timing, MediaMetadataRetriever for frames
+        private var videoPlayer: MediaPlayer? = null
+        private var videoRetriever: MediaMetadataRetriever? = null
         private var videoJob: Job? = null
         @Volatile private var videoPlaying = false
         @Volatile private var videoStopFlag = false
         @Volatile private var videoMode = false
         @Volatile private var videoDurationMs = 0L
         private var videoFps = 30
+        @Volatile private var videoWidth = 0
+        @Volatile private var videoHeight = 0
 
         // Reusable display objects to reduce GC pressure
         private val destRect = RectF()
@@ -145,22 +150,50 @@ class LiveWallpaperService : WallpaperService() {
             gifBitmapBuffer?.recycle(); gifBitmapBuffer = null
         }
 
+        /**
+         * Stop video playback and release all video resources.
+         * Must be safe to call from any thread.
+         */
         private fun stopVideo() {
             videoMode = false
             videoPlaying = false
             videoStopFlag = true
+
+            // Cancel the decode job
             val job = videoJob
             videoJob = null
-            // Cancel the job; the finally block in decodeAndPlay will release resources
             job?.cancel()
+
+            // Release MediaPlayer (must happen on main thread for safety)
+            val oldPlayer = videoPlayer
+            videoPlayer = null
+            if (oldPlayer != null) {
+                mainHandler.post {
+                    try {
+                        oldPlayer.setSurface(null)
+                        if (oldPlayer.isPlaying) oldPlayer.stop()
+                        oldPlayer.release()
+                    } catch (_: Exception) {}
+                }
+            }
+
+            // Release MediaMetadataRetriever
+            val oldRetriever = videoRetriever
+            videoRetriever = null
+            // Retriever can be released from any thread
+            scope.launch {
+                try { oldRetriever?.release() } catch (_: Exception) {}
+            }
         }
 
         private fun pauseVideo() {
             videoPlaying = false
+            try { videoPlayer?.pause() } catch (_: Exception) {}
         }
 
         private fun resumeVideo() {
             videoPlaying = true
+            try { videoPlayer?.start() } catch (_: Exception) {}
         }
 
         private fun pauseGif() {
@@ -208,7 +241,7 @@ class LiveWallpaperService : WallpaperService() {
                     // Stop everything before switching
                     stopVideo()
                     pauseGif()
-                    delay(50)
+                    delay(100) // Give resources time to release
 
                     when (mediaType) {
                         "VIDEO" -> startVideo(nextImage.uri, currentScaleMode)
@@ -218,6 +251,8 @@ class LiveWallpaperService : WallpaperService() {
                             if (bitmap != null) mainHandler.post { showBitmap(bitmap, currentScaleMode) }
                         }
                     }
+                } catch (ce: CancellationException) {
+                    throw ce // Don't swallow cancellation
                 } catch (e: Exception) {
                     Log.e(TAG, "doSwitch error", e)
                 } finally {
@@ -245,7 +280,6 @@ class LiveWallpaperService : WallpaperService() {
                 SwitchMode.SHUFFLE -> {
                     val totalCount = imageDao.countByEnabledGroups()
                     if (totalCount == 0) null else {
-                        // Restore shuffle state from DB if needed (survives engine recreation)
                         if (shuffleShownIds.isEmpty()) {
                             val saved = dao.getString(SettingsKeys.SHUFFLE_SHOWN_IDS, "")
                             if (saved.isNotEmpty()) {
@@ -268,7 +302,6 @@ class LiveWallpaperService : WallpaperService() {
                         }
                         candidate?.also {
                             shuffleShownIds.add(it.id)
-                            // Persist shuffle state to survive engine recreation
                             dao.setString(SettingsKeys.SHUFFLE_SHOWN_IDS, shuffleShownIds.joinToString(","))
                             dao.setLong(SettingsKeys.SHUFFLE_ALL_COUNT, shuffleAllCount.toLong())
                         }
@@ -302,219 +335,145 @@ class LiveWallpaperService : WallpaperService() {
                         }
                     }
                     mainHandler.post { showDefault() }
+                } catch (ce: CancellationException) {
+                    throw ce
                 } catch (e: Exception) {
                     Log.e(TAG, "drawCurrentImage error", e)
                 }
             }
         }
 
-        // ======== Video: MediaCodec software decoder + Canvas ========
-        // Uses Android's software codec (c2.android.avc.decoder) for frame-by-frame
-        // decoding. Much faster than MediaMetadataRetriever.getFrameAtTime() which
-        // has to seek+decode from keyframe for each frame.
-        // Supports FIT, FILL, STRETCH scale modes.
+        // ======== Video: MediaPlayer + MediaMetadataRetriever ========
+        // MediaPlayer handles audio/video sync and looping.
+        // MediaMetadataRetriever extracts frames for Canvas rendering.
+        // This is the most compatible approach for WallpaperService.
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             videoMode = true
             videoPlaying = true
             videoStopFlag = false
 
+            val uri = Uri.parse(uriStr)
+
             // Pre-cache screen metrics
             val metrics = getMetrics()
             cachedScreenW = metrics.widthPixels.toFloat()
             cachedScreenH = metrics.heightPixels.toFloat()
 
+            // Setup MediaPlayer for timing + looping (muted, we render via Canvas)
+            try {
+                val mp = MediaPlayer()
+                mp.setOnErrorListener { _, what, extra ->
+                    Log.e(TAG, "MediaPlayer error: what=$what extra=$extra")
+                    videoPlaying = false
+                    false
+                }
+                mp.setDataSource(applicationContext, uri)
+                mp.setVolume(0f, 0f)
+                mp.isLooping = true
+                mp.prepare()
+                videoDurationMs = mp.duration.toLong()
+                videoFps = 30 // Default, will be overridden by metadata if available
+                mp.start()
+                videoPlayer = mp
+            } catch (e: Exception) {
+                Log.e(TAG, "MediaPlayer setup failed: ${e.message}")
+                // Continue without MediaPlayer — retriever-only mode
+            }
+
+            // Setup MediaMetadataRetriever for frame extraction
+            try {
+                val retriever = MediaMetadataRetriever()
+                retriever.setDataSource(applicationContext, uri)
+                videoRetriever = retriever
+
+                // Read video dimensions
+                val w = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
+                val h = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
+                videoWidth = w
+                videoHeight = h
+
+                // Try to get actual frame rate
+                val fps = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_CAPTURE_FRAMERATE)?.toFloatOrNull()
+                if (fps != null && fps > 0) videoFps = fps.toInt().coerceIn(15, 60)
+
+                Log.d(TAG, "Video: ${w}x${h} @ ${videoFps}fps, duration=${videoDurationMs}ms")
+            } catch (e: Exception) {
+                Log.e(TAG, "Retriever setup failed: ${e.message}")
+                videoPlaying = false; videoMode = false
+                return
+            }
+
+            // Start frame extraction loop
             videoJob = scope.launch {
                 try {
-                    decodeAndPlay(uriStr, scaleMode)
+                    runVideoLoop(scaleMode)
+                } catch (ce: CancellationException) {
+                    throw ce
                 } catch (e: Exception) {
-                    Log.e(TAG, "Video error: ${e.message}")
+                    Log.e(TAG, "Video loop error: ${e.message}")
                 } finally {
                     videoPlaying = false
                 }
             }
         }
 
-        private suspend fun decodeAndPlay(uriStr: String, scaleMode: ScaleMode) = withContext(Dispatchers.IO) {
-            val extractor = MediaExtractor()
-            extractor.setDataSource(applicationContext, Uri.parse(uriStr), null)
-
-            // Find video track
-            val trackIndex = (0 until extractor.trackCount).firstOrNull { i ->
-                extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
-            } ?: run {
-                extractor.release()
-                return@withContext
-            }
-
-            extractor.selectTrack(trackIndex)
-            val format = extractor.getTrackFormat(trackIndex)
-            val mime = format.getString(MediaFormat.KEY_MIME)!!
-            val width = format.getInteger(MediaFormat.KEY_WIDTH)
-            val height = format.getInteger(MediaFormat.KEY_HEIGHT)
-            videoDurationMs = format.getLong(MediaFormat.KEY_DURATION) / 1000
-            val frameRate = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30)
-            videoFps = frameRate.coerceIn(15, 60)
-            val frameIntervalUs = (1_000_000L / videoFps)
-
-            Log.d(TAG, "Video decode: ${width}x${height} @ ${videoFps}fps, mime=$mime")
-
-            // Create software decoder (prefer c2.android.avc.decoder for SW decode)
-            val decoder = try {
-                // Try software decoder first (works on all devices)
-                MediaCodec.createDecoderByType(mime).also {
-                    Log.d(TAG, "Decoder: ${it.name}")
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "No decoder for $mime: ${e.message}")
-                extractor.release()
-                return@withContext
-            }
-
-            // ImageReader to receive decoded frames from decoder
-            val imageReader = ImageReader.newInstance(width, height, ImageFormat.YUV_420_888, 2)
-            decoder.configure(format, imageReader.surface, null, 0)
-            decoder.start()
-
-            val bufferInfo = MediaCodec.BufferInfo()
-            var inputDone = false
-
-            try {
-                while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
-                    // Pause
-                    if (!isVisible || !videoPlaying) {
-                        delay(50)
-                        continue
-                    }
-
-                    // Feed input
-                    if (!inputDone) {
-                        val inputIndex = decoder.dequeueInputBuffer(10_000)
-                        if (inputIndex >= 0) {
-                            val inputBuffer = decoder.getInputBuffer(inputIndex) ?: continue
-                            val sampleSize = extractor.readSampleData(inputBuffer, 0)
-                            if (sampleSize < 0) {
-                                decoder.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                inputDone = true
-                            } else {
-                                decoder.queueInputBuffer(inputIndex, 0, sampleSize, extractor.sampleTime, 0)
-                                extractor.advance()
-                            }
-                        }
-                    }
-
-                    // Drain output
-                    val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 10_000)
-                    if (outputIndex >= 0) {
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            // End of stream — release buffer, seek, restart input
-                            decoder.releaseOutputBuffer(outputIndex, false)
-                            extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                            inputDone = false
-                            continue
-                        }
-
-                        // CRITICAL: render=true sends frame to ImageReader's Surface
-                        decoder.releaseOutputBuffer(outputIndex, true)
-
-                        // Now acquire the rendered frame from ImageReader
-                        val image = imageReader.acquireLatestImage()
-                        if (image != null) {
-                            try {
-                                val bitmap = yuvToBitmap(image, width, height)
-                                if (bitmap != null) {
-                                    showVideoFrame(bitmap, scaleMode)
-                                    bitmap.recycle()
-                                }
-                            } finally {
-                                image.close()
-                            }
-                        }
-
-                        // Frame pacing
-                        delay(frameIntervalUs / 1000)
-                    } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                        // No output available yet, small delay to avoid busy loop
-                        delay(1)
-                    }
-                }
-            } finally {
-                try { decoder.stop() } catch (_: Exception) {}
-                try { decoder.release() } catch (_: Exception) {}
-                try { imageReader.close() } catch (_: Exception) {}
-                try { extractor.release() } catch (_: Exception) {}
-            }
-        }
-
         /**
-         * Convert YUV_420_888 Image to ARGB_8888 Bitmap.
-         * Uses integer arithmetic for performance.
-         * Uses absolute buffer positions to handle non-zero position().
+         * Frame extraction loop. Runs on IO thread.
+         * Uses OPTION_CLOSEST_SYNC for fast keyframe extraction.
+         * Frame pacing ensures smooth playback at video's native fps.
          */
-        private fun yuvToBitmap(image: Image, width: Int, height: Int): Bitmap? {
-            return try {
-                val yPlane = image.planes[0]
-                val uPlane = image.planes[1]
-                val vPlane = image.planes[2]
+        private suspend fun runVideoLoop(scaleMode: ScaleMode) {
+            val retriever = videoRetriever ?: return
+            val durationMs = videoDurationMs
+            if (durationMs <= 0) return
 
-                val yBuffer = yPlane.buffer
-                val uBuffer = uPlane.buffer
-                val vBuffer = vPlane.buffer
+            val frameIntervalMs = (1000L / videoFps).coerceAtLeast(16L)
+            var currentPosMs = 0L
 
-                val yRowStride = yPlane.rowStride
-                val uvRowStride = uPlane.rowStride
-                val uvPixelStride = uPlane.pixelStride
-
-                // Reset buffer positions to ensure consistent reads
-                yBuffer.position(0)
-                uBuffer.position(0)
-                vBuffer.position(0)
-
-                val argb = IntArray(width * height)
-
-                for (y in 0 until height) {
-                    val uvY = y / 2
-                    val yRowOffset = y * yRowStride
-                    val uvRowOffset = uvY * uvRowStride
-
-                    for (x in 0 until width) {
-                        val yVal = yBuffer.get(yRowOffset + x).toInt() and 0xFF
-                        val uvX = x / 2
-                        val uvOffset = uvRowOffset + uvX * uvPixelStride
-                        val uVal = uBuffer.get(uvOffset).toInt() and 0xFF
-                        val vVal = vBuffer.get(uvOffset).toInt() and 0xFF
-
-                        // Integer YUV to RGB (BT.601, fixed-point 10-bit)
-                        val c = yVal - 16
-                        val d = uVal - 128
-                        val e = vVal - 128
-
-                        var r = (298 * c + 409 * e + 128) shr 8
-                        var g = (298 * c - 100 * d - 208 * e + 128) shr 8
-                        var b = (298 * c + 516 * d + 128) shr 8
-
-                        if (r < 0) r = 0 else if (r > 255) r = 255
-                        if (g < 0) g = 0 else if (g > 255) g = 255
-                        if (b < 0) b = 0 else if (b > 255) b = 255
-
-                        argb[y * width + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-                    }
+            while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
+                if (!isVisible || !videoPlaying) {
+                    delay(50)
+                    continue
                 }
 
-                Bitmap.createBitmap(argb, width, height, Bitmap.Config.ARGB_8888)
-            } catch (e: Exception) {
-                Log.e(TAG, "yuvToBitmap error: ${e.message}")
-                null
+                val frameStart = System.nanoTime()
+
+                // Extract frame — use main thread for Canvas operations
+                val frame = try {
+                    retriever.getFrameAtTime(currentPosMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                } catch (_: Exception) { null }
+
+                if (frame != null) {
+                    // Post to main thread for Canvas rendering
+                    val drawComplete = CompletableDeferred<Boolean>()
+                    mainHandler.post {
+                        if (surfaceReady && !videoStopFlag) {
+                            showVideoFrame(frame, scaleMode)
+                            drawComplete.complete(true)
+                        } else {
+                            drawComplete.complete(false)
+                        }
+                        frame.recycle()
+                    }
+                    // Wait for draw to complete before extracting next frame
+                    if (!drawComplete.await()) break
+                }
+
+                // Advance position
+                currentPosMs += frameIntervalMs
+                if (currentPosMs >= durationMs) currentPosMs = 0L
+
+                // Frame pacing
+                val elapsed = (System.nanoTime() - frameStart) / 1_000_000
+                val sleepMs = frameIntervalMs - elapsed
+                if (sleepMs > 0) delay(sleepMs)
             }
         }
 
-        private fun MediaFormat.getIntegerOrDefault(key: String, default: Int): Int {
-            return try { if (containsKey(key)) getInteger(key) else default } catch (_: Exception) { default }
-        }
-
         /**
-         * Draw a video frame to the wallpaper canvas.
-         * Uses pre-cached screen metrics and reusable destRect.
+         * Draw a video frame to the wallpaper Canvas.
+         * MUST be called on the main thread (SurfaceHolder is not thread-safe).
          */
         private fun showVideoFrame(bitmap: Bitmap, scaleMode: ScaleMode) {
             if (!surfaceReady) return
@@ -526,7 +485,9 @@ class LiveWallpaperService : WallpaperService() {
                 calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(), sw, sh, scaleMode)
                 canvas.drawBitmap(bitmap, null, destRect, null)
                 surfaceHolder.unlockCanvasAndPost(canvas)
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                Log.e(TAG, "showVideoFrame error: ${e.message}")
+            }
         }
 
         // ======== GIF via Canvas ========
@@ -575,7 +536,7 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Canvas rendering (images, GIF, video frames) ========
+        // ======== Canvas rendering ========
 
         private fun showBitmap(bitmap: Bitmap, scaleMode: ScaleMode = ScaleMode.FIT) {
             if (!surfaceReady) return
@@ -604,7 +565,6 @@ class LiveWallpaperService : WallpaperService() {
             } catch (_: Exception) {}
         }
 
-        /** Writes into reusable [destRect] to avoid per-frame allocation. */
         private fun calcDestRect(bw: Float, bh: Float, sw: Float, sh: Float, scaleMode: ScaleMode) {
             when (scaleMode) {
                 ScaleMode.FIT -> {
