@@ -533,9 +533,12 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        @android.annotation.SuppressLint("NewApi")
-        @android.annotation.TargetApi(31)
-        private fun getSurfaceTextureBitmap(st: SurfaceTexture): Bitmap? = st.getBitmap()
+        private fun getSurfaceTextureBitmap(st: SurfaceTexture): Bitmap? {
+            return try {
+                val method = SurfaceTexture::class.java.getMethod("getBitmap")
+                method.invoke(st) as? Bitmap
+            } catch (_: Exception) { null }
+        }
 
         /**
          * Read pixels from GL framebuffer (for API < 31).
