@@ -4,6 +4,7 @@ import android.graphics.*
 import android.media.*
 import android.net.Uri
 import android.opengl.EGL14
+import com.wallpaperswitcher.data.ScaleMode
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
@@ -238,7 +239,10 @@ class VideoRenderer(
     private fun tryGetBitmap(width: Int, height: Int): Bitmap? {
         return try {
             if (Build.VERSION.SDK_INT >= 31) {
-                surfaceTexture?.getBitmap()
+                try {
+                    val method = SurfaceTexture::class.java.getMethod("getBitmap")
+                    method.invoke(surfaceTexture) as? Bitmap
+                } catch (_: Exception) { null }
             } else {
                 readGlPixels(width, height)
             }

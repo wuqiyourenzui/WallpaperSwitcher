@@ -270,6 +270,7 @@ private fun EmptyGroupsHint() {
 }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun CreateGroupDialog(
     onDismiss: () -> Unit,
     onCreate: (String, String) -> Unit
