@@ -431,7 +431,7 @@ class LiveWallpaperService : WallpaperService() {
                             image.close()
 
                             // Write pixels to the write-side bitmap
-                            writeBitmap.setPixels(argbBuffer, 0, width, 0, 0, width, height)
+                            writeBitmap.setPixels(argbBuffer, 0, halfW, 0, 0, halfW, halfH)
 
                             // Swap: old readBitmap goes back to write-side, old writeBitmap goes to renderer
                             val oldRead = readBitmap
