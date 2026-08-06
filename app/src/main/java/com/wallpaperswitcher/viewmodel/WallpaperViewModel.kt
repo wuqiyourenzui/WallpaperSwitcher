@@ -208,6 +208,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 mediaType = mediaType
             ))
             refreshCount(groupId)
+            refreshImages()
         }
     }
 
@@ -227,6 +228,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             if (images.isNotEmpty()) {
                 imageDao.insertAll(images)
                 refreshCount(groupId)
+                refreshImages()
                 _toastMessage.emit("Added ${images.size} images")
             } else {
                 _toastMessage.emit("No images found")
@@ -304,6 +306,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (total > 0) {
                     refreshCount(groupId)
+                    refreshImages()
                     _toastMessage.emit("已添加 $total 张图片")
                 } else {
                     _toastMessage.emit("未找到图片")
@@ -575,6 +578,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 if (total > 0) {
                     refreshCount(groupId)
+                    refreshImages()
                     _toastMessage.emit("已从「${folder.name}」导入 $total 张图片")
                 } else {
                     _toastMessage.emit("未找到图片")

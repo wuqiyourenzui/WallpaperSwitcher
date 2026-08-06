@@ -13,6 +13,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -54,6 +55,7 @@ fun GroupDetailScreen(
     var previewImage by remember { mutableStateOf<WallpaperImage?>(null) }
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     var isSelectionMode by remember { mutableStateOf(false) }
+    var isRefreshing by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
     // Derive load-more state to avoid recomposition on every scroll
@@ -255,10 +257,21 @@ fun GroupDetailScreen(
             }
         }
 
-        // 图片网格
+        // 图片网格（下拉刷新）
         if (images.isEmpty()) {
             EmptyImagesHint()
         } else {
+            PullToRefreshBox(
+                isRefreshing = isRefreshing,
+                onRefresh = {
+                    isRefreshing = true
+                    coroutineScope.launch {
+                        viewModel.refreshImages()
+                        isRefreshing = false
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            ) {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(3),
                 contentPadding = PaddingValues(16.dp),
@@ -292,6 +305,7 @@ fun GroupDetailScreen(
             LaunchedEffect(shouldLoadMore) {
                 if (shouldLoadMore) viewModel.loadImages(groupId)
             }
+            } // PullToRefreshBox
         }
     }
 
