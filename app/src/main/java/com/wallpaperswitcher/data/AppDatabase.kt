@@ -8,7 +8,7 @@ import androidx.room.migration.Migration
 
 @Database(
     entities = [WallpaperGroup::class, WallpaperImage::class, AppSettings::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -20,15 +20,17 @@ abstract class AppDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
-        /**
-         * Migration from version 1 to 2.
-         * Adds mediaType, isFromFolder, folderPath columns to wallpaper_images.
-         */
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
                 db.execSQL("ALTER TABLE wallpaper_images ADD COLUMN mediaType TEXT NOT NULL DEFAULT 'IMAGE'")
                 db.execSQL("ALTER TABLE wallpaper_images ADD COLUMN isFromFolder INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE wallpaper_images ADD COLUMN folderPath TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE wallpaper_groups ADD COLUMN type TEXT NOT NULL DEFAULT 'IMAGE'")
             }
         }
 
@@ -39,7 +41,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "wallpaper_switcher.db"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }

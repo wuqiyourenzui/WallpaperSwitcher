@@ -7,6 +7,7 @@ data class WallpaperGroup(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val isEnabled: Boolean = true,
+    val type: String = "IMAGE", // "IMAGE" or "VIDEO"
     val createdAt: Long = System.currentTimeMillis()
 )
 

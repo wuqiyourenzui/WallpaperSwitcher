@@ -6,6 +6,7 @@ object SettingsKeys {
     const val UNLOCK_SWITCH_ENABLED = "unlock_switch_enabled"
     const val LAST_IMAGE_ID = "last_image_id"
     const val SEQUENTIAL_INDEX = "sequential_index"
+    const val VIDEO_SEQ_INDEX = "video_seq_index"
     // Global wallpaper settings
     const val GLOBAL_INTERVAL_MS = "global_interval_ms"
     const val GLOBAL_SWITCH_MODE = "global_switch_mode"

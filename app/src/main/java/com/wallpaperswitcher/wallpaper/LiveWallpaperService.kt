@@ -5,7 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.*
-import android.media.*
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -18,7 +18,6 @@ import android.view.SurfaceHolder
 import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.*
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
 class LiveWallpaperService : WallpaperService() {
@@ -49,17 +48,9 @@ class LiveWallpaperService : WallpaperService() {
         private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
         @Volatile private var shuffleAllCount = 0
 
-        // Video state — MediaCodec direct buffer decoding
-        private var videoJob: Job? = null
-        @Volatile private var videoPlaying = false
-        @Volatile private var videoStopFlag = false
+        // Video renderer (MediaCodec + SurfaceTexture + EGL on HandlerThread)
+        private var videoRenderer: VideoRenderer? = null
         @Volatile private var videoMode = false
-        @Volatile private var videoDurationMs = 0L
-        private var videoFps = 30
-
-        // Frame buffer
-        private val frameBuffer = LinkedBlockingQueue<Bitmap>(8)
-        private var frameRenderJob: Job? = null
 
         // Reusable display objects
         private val destRect = RectF()
@@ -70,6 +61,9 @@ class LiveWallpaperService : WallpaperService() {
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
         private var gifFrameRunnable: Runnable? = null
         private var gifBitmapBuffer: Bitmap? = null
+
+        // Video render loop
+        private var videoRenderRunnable: Runnable? = null
 
         private val switchReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -128,9 +122,11 @@ class LiveWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
             if (visible) {
-                if (videoMode) resumeVideo() else drawCurrentImage()
+                if (videoMode) videoRenderer?.resume() else drawCurrentImage()
+                startVideoRenderLoop()
             } else {
-                if (videoMode) pauseVideo() else pauseGif()
+                if (videoMode) videoRenderer?.pause()
+                stopVideoRenderLoop()
             }
         }
 
@@ -152,20 +148,49 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun stopVideo() {
             videoMode = false
-            videoPlaying = false
-            videoStopFlag = true
-
-            val job = videoJob; videoJob = null; job?.cancel()
-            val rJob = frameRenderJob; frameRenderJob = null; rJob?.cancel()
-
-            while (frameBuffer.isNotEmpty()) { try { frameBuffer.poll()?.recycle() } catch (_: Exception) {} }
+            stopVideoRenderLoop()
+            videoRenderer?.stop()
+            videoRenderer = null
         }
 
-        private fun pauseVideo() { videoPlaying = false }
-        private fun resumeVideo() { videoPlaying = true }
-        private fun pauseGif() { gifFrameRunnable?.let { mainHandler.removeCallbacks(it) } }
+        private fun pauseGif() {
+            gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
+        }
+
+        // ======== Video render loop (main thread) ========
+
+        private fun startVideoRenderLoop() {
+            if (videoRenderRunnable != null) return
+            val runnable = object : Runnable {
+                override fun run() {
+                    if (!surfaceReady || !videoMode || !isVisible) return
+                    try {
+                        videoRenderer?.renderFrame(currentScaleMode)
+                    } catch (_: Exception) {}
+                    mainHandler.postDelayed(this, 16) // ~60fps render rate
+                }
+            }
+            videoRenderRunnable = runnable
+            mainHandler.post(runnable)
+        }
+
+        private fun stopVideoRenderLoop() {
+            videoRenderRunnable?.let { mainHandler.removeCallbacks(it) }
+            videoRenderRunnable = null
+        }
 
         // ======== Switch logic ========
+
+        /**
+         * Determine which media type to switch to based on enabled groups.
+         * Priority: IMAGE groups first. If no IMAGE groups, use VIDEO groups.
+         * If both exist, only show IMAGE (video takes over screen, blocks image switching).
+         */
+        private suspend fun pickMediaType(): String {
+            val imageGroups = db.wallpaperGroupDao().getEnabledGroupsByType("IMAGE")
+            if (imageGroups.isNotEmpty()) return "IMAGE"
+            return "VIDEO"
+        }
 
         private fun doSwitch(source: String, targetId: Long? = null) {
             if (!isSwitching.compareAndSet(false, true)) {
@@ -178,9 +203,8 @@ class LiveWallpaperService : WallpaperService() {
                 try {
                     val dao = db.settingsDao()
                     val imageDao = db.wallpaperImageDao()
-                    val groupDao = db.wallpaperGroupDao()
 
-                    val groups = groupDao.getEnabledGroupsSync()
+                    val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
                     if (groups.isEmpty()) return@launch
 
                     currentScaleMode = try {
@@ -190,11 +214,12 @@ class LiveWallpaperService : WallpaperService() {
                     val nextImage = if (targetId != null && targetId > 0) {
                         imageDao.getImageById(targetId)
                     } else {
+                        val mediaType = pickMediaType()
                         val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
                         val switchMode = try {
                             SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
                         } catch (_: Exception) { SwitchMode.RANDOM }
-                        pickNextImage(switchMode, imageDao, lastId, dao)
+                        pickNextImage(switchMode, imageDao, lastId, dao, mediaType)
                     }
 
                     if (nextImage == null) return@launch
@@ -203,6 +228,7 @@ class LiveWallpaperService : WallpaperService() {
                     val mediaType = nextImage.mediaType ?: "IMAGE"
                     Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
 
+                    // Stop everything before switching
                     stopVideo()
                     pauseGif()
                     delay(100)
@@ -226,48 +252,52 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private suspend fun pickNextImage(
-            switchMode: SwitchMode, imageDao: WallpaperImageDao, lastId: Long, dao: SettingsDao
+            switchMode: SwitchMode, imageDao: WallpaperImageDao, lastId: Long, dao: SettingsDao, groupType: String
         ): WallpaperImage? {
             return when (switchMode) {
-                SwitchMode.RANDOM -> imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
-                    ?: imageDao.getRandomImageFromEnabledGroups()
+                SwitchMode.RANDOM -> {
+                    imageDao.getRandomFromEnabledGroupsByTypeExcluding(groupType, lastId)
+                        ?: imageDao.getRandomFromEnabledGroupsByType(groupType)
+                }
                 SwitchMode.SEQUENTIAL -> {
-                    val count = imageDao.countByEnabledGroups()
+                    val count = imageDao.countByEnabledGroupsOfType(groupType)
                     if (count == 0) null else {
-                        val idx = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
+                        val key = if (groupType == "VIDEO") SettingsKeys.VIDEO_SEQ_INDEX else SettingsKeys.SEQUENTIAL_INDEX
+                        val idx = dao.getLong(key).toInt()
                         val next = idx % count
-                        dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, (next + 1).toLong())
-                        imageDao.getSequentialImageFromEnabledGroups(next)
-                            ?: imageDao.getRandomImageFromEnabledGroups()
+                        dao.setLong(key, (next + 1).toLong())
+                        imageDao.getSequentialFromEnabledGroupsByType(groupType, next)
+                            ?: imageDao.getRandomFromEnabledGroupsByType(groupType)
                     }
                 }
                 SwitchMode.SHUFFLE -> {
-                    val totalCount = imageDao.countByEnabledGroups()
+                    val totalCount = imageDao.countByEnabledGroupsOfType(groupType)
                     if (totalCount == 0) null else {
-                        if (shuffleShownIds.isEmpty()) {
-                            val saved = dao.getString(SettingsKeys.SHUFFLE_SHOWN_IDS, "")
-                            if (saved.isNotEmpty()) {
-                                saved.split(",").mapNotNull { it.toLongOrNull() }.forEach { shuffleShownIds.add(it) }
-                            }
-                            shuffleAllCount = dao.getLong(SettingsKeys.SHUFFLE_ALL_COUNT, 0L).toInt()
+                        val shuffleKey = if (groupType == "VIDEO") "video_shuffle" else "image_shuffle"
+                        val countKey = if (groupType == "VIDEO") "video_shuffle_count" else "image_shuffle_count"
+                        val savedIds = dao.getString(shuffleKey, "")
+                        val savedCount = dao.getLong(countKey, 0L).toInt()
+                        val ids = ConcurrentHashMap.newKeySet<Long>()
+                        if (savedIds.isNotEmpty()) {
+                            savedIds.split(",").mapNotNull { it.toLongOrNull() }.forEach { ids.add(it) }
                         }
-                        if (shuffleAllCount != totalCount || shuffleShownIds.size >= totalCount) {
-                            shuffleShownIds.clear(); shuffleAllCount = totalCount
+                        if (savedCount != totalCount || ids.size >= totalCount) {
+                            ids.clear()
                         }
                         var attempts = 0; var candidate: WallpaperImage? = null
                         while (attempts < 10 && candidate == null) {
-                            val img = imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
-                                ?: imageDao.getRandomImageFromEnabledGroups()
-                            if (img != null && img.id !in shuffleShownIds) candidate = img
-                            else if (img != null && shuffleShownIds.size >= totalCount) {
-                                shuffleShownIds.clear(); candidate = img
+                            val img = imageDao.getRandomFromEnabledGroupsByTypeExcluding(groupType, lastId)
+                                ?: imageDao.getRandomFromEnabledGroupsByType(groupType)
+                            if (img != null && img.id !in ids) candidate = img
+                            else if (img != null && ids.size >= totalCount) {
+                                ids.clear(); candidate = img
                             }
                             attempts++
                         }
                         candidate?.also {
-                            shuffleShownIds.add(it.id)
-                            dao.setString(SettingsKeys.SHUFFLE_SHOWN_IDS, shuffleShownIds.joinToString(","))
-                            dao.setLong(SettingsKeys.SHUFFLE_ALL_COUNT, shuffleAllCount.toLong())
+                            ids.add(it.id)
+                            dao.setString(shuffleKey, ids.joinToString(","))
+                            dao.setLong(countKey, totalCount.toLong())
                         }
                     }
                 }
@@ -277,7 +307,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
             if (isSwitching.get()) return
-            if (videoMode && videoPlaying) return
+            if (videoMode) return
 
             scope.launch {
                 try {
@@ -307,341 +337,18 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video: MediaCodec direct buffer decoding ========
-        //
-        // Approach: MediaCodec → getOutputImage() → YUV_420_888 → YuvImage JPEG → Bitmap
-        // No EGL, no GL, no SurfaceTexture, no Surface needed.
-        // Works on API 26+ (minSdk of this project).
-        //
-        // Pipeline:
-        //   MediaExtractor → MediaCodec input buffers (compressed data)
-        //   MediaCodec output → Image (YUV_420_888) → YuvImage.compressToJPEG → BitmapFactory
-        //   Bitmap → frameBuffer queue → main thread Canvas rendering
+        // ======== Video via VideoRenderer ========
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             videoMode = true
-            videoPlaying = true
-            videoStopFlag = false
-
             val metrics = getMetrics()
             cachedScreenW = metrics.widthPixels.toFloat()
             cachedScreenH = metrics.heightPixels.toFloat()
 
-            videoJob = scope.launch {
-                try {
-                    decodeAndPlay(uriStr, scaleMode)
-                } catch (ce: CancellationException) {
-                    throw ce
-                } catch (e: Exception) {
-                    Log.e(TAG, "Video error: ${e.message}", e)
-                } finally {
-                    videoPlaying = false
-                }
-            }
-        }
-
-        private suspend fun decodeAndPlay(uriStr: String, scaleMode: ScaleMode) = withContext(Dispatchers.IO) {
-            // --- Setup MediaExtractor ---
-            val extractor = MediaExtractor()
-            extractor.setDataSource(applicationContext, Uri.parse(uriStr), null)
-
-            val trackIndex = (0 until extractor.trackCount).firstOrNull { i ->
-                extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
-            } ?: run {
-                extractor.release()
-                return@withContext
-            }
-
-            extractor.selectTrack(trackIndex)
-            val format = extractor.getTrackFormat(trackIndex)
-            val mime = format.getString(MediaFormat.KEY_MIME)!!
-            val srcWidth = format.getInteger(MediaFormat.KEY_WIDTH)
-            val srcHeight = format.getInteger(MediaFormat.KEY_HEIGHT)
-            videoDurationMs = format.getLong(MediaFormat.KEY_DURATION) / 1000
-            videoFps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30).coerceIn(15, 60)
-
-            Log.d(TAG, "Video: ${srcWidth}x${srcHeight} @ ${videoFps}fps, mime=$mime")
-
-            // Cap decoder output to 360p max for large videos
-            // Small videos (<360p) pass through at native resolution
-            // Canvas GPU-scales the small bitmap to fill screen
-            val maxDim = maxOf(srcWidth, srcHeight)
-            val targetDim = 640 // 360p max — ~410K pixels, fast enough for 30fps on most devices
-            if (maxDim > targetDim) {
-                val scale = targetDim.toFloat() / maxDim
-                format.setInteger(MediaFormat.KEY_MAX_WIDTH, (srcWidth * scale).toInt().and(0xFFFFFFFE.toInt()))
-                format.setInteger(MediaFormat.KEY_MAX_HEIGHT, (srcHeight * scale).toInt().and(0xFFFFFFFE.toInt()))
-                Log.d(TAG, "Decoder capped to ${format.getInteger(MediaFormat.KEY_MAX_WIDTH)}x${format.getInteger(MediaFormat.KEY_MAX_HEIGHT)}")
-            }
-
-            // --- Setup MediaCodec ---
-            val decoder = try {
-                MediaCodec.createDecoderByType(mime).also { Log.d(TAG, "Decoder: ${it.name}") }
-            } catch (e: Exception) {
-                Log.e(TAG, "No decoder for $mime: ${e.message}")
-                extractor.release()
-                return@withContext
-            }
-
-            decoder.configure(format, null, null, 0)
-            decoder.start()
-
-            // Start renderer on main thread
-            startFrameRenderer(scaleMode)
-
-            // Actual decoded dimensions (detected from first output frame)
-            var decW = srcWidth
-            var decH = srcHeight
-            var firstFrame = true
-
-            // No CPU downsample — decoder cap handles all resolution reduction
-            var argbBuffer = IntArray(1) // resized on first frame
-            var writeBitmap: Bitmap? = null
-            var readBitmap: Bitmap? = null
-            var buffersInit = false
-
-            // --- Decode loop with frame pacing ---
-            val bufferInfo = MediaCodec.BufferInfo()
-            var inputDone = false
-            // Frame interval: adjust after detecting actual decoded resolution
-            val baseInterval = (1000L / videoFps).coerceIn(16L, 100L)
-            var frameIntervalMs = baseInterval
-
-            try {
-                while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
-                    if (!isVisible || !videoPlaying) {
-                        delay(50)
-                        continue
-                    }
-
-                    val frameStart = System.nanoTime()
-
-                    // Feed compressed data to decoder input
-                    if (!inputDone) {
-                        val inputIndex = decoder.dequeueInputBuffer(0)
-                        if (inputIndex >= 0) {
-                            val inputBuffer = decoder.getInputBuffer(inputIndex) ?: continue
-                            val sampleSize = extractor.readSampleData(inputBuffer, 0)
-                            if (sampleSize < 0) {
-                                decoder.queueInputBuffer(inputIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                inputDone = true
-                            } else {
-                                decoder.queueInputBuffer(inputIndex, 0, sampleSize, extractor.sampleTime, 0)
-                                extractor.advance()
-                            }
-                        }
-                    }
-
-                    // Get decoded output (1ms timeout — we control pacing ourselves)
-                    val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 1000)
-                    if (outputIndex >= 0) {
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            decoder.releaseOutputBuffer(outputIndex, false)
-                            extractor.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                            inputDone = false
-                            continue
-                        }
-
-                        val image = decoder.getOutputImage(outputIndex)
-                        if (image != null) {
-                            // Init buffers on first frame
-                            if (firstFrame) {
-                                firstFrame = false
-                                decW = image.width
-                                decH = image.height
-                                argbBuffer = IntArray(decW * decH)
-                                writeBitmap?.recycle()
-                                writeBitmap = Bitmap.createBitmap(decW, decH, Bitmap.Config.ARGB_8888)
-                                buffersInit = true
-
-                                // Adjust frame interval based on actual decoded resolution
-                                val pixels = decW * decH
-                                frameIntervalMs = when {
-                                    pixels > 400_000 -> 42L  // ~24fps for large (e.g., 854x480)
-                                    pixels > 200_000 -> 33L  // ~30fps for medium
-                                    else -> baseInterval     // native fps for small
-                                }
-
-                                Log.d(TAG, "Decoded output: ${decW}x${decH}, interval=${frameIntervalMs}ms")
-                            }
-
-                            if (buffersInit && writeBitmap != null) {
-                                yuvToArgbFull(image, decW, decH, argbBuffer)
-                                image.close()
-
-                                writeBitmap!!.setPixels(argbBuffer, 0, decW, 0, 0, decW, decH)
-
-                                val oldRead = readBitmap
-                                readBitmap = writeBitmap
-                                if (oldRead != null) writeBitmap = oldRead
-
-                                while (frameBuffer.isNotEmpty()) { frameBuffer.poll() }
-                                frameBuffer.offer(readBitmap)
-                            } else {
-                                image.close()
-                            }
-                        }
-
-                        decoder.releaseOutputBuffer(outputIndex, false)
-
-                        // Frame pacing: sleep for remaining time in frame budget
-                        val elapsedMs = (System.nanoTime() - frameStart) / 1_000_000
-                        val sleepMs = frameIntervalMs - elapsedMs
-                        if (sleepMs > 0) delay(sleepMs)
-                    } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                        // No output ready — small yield
-                        delay(1)
-                    }
-                }
-            } finally {
-                try { writeBitmap?.recycle() } catch (_: Exception) {}
-                try { readBitmap?.recycle() } catch (_: Exception) {}
-                try { decoder.stop() } catch (_: Exception) {}
-                try { decoder.release() } catch (_: Exception) {}
-                try { extractor.release() } catch (_: Exception) {}
-            }
-        }
-
-        /**
-         * Full-resolution YUV_420_888 → ARGB conversion (no downsample).
-         * Used for small videos (<720p) to preserve quality.
-         */
-        private fun yuvToArgbFull(image: Image, width: Int, height: Int, argb: IntArray) {
-            val yPlane = image.planes[0]
-            val uPlane = image.planes[1]
-            val vPlane = image.planes[2]
-
-            val yArr = ByteArray(yPlane.buffer.remaining()).also { yPlane.buffer.position(0); yPlane.buffer.get(it) }
-            val uArr = ByteArray(uPlane.buffer.remaining()).also { uPlane.buffer.position(0); uPlane.buffer.get(it) }
-            val vArr = ByteArray(vPlane.buffer.remaining()).also { vPlane.buffer.position(0); vPlane.buffer.get(it) }
-
-            val yStride = yPlane.rowStride
-            val uvStride = uPlane.rowStride
-            val uvPixelStride = uPlane.pixelStride
-
-            var argbIdx = 0
-            for (y in 0 until height) {
-                val uvY = y shr 1
-                val yRowOff = y * yStride
-                val uvRowOff = uvY * uvStride
-
-                for (x in 0 until width) {
-                    val yVal = yArr[yRowOff + x].toInt() and 0xFF
-                    val uvOff = uvRowOff + (x shr 1) * uvPixelStride
-                    val uVal = uArr[uvOff].toInt() and 0xFF
-                    val vVal = vArr[uvOff].toInt() and 0xFF
-
-                    val c = yVal - 16
-                    val d = uVal - 128
-                    val e = vVal - 128
-
-                    var r = (298 * c + 409 * e + 128) shr 8
-                    var g = (298 * c - 100 * d - 208 * e + 128) shr 8
-                    var b = (298 * c + 516 * d + 128) shr 8
-
-                    if (r < 0) r = 0; else if (r > 255) r = 255
-                    if (g < 0) g = 0; else if (g > 255) g = 255
-                    if (b < 0) b = 0; else if (b > 255) b = 255
-
-                    argb[argbIdx++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-                }
-            }
-        }
-
-        /**
-         * 2x downsampled YUV_420_888 → ARGB conversion.
-         * Processes every 2nd pixel in both dimensions → 4x fewer pixels.
-         * BT.601 fixed-point integer arithmetic.
-         * For 1080p: 2M pixels → 500K pixels → ~1-3ms (vs ~5-10ms full res).
-         */
-        private fun yuvToArgbHalf(image: Image, srcW: Int, srcH: Int, dstW: Int, dstH: Int, argb: IntArray) {
-            val yPlane = image.planes[0]
-            val uPlane = image.planes[1]
-            val vPlane = image.planes[2]
-
-            val yBuf = yPlane.buffer
-            val uBuf = uPlane.buffer
-            val vBuf = vPlane.buffer
-
-            val yStride = yPlane.rowStride
-            val uvStride = uPlane.rowStride
-            val uvPixelStride = uPlane.pixelStride
-
-            for (dy in 0 until dstH) {
-                val sy = dy * 2               // source Y (every 2nd row)
-                val uvY = sy shr 1
-                val yRowOff = sy * yStride
-                val uvRowOff = uvY * uvStride
-                val dstRowOff = dy * dstW
-
-                for (dx in 0 until dstW) {
-                    val sx = dx * 2           // source X (every 2nd column)
-                    val yVal = yBuf.get(yRowOff + sx).toInt() and 0xFF
-                    val uvOff = uvRowOff + (sx shr 1) * uvPixelStride
-                    val uVal = uBuf.get(uvOff).toInt() and 0xFF
-                    val vVal = vBuf.get(uvOff).toInt() and 0xFF
-
-                    val c = yVal - 16
-                    val d = uVal - 128
-                    val e = vVal - 128
-
-                    var r = (298 * c + 409 * e + 128) shr 8
-                    var g = (298 * c - 100 * d - 208 * e + 128) shr 8
-                    var b = (298 * c + 516 * d + 128) shr 8
-
-                    if (r < 0) r = 0; else if (r > 255) r = 255
-                    if (g < 0) g = 0; else if (g > 255) g = 255
-                    if (b < 0) b = 0; else if (b > 255) b = 255
-
-                    argb[dstRowOff + dx] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-                }
-            }
-        }
-
-        private fun MediaFormat.getIntegerOrDefault(key: String, default: Int): Int {
-            return try { if (containsKey(key)) getInteger(key) else default } catch (_: Exception) { default }
-        }
-
-        /**
-         * Frame render loop on main thread.
-         * Uses double-buffer: reads from readBitmap reference (shared with decoder).
-         * Does NOT recycle frames — they're reused by the double-buffer swap.
-         */
-        private fun startFrameRenderer(scaleMode: ScaleMode) {
-            val runnable = object : Runnable {
-                override fun run() {
-                    if (!surfaceReady || !videoPlaying || videoStopFlag) return
-
-                    val startTime = System.nanoTime()
-
-                    // Get latest frame from buffer (non-blocking)
-                    val frame = frameBuffer.poll()
-                    if (frame != null) {
-                        try { showVideoFrame(frame, scaleMode) } catch (_: Exception) {}
-                        // Do NOT recycle — frame is reused by double-buffer
-                    }
-
-                    // Schedule next frame, subtracting render time for accurate pacing
-                    val renderMs = (System.nanoTime() - startTime) / 1_000_000
-                    val intervalMs = (1000L / videoFps).coerceAtLeast(16L)
-                    val delay = (intervalMs - renderMs).coerceAtLeast(1L)
-                    mainHandler.postDelayed(this, delay)
-                }
-            }
-            frameRenderJob = scope.launch { mainHandler.post(runnable) }
-        }
-
-        private fun showVideoFrame(bitmap: Bitmap, scaleMode: ScaleMode) {
-            if (!surfaceReady) return
-            try {
-                val canvas = surfaceHolder.lockCanvas() ?: return
-                canvas.drawColor(Color.BLACK)
-                calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(), cachedScreenW, cachedScreenH, scaleMode)
-                canvas.drawBitmap(bitmap, null, destRect, null)
-                surfaceHolder.unlockCanvasAndPost(canvas)
-            } catch (e: Exception) {
-                Log.e(TAG, "showVideoFrame error: ${e.message}")
-            }
+            val renderer = VideoRenderer(applicationContext, surfaceHolder, mainHandler)
+            videoRenderer = renderer
+            renderer.start(uriStr)
+            startVideoRenderLoop()
         }
 
         // ======== GIF via Canvas ========
@@ -658,9 +365,9 @@ class LiveWallpaperService : WallpaperService() {
 
         @android.annotation.TargetApi(28)
         private fun playGif28(uriStr: String, scaleMode: ScaleMode) {
-            val source = ImageDecoder.createSource(contentResolver, Uri.parse(uriStr))
-            val drawable = ImageDecoder.decodeDrawable(source) { decoder, _, _ ->
-                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            val source = android.graphics.ImageDecoder.createSource(contentResolver, Uri.parse(uriStr))
+            val drawable = android.graphics.ImageDecoder.decodeDrawable(source) { decoder, _, _ ->
+                decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
             }
             if (drawable is android.graphics.drawable.AnimatedImageDrawable) {
                 gifDrawable = drawable

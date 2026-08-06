@@ -15,6 +15,9 @@ interface WallpaperGroupDao {
     @Query("SELECT * FROM wallpaper_groups WHERE isEnabled = 1")
     suspend fun getEnabledGroupsSync(): List<WallpaperGroup>
 
+    @Query("SELECT * FROM wallpaper_groups WHERE isEnabled = 1 AND type = :type")
+    suspend fun getEnabledGroupsByType(type: String): List<WallpaperGroup>
+
     @Query("SELECT * FROM wallpaper_groups WHERE id = :id")
     suspend fun getGroupById(id: Long): WallpaperGroup?
 
@@ -58,7 +61,7 @@ interface WallpaperImageDao {
     @Query("SELECT * FROM wallpaper_images LIMIT 1")
     suspend fun getFirstImage(): WallpaperImage?
 
-    // --- Group-specific queries (for wallpaper switching) ---
+    // --- Group-specific queries ---
 
     @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY RANDOM() LIMIT 1")
     suspend fun getRandomImageFromGroup(groupId: Long): WallpaperImage?
@@ -71,6 +74,8 @@ interface WallpaperImageDao {
 
     @Query("SELECT COUNT(*) FROM wallpaper_images WHERE groupId = :groupId")
     suspend fun countByGroup(groupId: Long): Int
+
+    // --- Cross-group queries (for wallpaper switching) ---
 
     @Query("""
         SELECT * FROM wallpaper_images
@@ -97,7 +102,7 @@ interface WallpaperImageDao {
     @Query("DELETE FROM wallpaper_images WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)
 
-    // --- Enabled-groups queries (for cross-group wallpaper switching) ---
+    // --- Enabled-groups queries ---
 
     @Query("""
         SELECT * FROM wallpaper_images
@@ -119,6 +124,36 @@ interface WallpaperImageDao {
         WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
     """)
     suspend fun countByEnabledGroups(): Int
+
+    // --- Type-filtered queries (IMAGE groups only or VIDEO groups only) ---
+
+    @Query("""
+        SELECT * FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND type = :groupType)
+        ORDER BY RANDOM() LIMIT 1
+    """)
+    suspend fun getRandomFromEnabledGroupsByType(groupType: String): WallpaperImage?
+
+    @Query("""
+        SELECT * FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND type = :groupType)
+        AND id != :excludeId
+        ORDER BY RANDOM() LIMIT 1
+    """)
+    suspend fun getRandomFromEnabledGroupsByTypeExcluding(groupType: String, excludeId: Long): WallpaperImage?
+
+    @Query("""
+        SELECT * FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND type = :groupType)
+        ORDER BY id ASC LIMIT 1 OFFSET :offset
+    """)
+    suspend fun getSequentialFromEnabledGroupsByType(groupType: String, offset: Int): WallpaperImage?
+
+    @Query("""
+        SELECT COUNT(*) FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND type = :groupType)
+    """)
+    suspend fun countByEnabledGroupsOfType(groupType: String): Int
 }
 
 @Dao

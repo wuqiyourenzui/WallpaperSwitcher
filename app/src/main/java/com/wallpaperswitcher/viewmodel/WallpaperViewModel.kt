@@ -118,9 +118,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsDao.setBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, enabled) }
     }
 
-    fun createGroup(name: String) {
+    fun createGroup(name: String, type: String = "IMAGE") {
         viewModelScope.launch {
-            groupDao.insert(WallpaperGroup(name = name))
+            groupDao.insert(WallpaperGroup(name = name, type = type))
         }
     }
 
@@ -170,11 +170,22 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addImage(groupId: Long, uri: Uri, displayName: String) {
         viewModelScope.launch {
+            val group = groupDao.getGroupById(groupId) ?: return@launch
+            val mediaType = detectMediaType(displayName)
+            // Validate: IMAGE group can only have images, VIDEO group can only have videos
+            if (group.type == "IMAGE" && mediaType == "VIDEO") {
+                _toastMessage.emit("图片分组不能添加视频")
+                return@launch
+            }
+            if (group.type == "VIDEO" && mediaType != "VIDEO") {
+                _toastMessage.emit("视频分组只能添加视频")
+                return@launch
+            }
             imageDao.insert(WallpaperImage(
                 groupId = groupId,
                 uri = uri.toString(),
                 displayName = displayName,
-                mediaType = detectMediaType(displayName)
+                mediaType = mediaType
             ))
             refreshCount(groupId)
         }
@@ -182,8 +193,13 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addImages(groupId: Long, uris: List<Uri>, names: List<String>) {
         viewModelScope.launch {
+            val group = groupDao.getGroupById(groupId) ?: return@launch
             val imagePairs = uris.zip(names).filter { (uri, name) ->
-                isSupportedMedia(name)
+                if (!isSupportedMedia(name)) return@filter false
+                val mt = detectMediaType(name)
+                if (group.type == "IMAGE" && mt == "VIDEO") return@filter false
+                if (group.type == "VIDEO" && mt != "VIDEO") return@filter false
+                true
             }
             val images = imagePairs.map { (uri, name) ->
                 WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = name, mediaType = detectMediaType(name))
@@ -208,6 +224,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         addFolderJob?.cancel()
         addFolderJob = viewModelScope.launch {
             try {
+                val group = groupDao.getGroupById(groupId) ?: return@launch
                 _toastMessage.emit("正在扫描文件夹...")
                 var total = 0
                 val batch = mutableListOf<WallpaperImage>()
@@ -222,7 +239,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
                     if (!docFile.isDirectory) return@withContext
 
-                    // Recursive scan helper
                     suspend fun scanDir(dir: androidx.documentfile.provider.DocumentFile) {
                         if (!isActive) return
                         val files = try {
@@ -235,13 +251,17 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                             if (!isActive) return
                             try {
                                 if (file.isDirectory) {
-                                    scanDir(file) // recurse into subdirectory
+                                    scanDir(file)
                                 } else if (file.isFile && isSupportedMedia(file.name ?: "")) {
+                                    val mt = detectMediaType(file.name ?: "")
+                                    // Filter by group type
+                                    if (group.type == "IMAGE" && mt == "VIDEO") continue
+                                    if (group.type == "VIDEO" && mt != "VIDEO") continue
                                     batch.add(WallpaperImage(
                                         groupId = groupId,
                                         uri = file.uri.toString(),
                                         displayName = file.name ?: "untitled",
-                                        mediaType = detectMediaType(file.name ?: ""),
+                                        mediaType = mt,
                                         isFromFolder = true,
                                         folderPath = folderUri.toString()
                                     ))

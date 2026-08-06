@@ -86,8 +86,8 @@ fun HomeScreen(
     if (showCreateDialog) {
         CreateGroupDialog(
             onDismiss = { showCreateDialog = false },
-            onCreate = { name ->
-                viewModel.createGroup(name)
+            onCreate = { name, type ->
+                viewModel.createGroup(name, type)
                 showCreateDialog = false
             }
         )
@@ -203,7 +203,7 @@ private fun GroupCard(
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    Icons.Outlined.Image,
+                    if (group.type == "VIDEO") Icons.Outlined.Videocam else Icons.Outlined.Image,
                     contentDescription = null,
                     tint = if (group.isEnabled)
                         MaterialTheme.colorScheme.primary
@@ -224,6 +224,11 @@ private fun GroupCard(
                         MaterialTheme.colorScheme.onSurface
                     else
                         MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
+                Text(
+                    if (group.type == "VIDEO") "视频分组" else "图片分组",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
@@ -267,25 +272,43 @@ private fun EmptyGroupsHint() {
 @Composable
 fun CreateGroupDialog(
     onDismiss: () -> Unit,
-    onCreate: (String) -> Unit
+    onCreate: (String, String) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
+    var selectedType by remember { mutableStateOf("IMAGE") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("新建壁纸分组") },
         text = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { Text("分组名称") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("分组名称") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Text("分组类型", style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = selectedType == "IMAGE",
+                        onClick = { selectedType = "IMAGE" },
+                        label = { Text("图片") },
+                        leadingIcon = { Icon(Icons.Outlined.Image, null, Modifier.size(16.dp)) }
+                    )
+                    FilterChip(
+                        selected = selectedType == "VIDEO",
+                        onClick = { selectedType = "VIDEO" },
+                        label = { Text("视频") },
+                        leadingIcon = { Icon(Icons.Outlined.Videocam, null, Modifier.size(16.dp)) }
+                    )
+                }
+            }
         },
         confirmButton = {
             TextButton(
-                onClick = { if (name.isNotBlank()) onCreate(name) },
+                onClick = { if (name.isNotBlank()) onCreate(name, selectedType) },
                 enabled = name.isNotBlank()
             ) {
                 Text("创建")

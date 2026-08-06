@@ -69,6 +69,10 @@ fun GroupDetailScreen(
         viewModel.refreshImages()
     }
 
+    val currentGroup = group
+    val groupType = currentGroup?.type ?: "IMAGE"
+    val mimeTypes = if (groupType == "VIDEO") arrayOf("video/*") else arrayOf("image/*", "video/*")
+
     // 图片选择器
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
@@ -119,8 +123,6 @@ fun GroupDetailScreen(
             viewModel.addFolder(groupId, uri)
         }, 100)
     }
-
-    val currentGroup = group
 
     Column(modifier = Modifier.fillMaxSize()) {
         // 分组信息头部
@@ -299,11 +301,11 @@ fun GroupDetailScreen(
             onDismiss = { showAddDialog = false },
             onAddSingle = {
                 showAddDialog = false
-                singleImagePicker.launch(arrayOf("image/*", "video/*"))
+                singleImagePicker.launch(mimeTypes)
             },
             onAddMultiple = {
                 showAddDialog = false
-                imagePickerLauncher.launch(arrayOf("image/*", "video/*"))
+                imagePickerLauncher.launch(mimeTypes)
             },
             onAddFolder = {
                 showAddDialog = false
