@@ -499,8 +499,7 @@ class LiveWallpaperService : WallpaperService() {
 
                         val bitmap = if (Build.VERSION.SDK_INT >= 31) {
                             // API 31+: direct getBitmap from SurfaceTexture
-                            @Suppress("NewApi")
-                            try { surfaceTexture.getBitmap() } catch (_: Exception) { null }
+                            try { getSurfaceTextureBitmap(surfaceTexture) } catch (_: Exception) { null }
                         } else {
                             // API 26-30: read pixels from GL framebuffer
                             readGlPixels(width, height)
@@ -533,6 +532,10 @@ class LiveWallpaperService : WallpaperService() {
                 try { extractor.release() } catch (_: Exception) {}
             }
         }
+
+        @android.annotation.SuppressLint("NewApi")
+        @android.annotation.TargetApi(31)
+        private fun getSurfaceTextureBitmap(st: SurfaceTexture): Bitmap? = st.getBitmap()
 
         /**
          * Read pixels from GL framebuffer (for API < 31).
