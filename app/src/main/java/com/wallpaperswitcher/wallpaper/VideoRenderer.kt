@@ -32,14 +32,20 @@ class VideoRenderer(
     companion object {
         private const val TAG = "VideoRenderer"
 
+        // SurfaceTexture transform matrix maps GL tex coords to video content.
+        // Some devices include a Y-flip in the matrix, others don't.
+        // uFlipY: 1.0 = apply manual Y-flip, 0.0 = matrix handles it.
         private const val VERTEX_SHADER = """
             attribute vec4 aPosition;
             attribute vec2 aTexCoord;
             uniform mat4 uTexMatrix;
+            uniform float uFlipY;
             varying vec2 vTexCoord;
             void main() {
                 gl_Position = aPosition;
-                vTexCoord = (uTexMatrix * vec4(aTexCoord, 0.0, 1.0)).xy;
+                vec2 tc = aTexCoord;
+                if (uFlipY > 0.5) tc.y = 1.0 - tc.y;
+                vTexCoord = (uTexMatrix * vec4(tc, 0.0, 1.0)).xy;
             }
         """
 
@@ -74,8 +80,10 @@ class VideoRenderer(
     // Cached uniform/attribute locations
     private var uTexMatrixLoc = -1
     private var uTextureLoc = -1
+    private var uFlipYLoc = -1
     private var aPositionLoc = -1
     private var aTexCoordLoc = -1
+    private var needFlipY = false
 
     // MediaCodec
     private var extractor: MediaExtractor? = null
@@ -84,6 +92,7 @@ class VideoRenderer(
     private var codecSurface: android.view.Surface? = null
 
     private var decodeThread: Thread? = null
+    private var flipDetected = false
 
     fun start(uriStr: String, scaleMode: ScaleMode, screenW: Float, screenH: Float) {
         stopped = false
@@ -128,6 +137,7 @@ class VideoRenderer(
             updateQuad(scaleMode, screenW, screenH)
             uTexMatrixLoc = GLES20.glGetUniformLocation(program, "uTexMatrix")
             uTextureLoc = GLES20.glGetUniformLocation(program, "uTexture")
+            uFlipYLoc = GLES20.glGetUniformLocation(program, "uFlipY")
             aPositionLoc = GLES20.glGetAttribLocation(program, "aPosition")
             aTexCoordLoc = GLES20.glGetAttribLocation(program, "aTexCoord")
 
@@ -192,7 +202,18 @@ class VideoRenderer(
         // SurfaceTexture transform matrix handles video orientation/crop
         val texMatrix = FloatArray(16)
         st.getTransformMatrix(texMatrix)
+
+        // Detect Y-flip: element [5] is the Y scale.
+        // If positive, matrix doesn't flip → we must flip manually.
+        // Only check once (first frame), then cache the result.
+        if (!flipDetected) {
+            needFlipY = texMatrix[5] > 0f
+            flipDetected = true
+            Log.d(TAG, "SurfaceTexture texMatrix[5]=${texMatrix[5]}, needFlipY=$needFlipY")
+        }
+
         GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, texMatrix, 0)
+        GLES20.glUniform1f(uFlipYLoc, if (needFlipY) 1f else 0f)
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
@@ -233,10 +254,10 @@ class VideoRenderer(
         }
 
         val vertices = floatArrayOf(
-            -dw, -dh, 0f, 1f,  // bottom-left
-             dw, -dh, 1f, 1f,  // bottom-right
-            -dw,  dh, 0f, 0f,  // top-left
-             dw,  dh, 1f, 0f,  // top-right
+            -dw, -dh, 0f, 0f,  // bottom-left
+             dw, -dh, 1f, 0f,  // bottom-right
+            -dw,  dh, 0f, 1f,  // top-left
+             dw,  dh, 1f, 1f,  // top-right
         )
 
         vertexBuffer?.put(vertices)?.position(0)
