@@ -62,9 +62,6 @@ class LiveWallpaperService : WallpaperService() {
         private var gifFrameRunnable: Runnable? = null
         private var gifBitmapBuffer: Bitmap? = null
 
-        // Video render loop
-        private var videoRenderRunnable: Runnable? = null
-
         private val switchReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action == ACTION_SWITCH) {
@@ -123,10 +120,9 @@ class LiveWallpaperService : WallpaperService() {
             isVisible = visible
             if (visible) {
                 if (videoMode) videoRenderer?.resume() else drawCurrentImage()
-                startVideoRenderLoop()
             } else {
                 if (videoMode) videoRenderer?.pause()
-                stopVideoRenderLoop()
+                pauseGif()
             }
         }
 
@@ -148,35 +144,12 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun stopVideo() {
             videoMode = false
-            stopVideoRenderLoop()
-            videoRenderer?.stop()
+            videoRenderer?.release()
             videoRenderer = null
         }
 
         private fun pauseGif() {
             gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
-        }
-
-        // ======== Video render loop (main thread) ========
-
-        private fun startVideoRenderLoop() {
-            if (videoRenderRunnable != null) return
-            val runnable = object : Runnable {
-                override fun run() {
-                    if (!surfaceReady || !videoMode || !isVisible) return
-                    try {
-                        videoRenderer?.renderFrame(currentScaleMode)
-                    } catch (_: Exception) {}
-                    mainHandler.postDelayed(this, 16) // ~60fps render rate
-                }
-            }
-            videoRenderRunnable = runnable
-            mainHandler.post(runnable)
-        }
-
-        private fun stopVideoRenderLoop() {
-            videoRenderRunnable?.let { mainHandler.removeCallbacks(it) }
-            videoRenderRunnable = null
         }
 
         // ======== Switch logic ========
@@ -337,18 +310,13 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video via VideoRenderer ========
+        // ======== Video via VideoRenderer (MediaPlayer.setDisplay) ========
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             videoMode = true
-            val metrics = getMetrics()
-            cachedScreenW = metrics.widthPixels.toFloat()
-            cachedScreenH = metrics.heightPixels.toFloat()
-
-            val renderer = VideoRenderer(applicationContext, surfaceHolder, mainHandler)
+            val renderer = VideoRenderer(applicationContext, surfaceHolder)
             videoRenderer = renderer
             renderer.start(uriStr)
-            startVideoRenderLoop()
         }
 
         // ======== GIF via Canvas ========
