@@ -14,4 +14,6 @@ object SettingsKeys {
     // Shuffle state persistence (comma-separated image IDs)
     const val SHUFFLE_SHOWN_IDS = "shuffle_shown_ids"
     const val SHUFFLE_ALL_COUNT = "shuffle_all_count"
+    // Theme
+    const val THEME_COLOR = "theme_color"
 }

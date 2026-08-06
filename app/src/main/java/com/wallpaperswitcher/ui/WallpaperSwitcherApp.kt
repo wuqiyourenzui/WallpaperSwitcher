@@ -1,12 +1,7 @@
 package com.wallpaperswitcher.ui
 
-import android.app.Activity
-import android.content.Intent
-import android.provider.DocumentsContract
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.*
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -15,7 +10,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.ui.screens.*
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 import kotlinx.coroutines.flow.collectLatest
@@ -94,12 +88,18 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                         currentScreen = Screen.GroupDetail(groupId)
                     }
                 )
-                is Screen.GroupDetail -> GroupDetailScreen(
-                    viewModel = viewModel,
-                    groupId = screen.groupId,
-                    onBack = { currentScreen = Screen.Home }
-                )
-                is Screen.Settings -> SettingsScreen(viewModel = viewModel)
+                is Screen.GroupDetail -> {
+                    BackHandler { currentScreen = Screen.Home }
+                    GroupDetailScreen(
+                        viewModel = viewModel,
+                        groupId = screen.groupId,
+                        onBack = { currentScreen = Screen.Home }
+                    )
+                }
+                is Screen.Settings -> {
+                    BackHandler { currentScreen = Screen.Home }
+                    SettingsScreen(viewModel = viewModel)
+                }
             }
         }
     }

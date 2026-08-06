@@ -1,9 +1,11 @@
 package com.wallpaperswitcher.ui.screens
 
-import android.content.Intent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -13,13 +15,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.data.ScaleMode
 import com.wallpaperswitcher.data.SwitchMode
+import com.wallpaperswitcher.ui.theme.parseHexColor
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -32,8 +36,10 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
     val globalIntervalMs by viewModel.globalIntervalMs.collectAsStateWithLifecycle()
     val globalSwitchMode by viewModel.globalSwitchMode.collectAsStateWithLifecycle()
     val globalScaleMode by viewModel.globalScaleMode.collectAsStateWithLifecycle()
+    val themeColor by viewModel.themeColor.collectAsStateWithLifecycle()
 
     var showIntervalDialog by remember { mutableStateOf(false) }
+    var showColorDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -154,6 +160,35 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
         Spacer(modifier = Modifier.height(8.dp))
 
+        // Theme
+        SettingsSection(title = "外观") {
+            Row(
+                modifier = Modifier.fillMaxWidth().clickable { showColorDialog = true }.padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Outlined.Palette, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("主题颜色", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        if (themeColor.isEmpty()) "跟随系统" else themeColor,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                val previewColor = if (themeColor.isNotEmpty()) parseHexColor(themeColor)
+                    else MaterialTheme.colorScheme.primary
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(previewColor ?: MaterialTheme.colorScheme.primary)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
         // About
         SettingsSection(title = "关于") {
             SettingsInfoItem(
@@ -172,6 +207,14 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
             currentMs = globalIntervalMs,
             onDismiss = { showIntervalDialog = false },
             onSelect = { viewModel.setGlobalInterval(it); showIntervalDialog = false }
+        )
+    }
+
+    if (showColorDialog) {
+        ThemeColorPickerDialog(
+            currentHex = themeColor,
+            onDismiss = { showColorDialog = false },
+            onSelect = { viewModel.setThemeColor(it); showColorDialog = false }
         )
     }
 }
@@ -344,6 +387,102 @@ fun IntervalPickerDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 12.dp, bottom = 8.dp)
                 )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
+}
+
+@Composable
+fun ThemeColorPickerDialog(
+    currentHex: String,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit
+) {
+    // Predefined theme colors
+    val colors = listOf(
+        "" to "跟随系统",
+        "#6750A4" to "紫罗兰",
+        "#006C51" to "翡翠绿",
+        "#006E1C" to "翠绿",
+        "#0061A4" to "海洋蓝",
+        "#006874" to "青色",
+        "#984061" to "玫瑰红",
+        "#7D5260" to "棕色",
+        "#B82E2E" to "红色",
+        "#E65100" to "橙色",
+        "#F9A825" to "琥珀",
+        "#33691E" to "深绿",
+        "#01579B" to "深蓝",
+        "#4A148C" to "紫色",
+        "#880E4F" to "玫红",
+        "#BF360C" to "深橙",
+        "#263238" to "蓝灰",
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("主题颜色") },
+        text = {
+            Column {
+                Text(
+                    "选择主题颜色，重启后生效",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 16.dp)
+                )
+                // Grid of color circles
+                val chunked = colors.chunked(4)
+                chunked.forEach { row ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        row.forEach { (hex, name) ->
+                            val isSelected = hex == currentHex
+                            val color = if (hex.isEmpty()) MaterialTheme.colorScheme.primary
+                                else parseHexColor(hex) ?: Color.Gray
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                modifier = Modifier.clickable { onSelect(hex) }
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(40.dp)
+                                        .clip(CircleShape)
+                                        .background(color)
+                                        .then(
+                                            if (isSelected) Modifier.border(
+                                                3.dp,
+                                                MaterialTheme.colorScheme.onSurface,
+                                                CircleShape
+                                            ) else Modifier
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isSelected) {
+                                        Icon(
+                                            Icons.Filled.Check,
+                                            contentDescription = null,
+                                            tint = Color.White,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    name,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+                        // Fill empty slots in last row
+                        repeat(4 - row.size) {
+                            Spacer(modifier = Modifier.width(40.dp))
+                        }
+                    }
+                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }

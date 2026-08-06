@@ -172,6 +172,15 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsDao.setString(SettingsKeys.GLOBAL_SCALE_MODE, mode.name) }
     }
 
+    // Theme color (stored as hex string like "#6750A4", empty = system default)
+    val themeColor: StateFlow<String> = settingsDao.getValueFlow(SettingsKeys.THEME_COLOR)
+        .map { it ?: "" }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+
+    fun setThemeColor(hex: String) {
+        viewModelScope.launch { settingsDao.setString(SettingsKeys.THEME_COLOR, hex) }
+    }
+
     fun addImage(groupId: Long, uri: Uri, displayName: String) {
         viewModelScope.launch {
             val group = groupDao.getGroupById(groupId) ?: return@launch

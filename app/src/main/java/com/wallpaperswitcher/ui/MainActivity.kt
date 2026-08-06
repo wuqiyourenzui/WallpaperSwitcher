@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -13,6 +12,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.wallpaperswitcher.ui.theme.WallpaperSwitcherTheme
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
@@ -29,12 +29,14 @@ class MainActivity : ComponentActivity() {
         requestStoragePermission()
 
         setContent {
-            WallpaperSwitcherTheme {
+            val vm: WallpaperViewModel = viewModel()
+            val themeColor by vm.themeColor.collectAsStateWithLifecycle()
+
+            WallpaperSwitcherTheme(themeColorHex = themeColor) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    val vm: WallpaperViewModel = viewModel()
                     WallpaperSwitcherApp(vm)
                 }
             }

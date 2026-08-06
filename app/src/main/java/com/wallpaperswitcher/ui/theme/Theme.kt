@@ -43,12 +43,57 @@ private val DarkColorScheme = darkColorScheme(
     outline = Color(0xFF938F99),
 )
 
+/**
+ * Parse a hex color string like "#6750A4" to a Color. Returns null if invalid.
+ */
+fun parseHexColor(hex: String): Color? {
+    return try {
+        val clean = hex.removePrefix("#")
+        if (clean.length == 6) {
+            Color(android.graphics.Color.parseColor("#$clean"))
+        } else null
+    } catch (_: Exception) { null }
+}
+
+/**
+ * Generate a light color scheme with a custom primary color.
+ */
+fun customLightColorScheme(primary: Color): ColorScheme {
+    return lightColorScheme(
+        primary = primary,
+        onPrimary = Color.White,
+        primaryContainer = primary.copy(alpha = 0.15f),
+        onPrimaryContainer = primary,
+    )
+}
+
+/**
+ * Generate a dark color scheme with a custom primary color.
+ */
+fun customDarkColorScheme(primary: Color): ColorScheme {
+    return darkColorScheme(
+        primary = primary,
+        onPrimary = Color.Black,
+        primaryContainer = primary.copy(alpha = 0.3f),
+        onPrimaryContainer = primary,
+    )
+}
+
 @Composable
 fun WallpaperSwitcherTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    themeColorHex: String = "",
     content: @Composable () -> Unit
 ) {
+    val customColor = if (themeColorHex.isNotEmpty()) parseHexColor(themeColorHex) else null
+
     val colorScheme = when {
+        // Custom color takes priority
+        customColor != null -> {
+            if (darkTheme) customDarkColorScheme(customColor)
+            else customLightColorScheme(customColor)
+        }
+        // Android 12+ dynamic color
         Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context)
