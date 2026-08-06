@@ -346,7 +346,7 @@ class VideoRenderer(
             bitmap.copyPixelsFromBuffer(buf)
 
             // Flip vertically (GL origin is bottom-left)
-            val matrix = Matrix()
+            val matrix = android.graphics.Matrix()
             matrix.postScale(1f, -1f, width / 2f, height / 2f)
             val flipped = Bitmap.createBitmap(bitmap, 0, 0, width, height, matrix, true)
             if (flipped !== bitmap) bitmap.recycle()
