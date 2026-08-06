@@ -378,10 +378,12 @@ class LiveWallpaperService : WallpaperService() {
             // Start renderer on main thread
             startFrameRenderer(scaleMode)
 
-            // Double-buffer: decoder writes to writeBitmap, renderer reads from readBitmap
-            // Swap references when frame is ready — no Bitmap allocation per frame
-            val argbBuffer = IntArray(width * height)
-            var writeBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            // 2x downsample: process every other pixel → 4x fewer pixels → 4x faster
+            // Canvas scales the smaller bitmap to full screen
+            val halfW = width / 2
+            val halfH = height / 2
+            val argbBuffer = IntArray(halfW * halfH)
+            var writeBitmap = Bitmap.createBitmap(halfW, halfH, Bitmap.Config.ARGB_8888)
             var readBitmap: Bitmap? = null
 
             // --- Decode loop ---
@@ -397,7 +399,7 @@ class LiveWallpaperService : WallpaperService() {
 
                     // Feed compressed data to decoder input
                     if (!inputDone) {
-                        val inputIndex = decoder.dequeueInputBuffer(10_000)
+                        val inputIndex = decoder.dequeueInputBuffer(0)
                         if (inputIndex >= 0) {
                             val inputBuffer = decoder.getInputBuffer(inputIndex) ?: continue
                             val sampleSize = extractor.readSampleData(inputBuffer, 0)
@@ -412,7 +414,7 @@ class LiveWallpaperService : WallpaperService() {
                     }
 
                     // Get decoded output
-                    val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 10_000)
+                    val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 0)
                     if (outputIndex >= 0) {
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             decoder.releaseOutputBuffer(outputIndex, false)
@@ -424,8 +426,8 @@ class LiveWallpaperService : WallpaperService() {
                         // Get decoded frame as YUV Image (API 26+)
                         val image = decoder.getOutputImage(outputIndex)
                         if (image != null) {
-                            // Direct YUV→ARGB integer conversion
-                            yuvToArgb(image, width, height, argbBuffer)
+                            // 2x downsampled YUV→ARGB (4x fewer pixels)
+                            yuvToArgbHalf(image, width, height, halfW, halfH, argbBuffer)
                             image.close()
 
                             // Write pixels to the write-side bitmap
@@ -451,7 +453,8 @@ class LiveWallpaperService : WallpaperService() {
                         // No delay — decode at full speed, buffer backpressure paces
                         yield()
                     } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                        delay(1)
+                        // No output ready — continue feeding input on next iteration
+                        yield()
                     }
                 }
             } finally {
@@ -464,11 +467,12 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         /**
-         * Direct YUV_420_888 → ARGB integer array conversion.
-         * Uses BT.601 fixed-point integer arithmetic — no JPEG round-trip.
-         * ~5-10ms for 1080p (vs ~30-50ms for JPEG approach).
+         * 2x downsampled YUV_420_888 → ARGB conversion.
+         * Processes every 2nd pixel in both dimensions → 4x fewer pixels.
+         * BT.601 fixed-point integer arithmetic.
+         * For 1080p: 2M pixels → 500K pixels → ~1-3ms (vs ~5-10ms full res).
          */
-        private fun yuvToArgb(image: Image, width: Int, height: Int, argb: IntArray) {
+        private fun yuvToArgbHalf(image: Image, srcW: Int, srcH: Int, dstW: Int, dstH: Int, argb: IntArray) {
             val yPlane = image.planes[0]
             val uPlane = image.planes[1]
             val vPlane = image.planes[2]
@@ -481,18 +485,20 @@ class LiveWallpaperService : WallpaperService() {
             val uvStride = uPlane.rowStride
             val uvPixelStride = uPlane.pixelStride
 
-            for (y in 0 until height) {
-                val uvY = y shr 1
-                val yRowOff = y * yStride
+            for (dy in 0 until dstH) {
+                val sy = dy * 2               // source Y (every 2nd row)
+                val uvY = sy shr 1
+                val yRowOff = sy * yStride
                 val uvRowOff = uvY * uvStride
+                val dstRowOff = dy * dstW
 
-                for (x in 0 until width) {
-                    val yVal = yBuf.get(yRowOff + x).toInt() and 0xFF
-                    val uvOff = uvRowOff + (x shr 1) * uvPixelStride
+                for (dx in 0 until dstW) {
+                    val sx = dx * 2           // source X (every 2nd column)
+                    val yVal = yBuf.get(yRowOff + sx).toInt() and 0xFF
+                    val uvOff = uvRowOff + (sx shr 1) * uvPixelStride
                     val uVal = uBuf.get(uvOff).toInt() and 0xFF
                     val vVal = vBuf.get(uvOff).toInt() and 0xFF
 
-                    // BT.601 integer YUV→RGB (10-bit fixed point)
                     val c = yVal - 16
                     val d = uVal - 128
                     val e = vVal - 128
@@ -505,7 +511,7 @@ class LiveWallpaperService : WallpaperService() {
                     if (g < 0) g = 0; else if (g > 255) g = 255
                     if (b < 0) b = 0; else if (b > 255) b = 255
 
-                    argb[y * width + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                    argb[dstRowOff + dx] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
                 }
             }
         }
