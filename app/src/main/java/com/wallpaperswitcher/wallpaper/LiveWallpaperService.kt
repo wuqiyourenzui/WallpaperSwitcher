@@ -363,9 +363,8 @@ class LiveWallpaperService : WallpaperService() {
             Log.d(TAG, "Video: ${srcWidth}x${srcHeight} @ ${videoFps}fps, mime=$mime")
 
             // Cap decoder output to 720p max — hardware downsampling is 100x faster than CPU
-            // For 4K video: decoder outputs 720p directly instead of 4K → much faster
             val maxDim = maxOf(srcWidth, srcHeight)
-            val targetDim = 1280 // 720p max dimension
+            val targetDim = 1280
             if (maxDim > targetDim) {
                 val scale = targetDim.toFloat() / maxDim
                 format.setInteger(MediaFormat.KEY_MAX_WIDTH, (srcWidth * scale).toInt().and(0xFFFFFFFE.toInt()))
@@ -373,7 +372,7 @@ class LiveWallpaperService : WallpaperService() {
                 Log.d(TAG, "Decoder capped to ${format.getInteger(MediaFormat.KEY_MAX_WIDTH)}x${format.getInteger(MediaFormat.KEY_MAX_HEIGHT)}")
             }
 
-            // --- Setup MediaCodec (no Surface needed — using direct buffer mode) ---
+            // --- Setup MediaCodec ---
             val decoder = try {
                 MediaCodec.createDecoderByType(mime).also { Log.d(TAG, "Decoder: ${it.name}") }
             } catch (e: Exception) {
@@ -382,27 +381,28 @@ class LiveWallpaperService : WallpaperService() {
                 return@withContext
             }
 
-            // Configure WITHOUT surface → decoder outputs to Image (YUV buffers)
             decoder.configure(format, null, null, 0)
             decoder.start()
 
             // Start renderer on main thread
             startFrameRenderer(scaleMode)
 
-            // Actual decoded dimensions (may be smaller than source due to KEY_MAX_WIDTH/HEIGHT)
-            // We read them from the first output frame to handle decoder rounding
+            // Actual decoded dimensions (detected from first output frame)
             var decW = srcWidth
             var decH = srcHeight
             var firstFrame = true
 
-            // 2x downsample on top of decoder's resolution cap
-            // This keeps the YUV→ARGB conversion fast even for 720p
-            val sampleStep = 2
-            var halfW = decW / sampleStep
-            var halfH = decH / sampleStep
-            var argbBuffer = IntArray(halfW * halfH)
-            var writeBitmap = Bitmap.createBitmap(halfW, halfH, Bitmap.Config.ARGB_8888)
+            // Adaptive downsample: skip for small videos, downsample for large ones
+            // Small (<720p): no downsample → full quality
+            // Medium (720p-1080p): 2x → good quality
+            // Large (>1080p): already capped by decoder to 720p, then 2x
+            var sampleStep = 1
+            var outW = decW
+            var outH = decH
+            var argbBuffer = IntArray(1) // will be resized on first frame
+            var writeBitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
             var readBitmap: Bitmap? = null
+            var buffersInit = false
 
             // --- Decode loop ---
             val bufferInfo = MediaCodec.BufferInfo()
@@ -431,8 +431,8 @@ class LiveWallpaperService : WallpaperService() {
                         }
                     }
 
-                    // Get decoded output
-                    val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 0)
+                    // Get decoded output (1ms timeout — not spinning, not blocking too long)
+                    val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 1000)
                     if (outputIndex >= 0) {
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             decoder.releaseOutputBuffer(outputIndex, false)
@@ -441,51 +441,53 @@ class LiveWallpaperService : WallpaperService() {
                             continue
                         }
 
-                        // Get decoded frame as YUV Image (API 26+)
                         val image = decoder.getOutputImage(outputIndex)
                         if (image != null) {
-                            // Detect actual decoded dimensions on first frame
+                            // Detect actual dimensions and choose downsample on first frame
                             if (firstFrame) {
                                 firstFrame = false
                                 decW = image.width
                                 decH = image.height
-                                halfW = decW / sampleStep
-                                halfH = decH / sampleStep
-                                argbBuffer = IntArray(halfW * halfH)
+                                sampleStep = when {
+                                    decW <= 854 -> 1  // 480p or smaller: no downsample
+                                    decW <= 1280 -> 2  // 720p: 2x downsample
+                                    else -> 4          // larger: 4x downsample
+                                }
+                                outW = decW / sampleStep
+                                outH = decH / sampleStep
+                                argbBuffer = IntArray(outW * outH)
                                 writeBitmap.recycle()
-                                writeBitmap = Bitmap.createBitmap(halfW, halfH, Bitmap.Config.ARGB_8888)
-                                Log.d(TAG, "Actual decoded: ${decW}x${decH}, output: ${halfW}x${halfH}")
+                                writeBitmap = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+                                buffersInit = true
+                                Log.d(TAG, "Decoded: ${decW}x${decH}, step=$sampleStep, output: ${outW}x${outH}")
                             }
 
-                            // 2x downsampled YUV→ARGB (4x fewer pixels)
-                            yuvToArgbHalf(image, decW, decH, halfW, halfH, argbBuffer)
-                            image.close()
+                            if (buffersInit) {
+                                if (sampleStep == 1) {
+                                    yuvToArgbFull(image, decW, decH, argbBuffer)
+                                } else {
+                                    yuvToArgbHalf(image, decW, decH, outW, outH, argbBuffer)
+                                }
+                                image.close()
 
-                            // Write pixels to the write-side bitmap
-                            writeBitmap.setPixels(argbBuffer, 0, halfW, 0, 0, halfW, halfH)
+                                writeBitmap.setPixels(argbBuffer, 0, outW, 0, 0, outW, outH)
 
-                            // Swap: old readBitmap goes back to write-side, old writeBitmap goes to renderer
-                            val oldRead = readBitmap
-                            readBitmap = writeBitmap
-                            if (oldRead != null) {
-                                writeBitmap = oldRead // reuse for next frame
+                                // Swap double-buffer
+                                val oldRead = readBitmap
+                                readBitmap = writeBitmap
+                                if (oldRead != null) writeBitmap = oldRead
+
+                                while (frameBuffer.isNotEmpty()) { frameBuffer.poll() }
+                                frameBuffer.offer(readBitmap)
+                            } else {
+                                image.close()
                             }
-
-                            // Push readBitmap reference to frame buffer (no copy!)
-                            // Renderer will draw it; on next swap, we reclaim it
-                            val currentRead = readBitmap
-                            // Drain old references from buffer
-                            while (frameBuffer.isNotEmpty()) { frameBuffer.poll() }
-                            frameBuffer.offer(currentRead)
                         }
 
                         decoder.releaseOutputBuffer(outputIndex, false)
-
-                        // No delay — decode at full speed, buffer backpressure paces
-                        yield()
                     } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                        // No output ready — continue feeding input on next iteration
-                        yield()
+                        // No output ready — brief sleep to avoid CPU spin
+                        delay(1)
                     }
                 }
             } finally {
@@ -494,6 +496,51 @@ class LiveWallpaperService : WallpaperService() {
                 try { decoder.stop() } catch (_: Exception) {}
                 try { decoder.release() } catch (_: Exception) {}
                 try { extractor.release() } catch (_: Exception) {}
+            }
+        }
+
+        /**
+         * Full-resolution YUV_420_888 → ARGB conversion (no downsample).
+         * Used for small videos (<720p) to preserve quality.
+         */
+        private fun yuvToArgbFull(image: Image, width: Int, height: Int, argb: IntArray) {
+            val yPlane = image.planes[0]
+            val uPlane = image.planes[1]
+            val vPlane = image.planes[2]
+
+            val yBuf = yPlane.buffer
+            val uBuf = uPlane.buffer
+            val vBuf = vPlane.buffer
+
+            val yStride = yPlane.rowStride
+            val uvStride = uPlane.rowStride
+            val uvPixelStride = uPlane.pixelStride
+
+            for (y in 0 until height) {
+                val uvY = y shr 1
+                val yRowOff = y * yStride
+                val uvRowOff = uvY * uvStride
+
+                for (x in 0 until width) {
+                    val yVal = yBuf.get(yRowOff + x).toInt() and 0xFF
+                    val uvOff = uvRowOff + (x shr 1) * uvPixelStride
+                    val uVal = uBuf.get(uvOff).toInt() and 0xFF
+                    val vVal = vBuf.get(uvOff).toInt() and 0xFF
+
+                    val c = yVal - 16
+                    val d = uVal - 128
+                    val e = vVal - 128
+
+                    var r = (298 * c + 409 * e + 128) shr 8
+                    var g = (298 * c - 100 * d - 208 * e + 128) shr 8
+                    var b = (298 * c + 516 * d + 128) shr 8
+
+                    if (r < 0) r = 0; else if (r > 255) r = 255
+                    if (g < 0) g = 0; else if (g > 255) g = 255
+                    if (b < 0) b = 0; else if (b > 255) b = 255
+
+                    argb[y * width + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                }
             }
         }
 
