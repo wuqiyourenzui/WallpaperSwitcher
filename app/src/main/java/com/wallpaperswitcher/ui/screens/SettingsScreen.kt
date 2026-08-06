@@ -29,7 +29,6 @@ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(viewModel: WallpaperViewModel) {
-    val context = LocalContext.current
     val serviceEnabled by viewModel.serviceEnabled.collectAsStateWithLifecycle()
     val doubleTapEnabled by viewModel.doubleTapEnabled.collectAsStateWithLifecycle()
     val unlockSwitchEnabled by viewModel.unlockSwitchEnabled.collectAsStateWithLifecycle()
