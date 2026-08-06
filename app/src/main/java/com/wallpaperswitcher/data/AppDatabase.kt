@@ -42,7 +42,6 @@ abstract class AppDatabase : RoomDatabase() {
                     "wallpaper_switcher.db"
                 )
                     .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
-                    .fallbackToDestructiveMigration()
                     .build()
                     .also { INSTANCE = it }
             }

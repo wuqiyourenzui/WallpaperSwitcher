@@ -13,6 +13,7 @@ import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.getBool
 import com.wallpaperswitcher.data.getLong
+import com.wallpaperswitcher.data.setBool
 import com.wallpaperswitcher.data.setLong
 import com.wallpaperswitcher.ui.MainActivity
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
@@ -50,6 +51,13 @@ class WallpaperSwitchService : Service() {
 
     override fun onDestroy() {
         switchJob?.cancel()
+        // Sync service_enabled to false so UI reflects stopped state
+        scope.launch {
+            try {
+                val db = AppDatabase.getInstance(applicationContext)
+                db.settingsDao().setBool(SettingsKeys.SERVICE_ENABLED, false)
+            } catch (_: Exception) {}
+        }
         scope.cancel()
         super.onDestroy()
     }

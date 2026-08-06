@@ -95,14 +95,8 @@ class WallpaperSwitcherApp : Application() {
         registerReceiver(unlockReceiver, filter, flags)
     }
 
-    override fun onTerminate() {
-        unlockReceiver?.let {
-            try { unregisterReceiver(it) } catch (e: Exception) {
-                Log.e(TAG, "Failed to unregister receiver", e)
-            }
-        }
-        super.onTerminate()
-    }
+    // Note: onTerminate() is never called on real devices (only emulators).
+    // The OS automatically cleans up registered receivers when the process dies.
 
     companion object {
         private const val TAG = "WallpaperSwitcherApp"

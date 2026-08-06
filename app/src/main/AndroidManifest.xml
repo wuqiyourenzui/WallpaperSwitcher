@@ -12,7 +12,6 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.SET_WALLPAPER" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
     <application
         android:name=".WallpaperSwitcherApp"
@@ -63,14 +62,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- Screen Unlock Receiver (manifest + programmatic) -->
-        <receiver
-            android:name=".receiver.ScreenUnlockReceiver"
-            android:exported="true">
-            <intent-filter android:priority="999">
-                <action android:name="android.intent.action.USER_PRESENT" />
-            </intent-filter>
-        </receiver>
+        <!-- Screen Unlock Receiver: registered programmatically in WallpaperSwitcherApp -->
 
     </application>
 </manifest>

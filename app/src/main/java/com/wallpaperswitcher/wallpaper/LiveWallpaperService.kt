@@ -26,6 +26,9 @@ class LiveWallpaperService : WallpaperService() {
         private const val TAG = "LiveWallpaperService"
         const val ACTION_SWITCH = "com.wallpaperswitcher.ACTION_SWITCH"
         const val EXTRA_TARGET_ID = "target_id"
+        private const val SWITCH_SETTLE_DELAY_MS = 100L
+        private const val GIF_FRAME_INTERVAL_MS = 33L // ~30fps
+        private const val SHUFFLE_MAX_ATTEMPTS = 10
 
         @Volatile
         var engineRunning = false
@@ -45,8 +48,10 @@ class LiveWallpaperService : WallpaperService() {
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
+        // Shuffle state — cached in memory, flushed to DB only on destroy
         private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
         @Volatile private var shuffleAllCount = 0
+        @Volatile private var shuffleDirty = false
 
         // Video renderer (MediaCodec + SurfaceTexture + EGL on HandlerThread)
         private var videoRenderer: VideoRenderer? = null
@@ -88,6 +93,8 @@ class LiveWallpaperService : WallpaperService() {
             setTouchEventsEnabled(true)
             val filter = IntentFilter(ACTION_SWITCH)
             try {
+                // Unregister first to prevent duplicate registration on engine recreate
+                try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
                 if (Build.VERSION.SDK_INT >= 33) {
                     applicationContext.registerReceiver(switchReceiver, filter, Context.RECEIVER_EXPORTED)
                 } else {
@@ -129,9 +136,24 @@ class LiveWallpaperService : WallpaperService() {
         override fun onDestroy() {
             engineRunning = false
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
+            // Flush shuffle state to DB on destroy
+            flushShuffleState()
             releaseAll()
             scope.cancel()
             super.onDestroy()
+        }
+
+        private fun flushShuffleState() {
+            if (!shuffleDirty) return
+            scope.launch {
+                try {
+                    val dao = db.settingsDao()
+                    val shuffleKey = "shuffle_ids" // simplified key
+                    val countKey = "shuffle_count"
+                    dao.setString(shuffleKey, shuffleShownIds.joinToString(","))
+                    dao.setLong(countKey, shuffleAllCount.toLong())
+                } catch (_: Exception) {}
+            }
         }
 
         // ======== Resource lifecycle ========
@@ -140,6 +162,11 @@ class LiveWallpaperService : WallpaperService() {
             stopVideo()
             pauseGif()
             gifBitmapBuffer?.recycle(); gifBitmapBuffer = null
+            gifDrawable?.let {
+                try { it.stop() } catch (_: Exception) {}
+                try { it.close() } catch (_: Exception) {}
+            }
+            gifDrawable = null
         }
 
         private fun stopVideo() {
@@ -204,7 +231,7 @@ class LiveWallpaperService : WallpaperService() {
                     // Stop everything before switching
                     stopVideo()
                     pauseGif()
-                    delay(100)
+                    delay(SWITCH_SETTLE_DELAY_MS)
 
                     when (mediaType) {
                         "VIDEO" -> startVideo(nextImage.uri, currentScaleMode)
@@ -246,31 +273,34 @@ class LiveWallpaperService : WallpaperService() {
                 SwitchMode.SHUFFLE -> {
                     val totalCount = imageDao.countByEnabledGroupsOfType(groupType)
                     if (totalCount == 0) null else {
-                        val shuffleKey = if (groupType == "VIDEO") "video_shuffle" else "image_shuffle"
-                        val countKey = if (groupType == "VIDEO") "video_shuffle_count" else "image_shuffle_count"
-                        val savedIds = dao.getString(shuffleKey, "")
-                        val savedCount = dao.getLong(countKey, 0L).toInt()
-                        val ids = ConcurrentHashMap.newKeySet<Long>()
-                        if (savedIds.isNotEmpty()) {
-                            savedIds.split(",").mapNotNull { it.toLongOrNull() }.forEach { ids.add(it) }
+                        // Load shuffle state from DB only if not yet loaded in memory
+                        if (shuffleShownIds.isEmpty() && shuffleAllCount == 0) {
+                            val shuffleKey = if (groupType == "VIDEO") "video_shuffle" else "image_shuffle"
+                            val countKey = if (groupType == "VIDEO") "video_shuffle_count" else "image_shuffle_count"
+                            val savedIds = dao.getString(shuffleKey, "")
+                            val savedCount = dao.getLong(countKey, 0L).toInt()
+                            if (savedIds.isNotEmpty()) {
+                                savedIds.split(",").mapNotNull { it.toLongOrNull() }.forEach { shuffleShownIds.add(it) }
+                            }
+                            shuffleAllCount = savedCount
                         }
-                        if (savedCount != totalCount || ids.size >= totalCount) {
-                            ids.clear()
+                        if (shuffleAllCount != totalCount || shuffleShownIds.size >= totalCount) {
+                            shuffleShownIds.clear()
                         }
                         var attempts = 0; var candidate: WallpaperImage? = null
-                        while (attempts < 10 && candidate == null) {
+                        while (attempts < SHUFFLE_MAX_ATTEMPTS && candidate == null) {
                             val img = imageDao.getRandomFromEnabledGroupsByTypeExcluding(groupType, lastId)
                                 ?: imageDao.getRandomFromEnabledGroupsByType(groupType)
-                            if (img != null && img.id !in ids) candidate = img
-                            else if (img != null && ids.size >= totalCount) {
-                                ids.clear(); candidate = img
+                            if (img != null && img.id !in shuffleShownIds) candidate = img
+                            else if (img != null && shuffleShownIds.size >= totalCount) {
+                                shuffleShownIds.clear(); candidate = img
                             }
                             attempts++
                         }
                         candidate?.also {
-                            ids.add(it.id)
-                            dao.setString(shuffleKey, ids.joinToString(","))
-                            dao.setLong(countKey, totalCount.toLong())
+                            shuffleShownIds.add(it.id)
+                            shuffleAllCount = totalCount
+                            shuffleDirty = true
                         }
                     }
                 }
@@ -359,7 +389,7 @@ class LiveWallpaperService : WallpaperService() {
                             drawable.draw(cv)
                             showBitmapDirect(bmp, scaleMode)
                         } catch (_: Exception) {}
-                        mainHandler.postDelayed(this, 33)
+                        mainHandler.postDelayed(this, GIF_FRAME_INTERVAL_MS)
                     }
                 }
                 gifFrameRunnable = runnable
@@ -372,7 +402,9 @@ class LiveWallpaperService : WallpaperService() {
         private fun showBitmap(bitmap: Bitmap, scaleMode: ScaleMode = ScaleMode.FIT) {
             if (!surfaceReady) return
             try {
-                currentBitmap?.recycle(); currentBitmap = bitmap
+                // Don't recycle old bitmap here — unlockCanvasAndPost is async and
+                // the GPU may still be reading the old bitmap. Let GC handle it.
+                currentBitmap = bitmap
                 val canvas = surfaceHolder.lockCanvas() ?: return
                 canvas.drawColor(Color.BLACK)
                 val m = getMetrics()

@@ -96,6 +96,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                         _loadedImages.value = _loadedImages.value + nextPage
                     }
                 }
+            } catch (e: Exception) {
+                Log.e(TAG, "loadImages failed", e)
+                _toastMessage.emit("加载图片失败: ${e.message}")
             } finally {
                 _isLoadingMore.value = false
             }
@@ -473,7 +476,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 )
             }
                 .filter { it.imageCount >= 2 }
-                .filter { f -> listOf("Android", ".thumbnails", ".cache", ".Trash", "obb").none { f.path.contains(it, ignoreCase = true) } }
+                .filter { f ->
+                    val segments = f.path.split("/").map { it.lowercase() }
+                    val blocked = setOf("android", ".thumbnails", ".cache", ".trash", "obb")
+                    segments.none { it in blocked }
+                }
                 .sortedByDescending { it.imageCount }
         } catch (e: Exception) {
             Log.e(TAG, "scanImageFolders failed", e)
@@ -534,7 +541,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                                     imageDao.insertAll(batch.toList())
                                     total += batch.size
                                     batch.clear()
-                                    _scanProgress.value = "导入中 $total 张"
+                                    withContext(Dispatchers.Main) {
+                                        _scanProgress.value = "导入中 $total 张"
+                                    }
                                     yield()
                                 }
                             } catch (_: Exception) { continue }

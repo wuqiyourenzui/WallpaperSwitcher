@@ -162,7 +162,7 @@ class VideoRenderer(
                     if (bitmap != null) {
                         mainHandler.post {
                             if (!stopped) drawToCanvas(bitmap, scaleMode, screenW, screenH)
-                            bitmap.recycle()
+                            // Don't recycle — bitmap is reused from pool
                         }
                     }
 
@@ -187,6 +187,7 @@ class VideoRenderer(
             val dest = calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(), screenW, screenH, scaleMode)
             canvas.drawBitmap(bitmap, null, dest, null)
             holder.unlockCanvasAndPost(canvas)
+            // Don't recycle bitmap here — reused from pool, recycled in cleanup()
         } catch (_: Exception) {}
     }
 
@@ -314,6 +315,10 @@ class VideoRenderer(
     private var readbackW = 0
     private var readbackH = 0
 
+    // Double-buffer bitmap pool to avoid per-frame allocation
+    private var bitmapPool = arrayOfNulls<Bitmap>(2)
+    private var bitmapPoolIndex = 0
+
     private fun drawTextureToBitmap(st: SurfaceTexture, width: Int, height: Int): Bitmap? {
         return try {
             // Bind FBO
@@ -347,20 +352,32 @@ class VideoRenderer(
             GLES20.glVertexAttribPointer(texLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            checkGlError("glDrawArrays")
 
             // Reuse readback buffer if size matches
             if (readbackW != width || readbackH != height || readbackBuffer == null) {
                 readbackBuffer = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
                 readbackW = width
                 readbackH = height
+                // Reset pool when size changes
+                bitmapPool.forEach { it?.recycle() }
+                bitmapPool = arrayOfNulls(2)
+                bitmapPoolIndex = 0
             }
             val buf = readbackBuffer!!
             buf.position(0)
             GLES20.glReadPixels(0, 0, width, height, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
             buf.position(0)
 
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            // Round-robin between two pre-allocated bitmaps
+            val idx = bitmapPoolIndex % 2
+            var bitmap = bitmapPool[idx]
+            if (bitmap == null || bitmap.isRecycled) {
+                bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                bitmapPool[idx] = bitmap
+            }
             bitmap.copyPixelsFromBuffer(buf)
+            bitmapPoolIndex++
 
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
 
@@ -388,6 +405,10 @@ class VideoRenderer(
         try { extractor?.release() } catch (_: Exception) {}
         extractor = null
 
+        // Recycle bitmap pool
+        bitmapPool.forEach { it?.recycle() }
+        bitmapPool = arrayOfNulls(2)
+
         if (program != 0) { GLES20.glDeleteProgram(program); program = 0 }
         if (texId != 0) { GLES20.glDeleteTextures(1, intArrayOf(texId), 0); texId = 0 }
         if (fboId != 0) { GLES20.glDeleteFramebuffers(1, intArrayOf(fboId), 0); fboId = 0 }
@@ -406,6 +427,13 @@ class VideoRenderer(
 
     // ======== GL Helpers ========
 
+    private fun checkGlError(op: String) {
+        val err = GLES20.glGetError()
+        if (err != GLES20.GL_NO_ERROR) {
+            Log.e(TAG, "GL error after $op: 0x${Integer.toHexString(err)}")
+        }
+    }
+
     private fun createProgram(vertexSrc: String, fragmentSrc: String): Int {
         val vs = compileShader(GLES20.GL_VERTEX_SHADER, vertexSrc)
         val fs = compileShader(GLES20.GL_FRAGMENT_SHADER, fragmentSrc)
@@ -413,6 +441,13 @@ class VideoRenderer(
         GLES20.glAttachShader(prog, vs)
         GLES20.glAttachShader(prog, fs)
         GLES20.glLinkProgram(prog)
+        val linkStatus = IntArray(1)
+        GLES20.glGetProgramiv(prog, GLES20.GL_LINK_STATUS, linkStatus, 0)
+        if (linkStatus[0] == 0) {
+            Log.e(TAG, "Program link failed: ${GLES20.glGetProgramInfoLog(prog)}")
+            GLES20.glDeleteProgram(prog)
+            return 0
+        }
         GLES20.glDeleteShader(vs)
         GLES20.glDeleteShader(fs)
         return prog
@@ -422,6 +457,13 @@ class VideoRenderer(
         val shader = GLES20.glCreateShader(type)
         GLES20.glShaderSource(shader, source)
         GLES20.glCompileShader(shader)
+        val compiled = IntArray(1)
+        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, compiled, 0)
+        if (compiled[0] == 0) {
+            Log.e(TAG, "Shader compile failed: ${GLES20.glGetShaderInfoLog(shader)}")
+            GLES20.glDeleteShader(shader)
+            return 0
+        }
         return shader
     }
 
