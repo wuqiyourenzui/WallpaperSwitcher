@@ -355,12 +355,23 @@ class LiveWallpaperService : WallpaperService() {
             extractor.selectTrack(trackIndex)
             val format = extractor.getTrackFormat(trackIndex)
             val mime = format.getString(MediaFormat.KEY_MIME)!!
-            val width = format.getInteger(MediaFormat.KEY_WIDTH)
-            val height = format.getInteger(MediaFormat.KEY_HEIGHT)
+            val srcWidth = format.getInteger(MediaFormat.KEY_WIDTH)
+            val srcHeight = format.getInteger(MediaFormat.KEY_HEIGHT)
             videoDurationMs = format.getLong(MediaFormat.KEY_DURATION) / 1000
             videoFps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30).coerceIn(15, 60)
 
-            Log.d(TAG, "Video: ${width}x${height} @ ${videoFps}fps, mime=$mime")
+            Log.d(TAG, "Video: ${srcWidth}x${srcHeight} @ ${videoFps}fps, mime=$mime")
+
+            // Cap decoder output to 720p max — hardware downsampling is 100x faster than CPU
+            // For 4K video: decoder outputs 720p directly instead of 4K → much faster
+            val maxDim = maxOf(srcWidth, srcHeight)
+            val targetDim = 1280 // 720p max dimension
+            if (maxDim > targetDim) {
+                val scale = targetDim.toFloat() / maxDim
+                format.setInteger(MediaFormat.KEY_MAX_WIDTH, (srcWidth * scale).toInt().and(0xFFFFFFFE.toInt()))
+                format.setInteger(MediaFormat.KEY_MAX_HEIGHT, (srcHeight * scale).toInt().and(0xFFFFFFFE.toInt()))
+                Log.d(TAG, "Decoder capped to ${format.getInteger(MediaFormat.KEY_MAX_WIDTH)}x${format.getInteger(MediaFormat.KEY_MAX_HEIGHT)}")
+            }
 
             // --- Setup MediaCodec (no Surface needed — using direct buffer mode) ---
             val decoder = try {
@@ -378,11 +389,18 @@ class LiveWallpaperService : WallpaperService() {
             // Start renderer on main thread
             startFrameRenderer(scaleMode)
 
-            // 2x downsample: process every other pixel → 4x fewer pixels → 4x faster
-            // Canvas scales the smaller bitmap to full screen
-            val halfW = width / 2
-            val halfH = height / 2
-            val argbBuffer = IntArray(halfW * halfH)
+            // Actual decoded dimensions (may be smaller than source due to KEY_MAX_WIDTH/HEIGHT)
+            // We read them from the first output frame to handle decoder rounding
+            var decW = srcWidth
+            var decH = srcHeight
+            var firstFrame = true
+
+            // 2x downsample on top of decoder's resolution cap
+            // This keeps the YUV→ARGB conversion fast even for 720p
+            val sampleStep = 2
+            var halfW = decW / sampleStep
+            var halfH = decH / sampleStep
+            var argbBuffer = IntArray(halfW * halfH)
             var writeBitmap = Bitmap.createBitmap(halfW, halfH, Bitmap.Config.ARGB_8888)
             var readBitmap: Bitmap? = null
 
@@ -426,8 +444,21 @@ class LiveWallpaperService : WallpaperService() {
                         // Get decoded frame as YUV Image (API 26+)
                         val image = decoder.getOutputImage(outputIndex)
                         if (image != null) {
+                            // Detect actual decoded dimensions on first frame
+                            if (firstFrame) {
+                                firstFrame = false
+                                decW = image.width
+                                decH = image.height
+                                halfW = decW / sampleStep
+                                halfH = decH / sampleStep
+                                argbBuffer = IntArray(halfW * halfH)
+                                writeBitmap.recycle()
+                                writeBitmap = Bitmap.createBitmap(halfW, halfH, Bitmap.Config.ARGB_8888)
+                                Log.d(TAG, "Actual decoded: ${decW}x${decH}, output: ${halfW}x${halfH}")
+                            }
+
                             // 2x downsampled YUV→ARGB (4x fewer pixels)
-                            yuvToArgbHalf(image, width, height, halfW, halfH, argbBuffer)
+                            yuvToArgbHalf(image, decW, decH, halfW, halfH, argbBuffer)
                             image.close()
 
                             // Write pixels to the write-side bitmap
