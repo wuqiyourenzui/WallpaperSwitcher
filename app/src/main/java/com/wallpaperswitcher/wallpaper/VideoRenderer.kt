@@ -283,9 +283,10 @@ class VideoRenderer(
         if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) return false
 
         // Set viewport to match surface size
-        val w = EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH)
-        val h = EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_HEIGHT)
-        GLES20.glViewport(0, 0, w, h)
+        val queryResult = IntArray(2)
+        EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH, queryResult, 0)
+        EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_HEIGHT, queryResult, 1)
+        GLES20.glViewport(0, 0, queryResult[0], queryResult[1])
         GLES20.glClearColor(0f, 0f, 0f, 1f)
 
         return true
