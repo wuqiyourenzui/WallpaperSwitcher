@@ -362,9 +362,11 @@ class LiveWallpaperService : WallpaperService() {
 
             Log.d(TAG, "Video: ${srcWidth}x${srcHeight} @ ${videoFps}fps, mime=$mime")
 
-            // Cap decoder output to 720p max — hardware downsampling is 100x faster than CPU
+            // Cap decoder output to 480p max — hardware downsampling, zero CPU cost
+            // Canvas GPU-scales the small bitmap to fill screen
+            // This eliminates ALL CPU downsample work
             val maxDim = maxOf(srcWidth, srcHeight)
-            val targetDim = 1280
+            val targetDim = 854 // 480p max
             if (maxDim > targetDim) {
                 val scale = targetDim.toFloat() / maxDim
                 format.setInteger(MediaFormat.KEY_MAX_WIDTH, (srcWidth * scale).toInt().and(0xFFFFFFFE.toInt()))
@@ -392,15 +394,9 @@ class LiveWallpaperService : WallpaperService() {
             var decH = srcHeight
             var firstFrame = true
 
-            // Adaptive downsample: skip for small videos, downsample for large ones
-            // Small (<720p): no downsample → full quality
-            // Medium (720p-1080p): 2x → good quality
-            // Large (>1080p): already capped by decoder to 720p, then 2x
-            var sampleStep = 1
-            var outW = decW
-            var outH = decH
-            var argbBuffer = IntArray(1) // will be resized on first frame
-            var writeBitmap = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+            // No CPU downsample — decoder cap handles all resolution reduction
+            var argbBuffer = IntArray(1) // resized on first frame
+            var writeBitmap: Bitmap? = null
             var readBitmap: Bitmap? = null
             var buffersInit = false
 
@@ -431,8 +427,8 @@ class LiveWallpaperService : WallpaperService() {
                         }
                     }
 
-                    // Get decoded output (1ms timeout — not spinning, not blocking too long)
-                    val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 1000)
+                    // Get decoded output (5ms timeout — balances latency vs CPU)
+                    val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 5000)
                     if (outputIndex >= 0) {
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             decoder.releaseOutputBuffer(outputIndex, false)
@@ -443,36 +439,26 @@ class LiveWallpaperService : WallpaperService() {
 
                         val image = decoder.getOutputImage(outputIndex)
                         if (image != null) {
-                            // Detect actual dimensions and choose downsample on first frame
+                            // Init buffers on first frame with actual decoded dimensions
                             if (firstFrame) {
                                 firstFrame = false
                                 decW = image.width
                                 decH = image.height
-                                sampleStep = when {
-                                    decW <= 854 -> 1  // 480p or smaller: no downsample
-                                    decW <= 1280 -> 2  // 720p: 2x downsample
-                                    else -> 4          // larger: 4x downsample
-                                }
-                                outW = decW / sampleStep
-                                outH = decH / sampleStep
-                                argbBuffer = IntArray(outW * outH)
-                                writeBitmap.recycle()
-                                writeBitmap = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
+                                argbBuffer = IntArray(decW * decH)
+                                writeBitmap?.recycle()
+                                writeBitmap = Bitmap.createBitmap(decW, decH, Bitmap.Config.ARGB_8888)
                                 buffersInit = true
-                                Log.d(TAG, "Decoded: ${decW}x${decH}, step=$sampleStep, output: ${outW}x${outH}")
+                                Log.d(TAG, "Decoded output: ${decW}x${decH}")
                             }
 
-                            if (buffersInit) {
-                                if (sampleStep == 1) {
-                                    yuvToArgbFull(image, decW, decH, argbBuffer)
-                                } else {
-                                    yuvToArgbHalf(image, decW, decH, outW, outH, argbBuffer)
-                                }
+                            if (buffersInit && writeBitmap != null) {
+                                // Full-res YUV→ARGB (decoder already capped resolution)
+                                yuvToArgbFull(image, decW, decH, argbBuffer)
                                 image.close()
 
-                                writeBitmap.setPixels(argbBuffer, 0, outW, 0, 0, outW, outH)
+                                writeBitmap!!.setPixels(argbBuffer, 0, decW, 0, 0, decW, decH)
 
-                                // Swap double-buffer
+                                // Swap double-buffer (no copy, no alloc)
                                 val oldRead = readBitmap
                                 readBitmap = writeBitmap
                                 if (oldRead != null) writeBitmap = oldRead
@@ -486,12 +472,11 @@ class LiveWallpaperService : WallpaperService() {
 
                         decoder.releaseOutputBuffer(outputIndex, false)
                     } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                        // No output ready — brief sleep to avoid CPU spin
                         delay(1)
                     }
                 }
             } finally {
-                try { writeBitmap.recycle() } catch (_: Exception) {}
+                try { writeBitmap?.recycle() } catch (_: Exception) {}
                 try { readBitmap?.recycle() } catch (_: Exception) {}
                 try { decoder.stop() } catch (_: Exception) {}
                 try { decoder.release() } catch (_: Exception) {}
