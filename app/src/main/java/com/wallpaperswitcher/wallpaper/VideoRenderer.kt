@@ -14,16 +14,15 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 
 /**
- * Hardware-accelerated video renderer using MediaCodec + SurfaceTexture + EGL + GL.
+ * Hardware-accelerated video renderer using MediaCodec + SurfaceTexture + EGL window surface.
  *
- * Pipeline (all on dedicated HandlerThread):
+ * Pipeline (all on dedicated decode thread, zero CPU readback):
  *   MediaExtractor → MediaCodec (HW decoder) → SurfaceTexture (GL external texture)
- *   → GL shader renders texture to FBO → glReadPixels → Bitmap
- *   → post to main thread → Canvas.drawBitmap
+ *   → GL shader renders texture directly to EGL window surface (the SurfaceHolder)
+ *   → eglSwapBuffers presents the frame
  *
- * The GL shader applies SurfaceTexture's transform matrix, handling video
- * orientation and UV mapping correctly. FBO + glReadPixels reads the
- * rendered frame back to CPU memory as a Bitmap.
+ * No FBO, no glReadPixels, no Bitmap, no main-thread posting.
+ * Video frames stay entirely on the GPU from decode to display.
  */
 class VideoRenderer(
     private val context: Context,
@@ -53,13 +52,6 @@ class VideoRenderer(
                 gl_FragColor = texture2D(uTexture, vTexCoord);
             }
         """
-
-        private val QUAD_VERTICES = floatArrayOf(
-            -1f, -1f, 0f, 1f,  // position(x,y) + texcoord(s,t)
-             1f, -1f, 1f, 1f,
-            -1f,  1f, 0f, 0f,
-             1f,  1f, 1f, 0f,
-        )
     }
 
     @Volatile var isPlaying = false; private set
@@ -77,9 +69,13 @@ class VideoRenderer(
     // GL
     private var program = 0
     private var texId = 0
-    private var fboId = 0
-    private var fboTexId = 0
     private var vertexBuffer: FloatBuffer? = null
+
+    // Cached uniform/attribute locations
+    private var uTexMatrixLoc = -1
+    private var uTextureLoc = -1
+    private var aPositionLoc = -1
+    private var aTexCoordLoc = -1
 
     // MediaCodec
     private var extractor: MediaExtractor? = null
@@ -92,7 +88,6 @@ class VideoRenderer(
     fun start(uriStr: String, scaleMode: ScaleMode, screenW: Float, screenH: Float) {
         stopped = false
         isPlaying = true
-
         decodeThread = Thread({
             decodeLoop(uriStr, scaleMode, screenW, screenH)
         }, "VideoDecode").also { it.start() }
@@ -128,8 +123,13 @@ class VideoRenderer(
             val bufferInfo = MediaCodec.BufferInfo()
             var inputDone = false
             val intervalNs = (1_000_000_000L / fps).coerceAtLeast(16_000_000L)
-            val bitmapW = videoWidth
-            val bitmapH = videoHeight
+
+            // Pre-compute display quad and cache GL locations
+            updateQuad(scaleMode, screenW, screenH)
+            uTexMatrixLoc = GLES20.glGetUniformLocation(program, "uTexMatrix")
+            uTextureLoc = GLES20.glGetUniformLocation(program, "uTexture")
+            aPositionLoc = GLES20.glGetAttribLocation(program, "aPosition")
+            aTexCoordLoc = GLES20.glGetAttribLocation(program, "aTexCoord")
 
             while (!stopped && !Thread.interrupted()) {
                 if (!isPlaying) { Thread.sleep(50); continue }
@@ -157,24 +157,17 @@ class VideoRenderer(
                 if (outIdx >= 0) {
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                         dec.releaseOutputBuffer(outIdx, false)
-                        // Flush decoder to clear internal EOS state and stale buffers,
-                        // then seek extractor back to start for seamless loop
                         dec.flush()
                         ext.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                         inputDone = false
                         continue
                     }
 
+                    // Render frame to SurfaceTexture, then draw to screen via GL
                     dec.releaseOutputBuffer(outIdx, true)
                     st.updateTexImage()
-
-                    val bitmap = drawTextureToBitmap(st, bitmapW, bitmapH)
-                    if (bitmap != null) {
-                        mainHandler.post {
-                            if (!stopped) drawToCanvas(bitmap, scaleMode, screenW, screenH)
-                            // Don't recycle — bitmap is reused from pool
-                        }
-                    }
+                    drawFrame(st)
+                    EGL14.eglSwapBuffers(eglDisplay, eglSurface)
 
                     val elapsedNs = System.nanoTime() - startNs
                     val sleepNs = intervalNs - elapsedNs
@@ -190,40 +183,74 @@ class VideoRenderer(
         }
     }
 
-    private fun drawToCanvas(bitmap: Bitmap, scaleMode: ScaleMode, screenW: Float, screenH: Float) {
-        try {
-            val canvas = holder.lockCanvas() ?: return
-            canvas.drawColor(Color.BLACK)
-            val dest = calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(), screenW, screenH, scaleMode)
-            canvas.drawBitmap(bitmap, null, dest, null)
-            holder.unlockCanvasAndPost(canvas)
-            // Don't recycle bitmap here — reused from pool, recycled in cleanup()
-        } catch (_: Exception) {}
+    // ======== GL Rendering (direct to screen, no readback) ========
+
+    private fun drawFrame(st: SurfaceTexture) {
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        GLES20.glUseProgram(program)
+
+        // SurfaceTexture transform matrix handles video orientation/crop
+        val texMatrix = FloatArray(16)
+        st.getTransformMatrix(texMatrix)
+        GLES20.glUniformMatrix4fv(uTexMatrixLoc, 1, false, texMatrix, 0)
+
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
+        GLES20.glUniform1i(uTextureLoc, 0)
+
+        vertexBuffer?.position(0)
+        GLES20.glEnableVertexAttribArray(aPositionLoc)
+        GLES20.glVertexAttribPointer(aPositionLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
+        vertexBuffer?.position(2)
+        GLES20.glEnableVertexAttribArray(aTexCoordLoc)
+        GLES20.glVertexAttribPointer(aTexCoordLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
+
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
     }
 
-    private val destRect = RectF()
-    private fun calcDestRect(bw: Float, bh: Float, sw: Float, sh: Float, scaleMode: ScaleMode): RectF {
-        when (scaleMode) {
+    /**
+     * Compute quad vertices for the given scale mode.
+     * Vertex format: x, y, s, t (position + texcoord)
+     *
+     * FIT:   maintain aspect ratio, letterbox
+     * FILL:  maintain aspect ratio, crop to fill (viewport clips overflow)
+     * STRETCH: stretch to fill
+     */
+    private fun updateQuad(scaleMode: ScaleMode, screenW: Float, screenH: Float) {
+        if (videoWidth <= 0 || videoHeight <= 0) return
+        val va = videoWidth.toFloat() / videoHeight.toFloat()
+        val sa = screenW / screenH
+
+        val (dw, dh) = when (scaleMode) {
             ScaleMode.FIT -> {
-                val r = bw / bh; val sr = sw / sh
-                val dw: Float; val dh: Float
-                if (r > sr) { dw = sw; dh = dw / r } else { dh = sh; dw = dh * r }
-                destRect.set((sw - dw) / 2f, (sh - dh) / 2f, (sw + dw) / 2f, (sh + dh) / 2f)
+                if (va > sa) Pair(1f, sa / va) else Pair(va / sa, 1f)
             }
             ScaleMode.FILL -> {
-                val r = bw / bh; val sr = sw / sh
-                val dw: Float; val dh: Float
-                if (r < sr) { dw = sw; dh = dw / r } else { dh = sh; dw = dh * r }
-                destRect.set((sw - dw) / 2f, (sh - dh) / 2f, (sw + dw) / 2f, (sh + dh) / 2f)
+                // Quad larger than screen → viewport clips overflow
+                if (va > sa) Pair(va / sa, 1f) else Pair(1f, sa / va)
             }
-            ScaleMode.STRETCH -> destRect.set(0f, 0f, sw, sh)
+            ScaleMode.STRETCH -> Pair(1f, 1f)
         }
-        return destRect
+
+        val vertices = floatArrayOf(
+            -dw, -dh, 0f, 1f,  // bottom-left
+             dw, -dh, 1f, 1f,  // bottom-right
+            -dw,  dh, 0f, 0f,  // top-left
+             dw,  dh, 1f, 0f,  // top-right
+        )
+
+        vertexBuffer?.put(vertices)?.position(0)
     }
 
-    // ======== EGL Setup ========
+    // ======== EGL Setup (window surface from SurfaceHolder) ========
 
     private fun setupEgl(): Boolean {
+        val surface = holder.surface
+        if (!surface.isValid) {
+            Log.e(TAG, "SurfaceHolder surface is not valid")
+            return false
+        }
+
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
         if (eglDisplay == EGL14.EGL_NO_DISPLAY) return false
 
@@ -231,9 +258,12 @@ class VideoRenderer(
         if (!EGL14.eglInitialize(eglDisplay, ver, 0, ver, 1)) return false
 
         val configAttribs = intArrayOf(
-            EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
+            EGL14.EGL_RED_SIZE, 8,
+            EGL14.EGL_GREEN_SIZE, 8,
+            EGL14.EGL_BLUE_SIZE, 8,
+            EGL14.EGL_ALPHA_SIZE, 8,
             EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
+            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
             EGL14.EGL_NONE
         )
         val configs = arrayOfNulls<EGLConfig>(1)
@@ -245,11 +275,20 @@ class VideoRenderer(
         eglContext = EGL14.eglCreateContext(eglDisplay, config, EGL14.EGL_NO_CONTEXT, ctxAttribs, 0)
         if (eglContext == EGL14.EGL_NO_CONTEXT) return false
 
-        val pbufAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
-        eglSurface = EGL14.eglCreatePbufferSurface(eglDisplay, config, pbufAttribs, 0)
+        // Create window surface from SurfaceHolder (not pbuffer)
+        val surfaceAttribs = intArrayOf(EGL14.EGL_NONE)
+        eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, config, surface, surfaceAttribs, 0)
         if (eglSurface == EGL14.EGL_NO_SURFACE) return false
 
-        return EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)
+        if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) return false
+
+        // Set viewport to match surface size
+        val w = EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH)
+        val h = EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_HEIGHT)
+        GLES20.glViewport(0, 0, w, h)
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
+
+        return true
     }
 
     // ======== GL Setup ========
@@ -257,9 +296,8 @@ class VideoRenderer(
     private fun setupGl() {
         program = createProgram(VERTEX_SHADER, FRAGMENT_SHADER)
 
-        vertexBuffer = ByteBuffer.allocateDirect(QUAD_VERTICES.size * 4)
+        vertexBuffer = ByteBuffer.allocateDirect(16 * 4) // 4 vertices * 4 floats * 4 bytes
             .order(ByteOrder.nativeOrder()).asFloatBuffer()
-        vertexBuffer?.put(QUAD_VERTICES)?.position(0)
 
         val textures = IntArray(1)
         GLES20.glGenTextures(1, textures, 0)
@@ -267,16 +305,10 @@ class VideoRenderer(
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
 
         surfaceTexture = SurfaceTexture(texId)
-
-        val fbos = IntArray(1)
-        GLES20.glGenFramebuffers(1, fbos, 0)
-        fboId = fbos[0]
-
-        val fboTextures = IntArray(1)
-        GLES20.glGenTextures(1, fboTextures, 0)
-        fboTexId = fboTextures[0]
     }
 
     private fun setupCodec(uriStr: String): Boolean {
@@ -294,7 +326,7 @@ class VideoRenderer(
         videoWidth = format.getInteger(MediaFormat.KEY_WIDTH)
         videoHeight = format.getInteger(MediaFormat.KEY_HEIGHT)
 
-        // Cap to 720p for faster GL readback (wallpaper doesn't need full resolution)
+        // Cap to 720p for performance (wallpaper doesn't need full resolution)
         val maxDim = maxOf(videoWidth, videoHeight)
         if (maxDim > 1280) {
             val scale = 1280f / maxDim
@@ -308,7 +340,7 @@ class VideoRenderer(
         Log.d(TAG, "Video: ${videoWidth}x${videoHeight} @ ${fps}fps, mime=$mime")
 
         val st = surfaceTexture ?: return false
-        st.setDefaultBufferSize(videoWidth, videoHeight) // Use capped resolution
+        st.setDefaultBufferSize(videoWidth, videoHeight)
         codecSurface = android.view.Surface(st)
 
         val dec = MediaCodec.createDecoderByType(mime)
@@ -316,87 +348,6 @@ class VideoRenderer(
         dec.configure(format, codecSurface, null, 0)
         dec.start()
         return true
-    }
-
-    // ======== GL Rendering: SurfaceTexture → FBO → Bitmap ========
-
-    // Pre-allocated readback buffer (reused every frame)
-    private var readbackBuffer: ByteBuffer? = null
-    private var readbackW = 0
-    private var readbackH = 0
-
-    // Double-buffer bitmap pool to avoid per-frame allocation
-    private var bitmapPool = arrayOfNulls<Bitmap>(2)
-    private var bitmapPoolIndex = 0
-
-    private fun drawTextureToBitmap(st: SurfaceTexture, width: Int, height: Int): Bitmap? {
-        return try {
-            // Bind FBO
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fboTexId)
-            GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, width, height, 0,
-                GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fboId)
-            GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0,
-                GLES20.GL_TEXTURE_2D, fboTexId, 0)
-
-            GLES20.glViewport(0, 0, width, height)
-
-            // Draw SurfaceTexture to FBO using shader
-            GLES20.glUseProgram(program)
-
-            val texMatrix = FloatArray(16)
-            st.getTransformMatrix(texMatrix)
-            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uTexMatrix"), 1, false, texMatrix, 0)
-
-            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
-            GLES20.glUniform1i(GLES20.glGetUniformLocation(program, "uTexture"), 0)
-
-            val posLoc = GLES20.glGetAttribLocation(program, "aPosition")
-            val texLoc = GLES20.glGetAttribLocation(program, "aTexCoord")
-            vertexBuffer?.position(0)
-            GLES20.glEnableVertexAttribArray(posLoc)
-            GLES20.glVertexAttribPointer(posLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
-            vertexBuffer?.position(2)
-            GLES20.glEnableVertexAttribArray(texLoc)
-            GLES20.glVertexAttribPointer(texLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
-
-            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-            checkGlError("glDrawArrays")
-
-            // Reuse readback buffer if size matches
-            if (readbackW != width || readbackH != height || readbackBuffer == null) {
-                readbackBuffer = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
-                readbackW = width
-                readbackH = height
-                // Reset pool when size changes
-                bitmapPool.forEach { it?.recycle() }
-                bitmapPool = arrayOfNulls(2)
-                bitmapPoolIndex = 0
-            }
-            val buf = readbackBuffer!!
-            buf.position(0)
-            GLES20.glReadPixels(0, 0, width, height, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
-            buf.position(0)
-
-            // Round-robin between two pre-allocated bitmaps
-            val idx = bitmapPoolIndex % 2
-            var bitmap = bitmapPool[idx]
-            if (bitmap == null || bitmap.isRecycled) {
-                bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                bitmapPool[idx] = bitmap
-            }
-            bitmap.copyPixelsFromBuffer(buf)
-            bitmapPoolIndex++
-
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-
-            bitmap
-        } catch (e: Exception) {
-            Log.e(TAG, "drawTextureToBitmap error: ${e.message}")
-            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
-            null
-        }
     }
 
     // ======== Cleanup ========
@@ -415,14 +366,8 @@ class VideoRenderer(
         try { extractor?.release() } catch (_: Exception) {}
         extractor = null
 
-        // Recycle bitmap pool
-        bitmapPool.forEach { it?.recycle() }
-        bitmapPool = arrayOfNulls(2)
-
         if (program != 0) { GLES20.glDeleteProgram(program); program = 0 }
         if (texId != 0) { GLES20.glDeleteTextures(1, intArrayOf(texId), 0); texId = 0 }
-        if (fboId != 0) { GLES20.glDeleteFramebuffers(1, intArrayOf(fboId), 0); fboId = 0 }
-        if (fboTexId != 0) { GLES20.glDeleteTextures(1, intArrayOf(fboTexId), 0); fboTexId = 0 }
 
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
@@ -436,13 +381,6 @@ class VideoRenderer(
     }
 
     // ======== GL Helpers ========
-
-    private fun checkGlError(op: String) {
-        val err = GLES20.glGetError()
-        if (err != GLES20.GL_NO_ERROR) {
-            Log.e(TAG, "GL error after $op: 0x${Integer.toHexString(err)}")
-        }
-    }
 
     private fun createProgram(vertexSrc: String, fragmentSrc: String): Int {
         val vs = compileShader(GLES20.GL_VERTEX_SHADER, vertexSrc)
