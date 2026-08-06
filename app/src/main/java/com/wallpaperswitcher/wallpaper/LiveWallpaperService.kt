@@ -58,6 +58,8 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile private var videoMode = false
         // Pending target from broadcast, processed when current switch finishes
         @Volatile private var pendingTargetId: Long? = null
+        // Track what's currently displayed to detect changes
+        @Volatile private var lastDisplayedId = 0L
 
         // Reusable display objects
         private val destRect = RectF()
@@ -116,7 +118,8 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onSurfaceCreated(holder: SurfaceHolder?) {
             surfaceReady = true
-            drawCurrentImage()
+            // Don't call drawCurrentImage here — isVisible is still false.
+            // onVisibilityChanged(true) will trigger the load.
         }
 
         override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {
@@ -137,25 +140,21 @@ class LiveWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
             if (visible) {
-                // Always re-check DB for latest image on visibility change
-                // This catches updates that happened while invisible (e.g., after picker)
-                if (videoMode) {
-                    // Check if current video is still the latest
-                    scope.launch {
-                        val dao = db.settingsDao()
-                        val savedId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
-                        val imageDao = db.wallpaperImageDao()
-                        val currentImage = imageDao.getImageById(savedId)
-                        if (currentImage == null || currentImage.mediaType != "VIDEO") {
-                            stopVideo()
-                            videoMode = false
-                            drawCurrentImage()
-                        } else {
-                            videoRenderer?.resume()
-                        }
+                // Always check if the latest image differs from what's currently displayed
+                scope.launch {
+                    val dao = db.settingsDao()
+                    val savedId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
+                    if (savedId != lastDisplayedId || lastDisplayedId == 0L) {
+                        // Image changed while invisible — stop current and reload
+                        stopVideo()
+                        pauseGif()
+                        videoMode = false
+                        drawCurrentImage()
+                    } else if (videoMode) {
+                        videoRenderer?.resume()
+                    } else {
+                        drawCurrentImage()
                     }
-                } else {
-                    drawCurrentImage()
                 }
             } else {
                 if (videoMode) videoRenderer?.pause()
@@ -279,6 +278,7 @@ class LiveWallpaperService : WallpaperService() {
                     }
 
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
+                    lastDisplayedId = nextImage.id
                     val mediaType = nextImage.mediaType ?: "IMAGE"
                     Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
 
@@ -377,13 +377,20 @@ class LiveWallpaperService : WallpaperService() {
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
             if (isSwitching.get()) return
-            if (videoMode) return
+            // Always reload from DB — use lastDisplayedId to skip if unchanged
 
             scope.launch {
                 try {
                     val dao = db.settingsDao()
                     val imageDao = db.wallpaperImageDao()
                     var imageId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
+
+                    // Skip if already displaying this image
+                    if (imageId == lastDisplayedId && lastDisplayedId != 0L && (videoMode || currentBitmap != null)) {
+                        if (videoMode) videoRenderer?.resume()
+                        return@launch
+                    }
+
                     currentScaleMode = try {
                         ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
                     } catch (_: Exception) { ScaleMode.FIT }
@@ -407,7 +414,13 @@ class LiveWallpaperService : WallpaperService() {
                         }
                     }
 
+                    // Stop current media before loading new
+                    stopVideo()
+                    pauseGif()
+                    videoMode = false
+
                     if (image != null) {
+                        lastDisplayedId = image.id
                         when (image.mediaType ?: "IMAGE") {
                             "VIDEO" -> { startVideo(image.uri, currentScaleMode); return@launch }
                             "GIF" -> { mainHandler.post { playGif(image.uri, currentScaleMode) }; return@launch }
