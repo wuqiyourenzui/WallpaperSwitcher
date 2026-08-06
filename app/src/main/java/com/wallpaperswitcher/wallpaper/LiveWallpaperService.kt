@@ -362,11 +362,11 @@ class LiveWallpaperService : WallpaperService() {
 
             Log.d(TAG, "Video: ${srcWidth}x${srcHeight} @ ${videoFps}fps, mime=$mime")
 
-            // Cap decoder output to 480p max — hardware downsampling, zero CPU cost
+            // Cap decoder output to 360p max for large videos
+            // Small videos (<360p) pass through at native resolution
             // Canvas GPU-scales the small bitmap to fill screen
-            // This eliminates ALL CPU downsample work
             val maxDim = maxOf(srcWidth, srcHeight)
-            val targetDim = 854 // 480p max
+            val targetDim = 640 // 360p max — ~410K pixels, fast enough for 30fps on most devices
             if (maxDim > targetDim) {
                 val scale = targetDim.toFloat() / maxDim
                 format.setInteger(MediaFormat.KEY_MAX_WIDTH, (srcWidth * scale).toInt().and(0xFFFFFFFE.toInt()))
@@ -403,7 +403,9 @@ class LiveWallpaperService : WallpaperService() {
             // --- Decode loop with frame pacing ---
             val bufferInfo = MediaCodec.BufferInfo()
             var inputDone = false
-            val frameIntervalMs = (1000L / videoFps).coerceIn(16L, 100L) // target ms per frame
+            // Frame interval: adjust after detecting actual decoded resolution
+            val baseInterval = (1000L / videoFps).coerceIn(16L, 100L)
+            var frameIntervalMs = baseInterval
 
             try {
                 while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
@@ -451,7 +453,16 @@ class LiveWallpaperService : WallpaperService() {
                                 writeBitmap?.recycle()
                                 writeBitmap = Bitmap.createBitmap(decW, decH, Bitmap.Config.ARGB_8888)
                                 buffersInit = true
-                                Log.d(TAG, "Decoded output: ${decW}x${decH}")
+
+                                // Adjust frame interval based on actual decoded resolution
+                                val pixels = decW * decH
+                                frameIntervalMs = when {
+                                    pixels > 400_000 -> 42L  // ~24fps for large (e.g., 854x480)
+                                    pixels > 200_000 -> 33L  // ~30fps for medium
+                                    else -> baseInterval     // native fps for small
+                                }
+
+                                Log.d(TAG, "Decoded output: ${decW}x${decH}, interval=${frameIntervalMs}ms")
                             }
 
                             if (buffersInit && writeBitmap != null) {
@@ -500,24 +511,25 @@ class LiveWallpaperService : WallpaperService() {
             val uPlane = image.planes[1]
             val vPlane = image.planes[2]
 
-            val yBuf = yPlane.buffer
-            val uBuf = uPlane.buffer
-            val vBuf = vPlane.buffer
+            val yArr = ByteArray(yPlane.buffer.remaining()).also { yPlane.buffer.position(0); yPlane.buffer.get(it) }
+            val uArr = ByteArray(uPlane.buffer.remaining()).also { uPlane.buffer.position(0); uPlane.buffer.get(it) }
+            val vArr = ByteArray(vPlane.buffer.remaining()).also { vPlane.buffer.position(0); vPlane.buffer.get(it) }
 
             val yStride = yPlane.rowStride
             val uvStride = uPlane.rowStride
             val uvPixelStride = uPlane.pixelStride
 
+            var argbIdx = 0
             for (y in 0 until height) {
                 val uvY = y shr 1
                 val yRowOff = y * yStride
                 val uvRowOff = uvY * uvStride
 
                 for (x in 0 until width) {
-                    val yVal = yBuf.get(yRowOff + x).toInt() and 0xFF
+                    val yVal = yArr[yRowOff + x].toInt() and 0xFF
                     val uvOff = uvRowOff + (x shr 1) * uvPixelStride
-                    val uVal = uBuf.get(uvOff).toInt() and 0xFF
-                    val vVal = vBuf.get(uvOff).toInt() and 0xFF
+                    val uVal = uArr[uvOff].toInt() and 0xFF
+                    val vVal = vArr[uvOff].toInt() and 0xFF
 
                     val c = yVal - 16
                     val d = uVal - 128
@@ -531,7 +543,7 @@ class LiveWallpaperService : WallpaperService() {
                     if (g < 0) g = 0; else if (g > 255) g = 255
                     if (b < 0) b = 0; else if (b > 255) b = 255
 
-                    argb[y * width + x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+                    argb[argbIdx++] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
                 }
             }
         }
