@@ -310,13 +310,15 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video via VideoRenderer (MediaPlayer.setDisplay) ========
+        // ======== Video via VideoRenderer (MediaPlayer + MediaMetadataRetriever) ========
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             videoMode = true
-            val renderer = VideoRenderer(applicationContext, surfaceHolder)
+            val sw = cachedScreenW.takeIf { it > 0 } ?: getMetrics().widthPixels.toFloat()
+            val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().heightPixels.toFloat()
+            val renderer = VideoRenderer(applicationContext, surfaceHolder, mainHandler)
             videoRenderer = renderer
-            renderer.start(uriStr)
+            renderer.start(uriStr, scaleMode, sw, sh)
         }
 
         // ======== GIF via Canvas ========
