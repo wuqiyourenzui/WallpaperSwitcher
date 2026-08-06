@@ -56,6 +56,8 @@ class LiveWallpaperService : WallpaperService() {
         // Video renderer (MediaCodec + SurfaceTexture + EGL on HandlerThread)
         private var videoRenderer: VideoRenderer? = null
         @Volatile private var videoMode = false
+        // Pending target from broadcast, processed when current switch finishes
+        @Volatile private var pendingTargetId: Long? = null
 
         // Reusable display objects
         private val destRect = RectF()
@@ -71,7 +73,16 @@ class LiveWallpaperService : WallpaperService() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action == ACTION_SWITCH) {
                     val targetId = intent.getLongExtra(EXTRA_TARGET_ID, -1L)
-                    doSwitch("broadcast", if (targetId > 0) targetId else null)
+                    if (targetId > 0) {
+                        // If currently switching, save as pending so it's not lost
+                        if (isSwitching.get()) {
+                            pendingTargetId = targetId
+                        } else {
+                            doSwitch("broadcast", targetId)
+                        }
+                    } else {
+                        doSwitch("broadcast", null)
+                    }
                 }
             }
         }
@@ -126,7 +137,26 @@ class LiveWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
             if (visible) {
-                if (videoMode) videoRenderer?.resume() else drawCurrentImage()
+                // Always re-check DB for latest image on visibility change
+                // This catches updates that happened while invisible (e.g., after picker)
+                if (videoMode) {
+                    // Check if current video is still the latest
+                    scope.launch {
+                        val dao = db.settingsDao()
+                        val savedId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
+                        val imageDao = db.wallpaperImageDao()
+                        val currentImage = imageDao.getImageById(savedId)
+                        if (currentImage == null || currentImage.mediaType != "VIDEO") {
+                            stopVideo()
+                            videoMode = false
+                            drawCurrentImage()
+                        } else {
+                            videoRenderer?.resume()
+                        }
+                    }
+                } else {
+                    drawCurrentImage()
+                }
             } else {
                 if (videoMode) videoRenderer?.pause()
                 pauseGif()
@@ -249,6 +279,12 @@ class LiveWallpaperService : WallpaperService() {
                     Log.e(TAG, "doSwitch error", e)
                 } finally {
                     isSwitching.set(false)
+                    // Process pending target if one was queued during this switch
+                    val pending = pendingTargetId
+                    if (pending != null) {
+                        pendingTargetId = null
+                        doSwitch("pending", pending)
+                    }
                 }
             }
         }
@@ -366,8 +402,13 @@ class LiveWallpaperService : WallpaperService() {
                 return
             }
             videoMode = true
-            val sw = cachedScreenW.takeIf { it > 0 } ?: getMetrics().widthPixels.toFloat()
-            val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().heightPixels.toFloat()
+            // Use actual surface dimensions to avoid 0x0 when onSurfaceChanged hasn't fired yet
+            val surface = surfaceHolder.surfaceFrame
+            val sw = cachedScreenW.takeIf { it > 0 } ?: surface.width().toFloat().takeIf { it > 0 }
+                ?: getMetrics().widthPixels.toFloat()
+            val sh = cachedScreenH.takeIf { it > 0 } ?: surface.height().toFloat().takeIf { it > 0 }
+                ?: getMetrics().heightPixels.toFloat()
+            Log.d(TAG, "startVideo: ${sw}x${sh}")
             val renderer = VideoRenderer(applicationContext, surfaceHolder, mainHandler)
             videoRenderer = renderer
             renderer.start(uriStr, scaleMode, sw, sh)
