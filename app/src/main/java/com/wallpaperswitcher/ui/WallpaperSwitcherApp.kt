@@ -79,6 +79,11 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
             }
         }
     ) { padding ->
+        // Handle system back button for non-home screens
+        if (currentScreen !is Screen.Home) {
+            BackHandler { currentScreen = Screen.Home }
+        }
+
         Box(modifier = Modifier.padding(padding)) {
             when (val screen = currentScreen) {
                 is Screen.Home -> HomeScreen(
@@ -88,18 +93,12 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                         currentScreen = Screen.GroupDetail(groupId)
                     }
                 )
-                is Screen.GroupDetail -> {
-                    BackHandler { currentScreen = Screen.Home }
-                    GroupDetailScreen(
-                        viewModel = viewModel,
-                        groupId = screen.groupId,
-                        onBack = { currentScreen = Screen.Home }
-                    )
-                }
-                is Screen.Settings -> {
-                    BackHandler { currentScreen = Screen.Home }
-                    SettingsScreen(viewModel = viewModel)
-                }
+                is Screen.GroupDetail -> GroupDetailScreen(
+                    viewModel = viewModel,
+                    groupId = screen.groupId,
+                    onBack = { currentScreen = Screen.Home }
+                )
+                is Screen.Settings -> SettingsScreen(viewModel = viewModel)
             }
         }
     }
