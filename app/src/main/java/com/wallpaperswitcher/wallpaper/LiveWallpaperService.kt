@@ -165,7 +165,7 @@ class LiveWallpaperService : WallpaperService() {
             gifDrawable?.let {
                 try { it.stop() } catch (_: Exception) {}
                 if (Build.VERSION.SDK_INT >= 28) {
-                    try { it.close() } catch (_: Exception) {}
+                    try { (it as java.io.Closeable).close() } catch (_: Exception) {}
                 }
             }
             gifDrawable = null
