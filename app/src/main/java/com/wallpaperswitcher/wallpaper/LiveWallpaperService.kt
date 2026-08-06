@@ -324,11 +324,20 @@ class LiveWallpaperService : WallpaperService() {
             scope.launch {
                 try {
                     val dao = db.settingsDao()
-                    val imageId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
+                    val imageDao = db.wallpaperImageDao()
+                    var imageId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
                     currentScaleMode = try {
                         ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
                     } catch (_: Exception) { ScaleMode.FIT }
-                    val image = if (imageId > 0) db.wallpaperImageDao().getImageById(imageId) else null
+                    var image = if (imageId > 0) imageDao.getImageById(imageId) else null
+
+                    // Fallback: if saved image was deleted, pick any available image
+                    if (image == null) {
+                        image = imageDao.getFirstImage()
+                        if (image != null) {
+                            dao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
+                        }
+                    }
 
                     if (image != null) {
                         when (image.mediaType ?: "IMAGE") {
@@ -352,6 +361,10 @@ class LiveWallpaperService : WallpaperService() {
         // ======== Video via VideoRenderer (MediaCodec + EGL + SurfaceTexture) ========
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
+            if (!surfaceReady || !surfaceHolder.surface.isValid) {
+                Log.w(TAG, "startVideo: surface not ready")
+                return
+            }
             videoMode = true
             val sw = cachedScreenW.takeIf { it > 0 } ?: getMetrics().widthPixels.toFloat()
             val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().heightPixels.toFloat()

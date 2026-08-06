@@ -136,6 +136,13 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             groupDao.delete(group)
             if (_selectedGroupId.value == group.id) _selectedGroupId.value = null
+            // Clear last image ID if it belonged to the deleted group
+            // (CASCADE deletes images, so the ID would point to nothing)
+            val lastId = settingsDao.getLong(SettingsKeys.LAST_IMAGE_ID)
+            val image = imageDao.getImageById(lastId)
+            if (image == null) {
+                settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, 0L)
+            }
         }
     }
 
@@ -353,19 +360,20 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 // 1. Save target ID (live wallpaper reads this from DB)
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
 
-                // 2. Send broadcast to running live wallpaper
+                // 2. Send broadcast to running live wallpaper engine
                 val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH).apply {
                     setPackage(getApplication<Application>().packageName)
                     putExtra(com.wallpaperswitcher.wallpaper.LiveWallpaperService.EXTRA_TARGET_ID, image.id)
                 }
                 getApplication<Application>().sendBroadcast(switchIntent)
 
-                // 3. Only launch picker if live wallpaper engine is NOT running
-                //    The picker sets the live wallpaper as system wallpaper (first time only)
-                //    Launching it when the engine IS running destroys the engine and breaks video
-                if (!com.wallpaperswitcher.wallpaper.LiveWallpaperService.engineRunning) {
-                    launchLiveWallpaperPicker()
-                }
+                // 3. Always launch picker to ensure system wallpaper is set.
+                //    If engine is already running, the picker will briefly destroy/recreate it,
+                //    but the new engine will read the correct LAST_IMAGE_ID from DB.
+                //    Without this, after group delete+recreate, the engine may be in a
+                //    broken state (surface destroyed, stale image reference) and the
+                //    broadcast alone won't recover it.
+                launchLiveWallpaperPicker()
 
                 _toastMessage.emit("壁纸已设置！")
             } catch (e: Exception) {
