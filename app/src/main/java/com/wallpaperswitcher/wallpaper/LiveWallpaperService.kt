@@ -282,7 +282,6 @@ class LiveWallpaperService : WallpaperService() {
                     }
 
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
-                    lastDisplayedId = nextImage.id
                     val mediaType = nextImage.mediaType ?: "IMAGE"
                     Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
 
@@ -291,12 +290,22 @@ class LiveWallpaperService : WallpaperService() {
                     pauseGif()
                     delay(SWITCH_SETTLE_DELAY_MS)
 
+                    // Only set lastDisplayedId AFTER media starts loading
                     when (mediaType) {
-                        "VIDEO" -> startVideo(nextImage.uri, currentScaleMode)
-                        "GIF" -> mainHandler.post { playGif(nextImage.uri, currentScaleMode) }
+                        "VIDEO" -> {
+                            startVideo(nextImage.uri, currentScaleMode)
+                            if (videoMode) lastDisplayedId = nextImage.id
+                        }
+                        "GIF" -> {
+                            mainHandler.post { playGif(nextImage.uri, currentScaleMode) }
+                            lastDisplayedId = nextImage.id
+                        }
                         else -> {
                             val bitmap = loadBitmap(nextImage.uri)
-                            if (bitmap != null) mainHandler.post { showBitmap(bitmap, currentScaleMode) }
+                            if (bitmap != null) {
+                                mainHandler.post { showBitmap(bitmap, currentScaleMode) }
+                                lastDisplayedId = nextImage.id
+                            }
                         }
                     }
                 } catch (ce: CancellationException) {
@@ -389,10 +398,10 @@ class LiveWallpaperService : WallpaperService() {
                     val imageDao = db.wallpaperImageDao()
                     var imageId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
 
-                    // Skip if already displaying this image (and media is actually active)
-                    if (imageId == lastDisplayedId && lastDisplayedId != 0L && (videoMode || (currentBitmap != null && !currentBitmap!!.isRecycled))) {
-                        if (videoMode) videoRenderer?.resume()
-                        return@launch
+                    // Skip if already displaying this image AND media is actually active
+                    if (imageId == lastDisplayedId && lastDisplayedId != 0L) {
+                        if (videoMode && videoRenderer?.isPlaying == true) return@launch
+                        if (!videoMode && currentBitmap != null && !currentBitmap!!.isRecycled) return@launch
                     }
 
                     currentScaleMode = try {
@@ -448,7 +457,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             if (!surfaceReady || !surfaceHolder.surface.isValid) {
                 Log.w(TAG, "startVideo: surface not ready")
-                return
+                return  // Don't set videoMode=true if surface isn't ready
             }
             videoMode = true
             // Use actual surface dimensions to avoid 0x0 when onSurfaceChanged hasn't fired yet
