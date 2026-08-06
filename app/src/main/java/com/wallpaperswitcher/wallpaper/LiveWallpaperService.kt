@@ -310,7 +310,7 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video via VideoRenderer (MediaPlayer + MediaMetadataRetriever) ========
+        // ======== Video via VideoRenderer (MediaCodec + EGL + SurfaceTexture) ========
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             videoMode = true
