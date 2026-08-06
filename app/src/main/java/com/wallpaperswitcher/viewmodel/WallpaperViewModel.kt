@@ -121,10 +121,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { settingsDao.setBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, enabled) }
     }
 
-    fun createGroup(name: String, type: String = "IMAGE") {
-        viewModelScope.launch {
-            groupDao.insert(WallpaperGroup(name = name, type = type))
-        }
+    /**
+     * Create a new group and return its ID.
+     */
+    suspend fun createGroup(name: String, type: String = "IMAGE"): Long {
+        return groupDao.insert(WallpaperGroup(name = name, type = type))
     }
 
     fun updateGroup(group: WallpaperGroup) {

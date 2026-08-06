@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.data.WallpaperGroup
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
+import kotlinx.coroutines.launch
 
 @Composable
 fun HomeScreen(
@@ -30,6 +31,7 @@ fun HomeScreen(
     val groups by viewModel.groups.collectAsStateWithLifecycle()
     val serviceEnabled by viewModel.serviceEnabled.collectAsStateWithLifecycle()
     var showCreateDialog by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
     Column(
         modifier = Modifier
@@ -87,8 +89,11 @@ fun HomeScreen(
         CreateGroupDialog(
             onDismiss = { showCreateDialog = false },
             onCreate = { name, type ->
-                viewModel.createGroup(name, type)
                 showCreateDialog = false
+                coroutineScope.launch {
+                    val groupId = viewModel.createGroup(name, type)
+                    onGroupClick(groupId)
+                }
             }
         )
     }

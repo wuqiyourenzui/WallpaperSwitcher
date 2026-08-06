@@ -104,7 +104,14 @@ class VideoRenderer(
     fun release() {
         stopped = true
         isPlaying = false
-        decodeThread?.interrupt()
+        decodeThread?.let { thread ->
+            thread.interrupt()
+            try { thread.join(2000) } catch (_: InterruptedException) {}
+            if (thread.isAlive) {
+                Log.w(TAG, "Decode thread did not stop in time, forcing cleanup")
+                cleanup()
+            }
+        }
         decodeThread = null
     }
 
@@ -146,7 +153,7 @@ class VideoRenderer(
                 }
 
                 // Get output
-                val outIdx = dec.dequeueOutputBuffer(bufferInfo, 1000)
+                val outIdx = dec.dequeueOutputBuffer(bufferInfo, 100)
                 if (outIdx >= 0) {
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                         dec.releaseOutputBuffer(outIdx, false)
