@@ -267,9 +267,16 @@ class LiveWallpaperService : WallpaperService() {
                         val key = if (groupType == "VIDEO") SettingsKeys.VIDEO_SEQ_INDEX else SettingsKeys.SEQUENTIAL_INDEX
                         val idx = dao.getLong(key).toInt()
                         val next = idx % count
-                        dao.setLong(key, (next + 1).toLong())
-                        imageDao.getSequentialFromEnabledGroupsByType(groupType, next)
-                            ?: imageDao.getRandomFromEnabledGroupsByType(groupType)
+                        val img = imageDao.getSequentialFromEnabledGroupsByType(groupType, next)
+                        if (img != null) {
+                            dao.setLong(key, (next + 1).toLong())
+                            img
+                        } else {
+                            // Offset out of range (e.g. images deleted) — reset index
+                            dao.setLong(key, 0L)
+                            imageDao.getSequentialFromEnabledGroupsByType(groupType, 0)
+                                ?: imageDao.getRandomFromEnabledGroupsByType(groupType)
+                        }
                     }
                 }
                 SwitchMode.SHUFFLE -> {

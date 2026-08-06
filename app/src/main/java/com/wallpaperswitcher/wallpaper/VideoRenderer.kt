@@ -150,6 +150,9 @@ class VideoRenderer(
                 if (outIdx >= 0) {
                     if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                         dec.releaseOutputBuffer(outIdx, false)
+                        // Flush decoder to clear internal EOS state and stale buffers,
+                        // then seek extractor back to start for seamless loop
+                        dec.flush()
                         ext.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                         inputDone = false
                         continue
