@@ -215,13 +215,20 @@ class LiveWallpaperService : WallpaperService() {
 
         /**
          * Determine which media type to switch to based on enabled groups.
-         * Priority: IMAGE groups first. If no IMAGE groups, use VIDEO groups.
-         * If both exist, only show IMAGE (video takes over screen, blocks image switching).
+         * If only one type has enabled groups, use that type.
+         * If both exist, alternate based on current state.
          */
         private suspend fun pickMediaType(): String {
             val imageGroups = db.wallpaperGroupDao().getEnabledGroupsByType("IMAGE")
-            if (imageGroups.isNotEmpty()) return "IMAGE"
-            return "VIDEO"
+            val videoGroups = db.wallpaperGroupDao().getEnabledGroupsByType("VIDEO")
+            return when {
+                imageGroups.isEmpty() && videoGroups.isEmpty() -> "IMAGE"
+                imageGroups.isEmpty() -> "VIDEO"
+                videoGroups.isEmpty() -> "IMAGE"
+                // Both exist: check what's currently displayed
+                videoMode -> "IMAGE"  // Currently showing video → switch to image
+                else -> "VIDEO"       // Currently showing image → switch to video
+            }
         }
 
         private fun doSwitch(source: String, targetId: Long? = null) {
@@ -243,8 +250,19 @@ class LiveWallpaperService : WallpaperService() {
                         ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
                     } catch (_: Exception) { ScaleMode.FIT }
 
-                    val nextImage = if (targetId != null && targetId > 0) {
-                        imageDao.getImageById(targetId)
+                    var nextImage = if (targetId != null && targetId > 0) {
+                        val img = imageDao.getImageById(targetId)
+                        // Verify the image's group is enabled; if not, fall back
+                        if (img != null) {
+                            val group = db.wallpaperGroupDao().getGroupById(img.groupId)
+                            if (group == null || !group.isEnabled) {
+                                pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao, pickMediaType())
+                            } else {
+                                img
+                            }
+                        } else {
+                            pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao, pickMediaType())
+                        }
                     } else {
                         val mediaType = pickMediaType()
                         val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
@@ -254,7 +272,11 @@ class LiveWallpaperService : WallpaperService() {
                         pickNextImage(switchMode, imageDao, lastId, dao, mediaType)
                     }
 
-                    if (nextImage == null) return@launch
+                    if (nextImage == null) {
+                        // No enabled groups with images — try fallback
+                        nextImage = imageDao.getFirstFromEnabledGroups()
+                        if (nextImage == null) return@launch
+                    }
 
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
                     val mediaType = nextImage.mediaType ?: "IMAGE"
@@ -367,11 +389,21 @@ class LiveWallpaperService : WallpaperService() {
                     } catch (_: Exception) { ScaleMode.FIT }
                     var image = if (imageId > 0) imageDao.getImageById(imageId) else null
 
-                    // Fallback: if saved image was deleted, pick any available image
+                    // Fallback: if saved image was deleted or its group is disabled,
+                    // pick any available image from enabled groups
                     if (image == null) {
-                        image = imageDao.getFirstImage()
+                        image = imageDao.getFirstFromEnabledGroups()
                         if (image != null) {
                             dao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
+                        }
+                    } else {
+                        // Verify the image's group is still enabled
+                        val group = db.wallpaperGroupDao().getGroupById(image.groupId)
+                        if (group == null || !group.isEnabled) {
+                            image = imageDao.getFirstFromEnabledGroups()
+                            if (image != null) {
+                                dao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
+                            }
                         }
                     }
 

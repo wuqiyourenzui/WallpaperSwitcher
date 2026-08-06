@@ -61,6 +61,13 @@ interface WallpaperImageDao {
     @Query("SELECT * FROM wallpaper_images LIMIT 1")
     suspend fun getFirstImage(): WallpaperImage?
 
+    @Query("""
+        SELECT * FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        ORDER BY id ASC LIMIT 1
+    """)
+    suspend fun getFirstFromEnabledGroups(): WallpaperImage?
+
     // --- Group-specific queries ---
 
     @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY RANDOM() LIMIT 1")
