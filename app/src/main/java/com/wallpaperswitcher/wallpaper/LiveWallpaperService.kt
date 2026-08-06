@@ -22,6 +22,7 @@ import android.service.wallpaper.WallpaperService
 import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
+import android.view.Surface
 import android.view.SurfaceHolder
 import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.*
@@ -498,6 +499,7 @@ class LiveWallpaperService : WallpaperService() {
 
                         val bitmap = if (Build.VERSION.SDK_INT >= 31) {
                             // API 31+: direct getBitmap from SurfaceTexture
+                            @Suppress("NewApi")
                             try { surfaceTexture.getBitmap() } catch (_: Exception) { null }
                         } else {
                             // API 26-30: read pixels from GL framebuffer
