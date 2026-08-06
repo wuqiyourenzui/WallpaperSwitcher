@@ -7,25 +7,17 @@ import android.content.IntentFilter
 import android.graphics.*
 import android.media.*
 import android.net.Uri
-import android.opengl.EGL14
-import android.opengl.EGLConfig
-import android.opengl.EGLContext
-import android.opengl.EGLDisplay
-import android.opengl.EGLSurface
-import android.opengl.GLES11Ext
-import android.opengl.GLES20
 import android.os.Build
 import android.os.Handler
-import android.os.HandlerThread
 import android.os.Looper
 import android.service.wallpaper.WallpaperService
 import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
-import android.view.Surface
 import android.view.SurfaceHolder
 import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.*
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
@@ -58,17 +50,15 @@ class LiveWallpaperService : WallpaperService() {
         private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
         @Volatile private var shuffleAllCount = 0
 
-        // Video state — MediaCodec + SurfaceTexture + EGL
+        // Video state — MediaCodec direct buffer decoding
         private var videoJob: Job? = null
         @Volatile private var videoPlaying = false
         @Volatile private var videoStopFlag = false
         @Volatile private var videoMode = false
         @Volatile private var videoDurationMs = 0L
         private var videoFps = 30
-        @Volatile private var videoWidth = 0
-        @Volatile private var videoHeight = 0
 
-        // Frame buffer: decoder thread produces, main thread consumes
+        // Frame buffer
         private val frameBuffer = LinkedBlockingQueue<Bitmap>(8)
         private var frameRenderJob: Job? = null
 
@@ -176,7 +166,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun resumeVideo() { videoPlaying = true }
         private fun pauseGif() { gifFrameRunnable?.let { mainHandler.removeCallbacks(it) } }
 
-        // ======== Switch logic (identical to previous version) ========
+        // ======== Switch logic ========
 
         private fun doSwitch(source: String, targetId: Long? = null) {
             if (!isSwitching.compareAndSet(false, true)) {
@@ -318,24 +308,16 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video: MediaCodec + SurfaceTexture + EGL ========
+        // ======== Video: MediaCodec direct buffer decoding ========
         //
-        // Standard approach used by Google Grafika and video wallpaper projects:
+        // Approach: MediaCodec → getOutputImage() → YUV_420_888 → YuvImage JPEG → Bitmap
+        // No EGL, no GL, no SurfaceTexture, no Surface needed.
+        // Works on API 26+ (minSdk of this project).
         //
-        // 1. Create EGL context (offscreen pbuffer) on a HandlerThread
-        // 2. Create GL texture → SurfaceTexture → Surface
-        // 3. MediaCodec.configure(format, surface) — decoder renders to this Surface
-        // 4. Decode loop (same HandlerThread as EGL):
-        //    - Feed input from MediaExtractor
-        //    - dequeueOutputBuffer → releaseOutputBuffer(index, true)
-        //    - SurfaceTexture.updateTexImage() — updates GL texture
-        //    - SurfaceTexture.getBitmap() (API 31+) or GL readPixels (older)
-        //    - Put Bitmap into frameBuffer
-        // 5. Renderer (main thread): poll from frameBuffer → Canvas.drawBitmap
-        //
-        // Key: updateTexImage() MUST be called on the same thread that owns
-        // the EGL context. So we use a dedicated HandlerThread for both EGL
-        // and the decode loop.
+        // Pipeline:
+        //   MediaExtractor → MediaCodec input buffers (compressed data)
+        //   MediaCodec output → Image (YUV_420_888) → YuvImage.compressToJPEG → BitmapFactory
+        //   Bitmap → frameBuffer queue → main thread Canvas rendering
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             videoMode = true
@@ -376,87 +358,34 @@ class LiveWallpaperService : WallpaperService() {
             val mime = format.getString(MediaFormat.KEY_MIME)!!
             val width = format.getInteger(MediaFormat.KEY_WIDTH)
             val height = format.getInteger(MediaFormat.KEY_HEIGHT)
-            videoWidth = width
-            videoHeight = height
             videoDurationMs = format.getLong(MediaFormat.KEY_DURATION) / 1000
             videoFps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30).coerceIn(15, 60)
 
             Log.d(TAG, "Video: ${width}x${height} @ ${videoFps}fps, mime=$mime")
 
-            // --- Setup EGL context (required for SurfaceTexture) ---
-            val eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-            if (eglDisplay == EGL14.EGL_NO_DISPLAY) {
-                Log.e(TAG, "eglGetDisplay failed")
-                extractor.release()
-                return@withContext
-            }
-
-            val eglVersion = IntArray(2)
-            EGL14.eglInitialize(eglDisplay, eglVersion, 0, eglVersion, 1)
-
-            val configAttribs = intArrayOf(
-                EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
-                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
-                EGL14.EGL_NONE
-            )
-            val configs = arrayOfNulls<EGLConfig>(1)
-            val numConfigs = IntArray(1)
-            EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, numConfigs, 0)
-            val eglConfig = configs[0]!!
-
-            val contextAttribs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
-            val eglContext = EGL14.eglCreateContext(eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT, contextAttribs, 0)
-
-            val pbufferAttribs = intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE)
-            val eglSurface = EGL14.eglCreatePbufferSurface(eglDisplay, eglConfig, pbufferAttribs, 0)
-
-            if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
-                Log.e(TAG, "eglMakeCurrent failed")
-                EGL14.eglDestroySurface(eglDisplay, eglSurface)
-                EGL14.eglDestroyContext(eglDisplay, eglContext)
-                EGL14.eglTerminate(eglDisplay)
-                extractor.release()
-                return@withContext
-            }
-
-            // --- Create GL texture + SurfaceTexture + Surface ---
-            val textures = IntArray(1)
-            GLES20.glGenTextures(1, textures, 0)
-            val texId = textures[0]
-            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
-            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-
-            val surfaceTexture = SurfaceTexture(texId)
-            surfaceTexture.setDefaultBufferSize(width, height)
-            val codecSurface = Surface(surfaceTexture)
-
-            // --- Setup MediaCodec ---
+            // --- Setup MediaCodec (no Surface needed — using direct buffer mode) ---
             val decoder = try {
                 MediaCodec.createDecoderByType(mime).also { Log.d(TAG, "Decoder: ${it.name}") }
             } catch (e: Exception) {
                 Log.e(TAG, "No decoder for $mime: ${e.message}")
-                codecSurface.release(); surfaceTexture.release()
-                GLES20.glDeleteTextures(1, intArrayOf(texId), 0)
-                EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-                EGL14.eglDestroySurface(eglDisplay, eglSurface)
-                EGL14.eglDestroyContext(eglDisplay, eglContext)
-                EGL14.eglTerminate(eglDisplay)
                 extractor.release()
                 return@withContext
             }
 
-            decoder.configure(format, codecSurface, null, 0)
+            // Configure WITHOUT surface → decoder outputs to Image (YUV buffers)
+            decoder.configure(format, null, null, 0)
             decoder.start()
 
             // Start renderer on main thread
             startFrameRenderer(scaleMode)
 
-            // --- Decode loop (runs on THIS thread — same thread as EGL context) ---
+            // Pre-allocate reusable JPEG output stream
+            val jpegOut = ByteArrayOutputStream(256 * 1024)
+
+            // --- Decode loop ---
             val bufferInfo = MediaCodec.BufferInfo()
             var inputDone = false
-            val frameIntervalUs = (1_000_000L / videoFps).coerceAtLeast(16_000L)
+            val frameIntervalMs = (1000L / videoFps).coerceAtLeast(16L)
 
             try {
                 while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
@@ -465,7 +394,7 @@ class LiveWallpaperService : WallpaperService() {
                         continue
                     }
 
-                    // Feed compressed data to decoder
+                    // Feed compressed data to decoder input
                     if (!inputDone) {
                         val inputIndex = decoder.dequeueInputBuffer(10_000)
                         if (inputIndex >= 0) {
@@ -491,28 +420,24 @@ class LiveWallpaperService : WallpaperService() {
                             continue
                         }
 
-                        // Release buffer with render=true → frame goes to SurfaceTexture
-                        decoder.releaseOutputBuffer(outputIndex, true)
+                        // Get decoded frame as YUV Image (API 26+)
+                        val image = decoder.getOutputImage(outputIndex)
+                        if (image != null) {
+                            val bitmap = yuvImageToBitmap(image, width, height, jpegOut)
+                            image.close()
 
-                        // Update texture and get bitmap (MUST be on same thread as EGL)
-                        surfaceTexture.updateTexImage()
-
-                        val bitmap = if (Build.VERSION.SDK_INT >= 31) {
-                            // API 31+: direct getBitmap from SurfaceTexture
-                            try { getSurfaceTextureBitmap(surfaceTexture) } catch (_: Exception) { null }
-                        } else {
-                            // API 26-30: read pixels from GL framebuffer
-                            readGlPixels(width, height)
-                        }
-
-                        if (bitmap != null) {
-                            while (frameBuffer.remainingCapacity() <= 0) {
-                                try { frameBuffer.poll()?.recycle() } catch (_: Exception) {}
+                            if (bitmap != null) {
+                                while (frameBuffer.remainingCapacity() <= 0) {
+                                    try { frameBuffer.poll()?.recycle() } catch (_: Exception) {}
+                                }
+                                frameBuffer.offer(bitmap)
                             }
-                            frameBuffer.offer(bitmap)
                         }
 
-                        delay(frameIntervalUs / 1000)
+                        decoder.releaseOutputBuffer(outputIndex, false)
+
+                        // Frame pacing
+                        delay(frameIntervalMs)
                     } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
                         delay(1)
                     }
@@ -520,48 +445,74 @@ class LiveWallpaperService : WallpaperService() {
             } finally {
                 try { decoder.stop() } catch (_: Exception) {}
                 try { decoder.release() } catch (_: Exception) {}
-                try { codecSurface.release() } catch (_: Exception) {}
-                try { surfaceTexture.release() } catch (_: Exception) {}
-                try { GLES20.glDeleteTextures(1, intArrayOf(texId), 0) } catch (_: Exception) {}
-                try {
-                    EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
-                    EGL14.eglDestroySurface(eglDisplay, eglSurface)
-                    EGL14.eglDestroyContext(eglDisplay, eglContext)
-                    EGL14.eglTerminate(eglDisplay)
-                } catch (_: Exception) {}
                 try { extractor.release() } catch (_: Exception) {}
             }
         }
 
-        private fun getSurfaceTextureBitmap(st: SurfaceTexture): Bitmap? {
+        /**
+         * Convert YUV_420_888 Image to Bitmap via YuvImage JPEG compression.
+         * YuvImage handles the YUV→RGB conversion natively and efficiently.
+         * Uses reusable ByteArrayOutputStream to reduce GC pressure.
+         */
+        private fun yuvImageToBitmap(image: Image, width: Int, height: Int, jpegOut: ByteArrayOutputStream): Bitmap? {
             return try {
-                val method = SurfaceTexture::class.java.getMethod("getBitmap")
-                method.invoke(st) as? Bitmap
-            } catch (_: Exception) { null }
+                val yuvImage = YuvImage(
+                    imageToNv21(image, width, height),
+                    ImageFormat.NV21,
+                    width,
+                    height,
+                    null
+                )
+                jpegOut.reset()
+                yuvImage.compressToJpeg(android.graphics.Rect(0, 0, width, height), 85, jpegOut)
+                val bytes = jpegOut.toByteArray()
+                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            } catch (e: Exception) {
+                Log.e(TAG, "yuvImageToBitmap error: ${e.message}")
+                null
+            }
         }
 
         /**
-         * Read pixels from GL framebuffer (for API < 31).
-         * Called on the EGL thread after updateTexImage().
+         * Convert YUV_420_888 Image planes to NV21 byte array.
+         * NV21 is the format required by YuvImage.
          */
-        private fun readGlPixels(width: Int, height: Int): Bitmap? {
-            return try {
-                val buf = java.nio.IntBuffer.allocate(width * height)
-                GLES20.glReadPixels(0, 0, width, height, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
-                val pixels = IntArray(width * height)
-                buf.get(pixels)
-                // GL readPixels returns bottom-to-top, flip vertically
-                for (y in 0 until height / 2) {
-                    val topRow = y * width
-                    val botRow = (height - 1 - y) * width
-                    for (x in 0 until width) {
-                        val tmp = pixels[topRow + x]
-                        pixels[topRow + x] = pixels[botRow + x]
-                        pixels[botRow + x] = tmp
-                    }
+        private fun imageToNv21(image: Image, width: Int, height: Int): ByteArray {
+            val yPlane = image.planes[0]
+            val uPlane = image.planes[1]
+            val vPlane = image.planes[2]
+
+            val yBuf = yPlane.buffer
+            val uBuf = uPlane.buffer
+            val vBuf = vPlane.buffer
+
+            val yStride = yPlane.rowStride
+            val uvStride = uPlane.rowStride
+            val uvPixelStride = uPlane.pixelStride
+
+            val nv21 = ByteArray(width * height * 3 / 2)
+            var pos = 0
+
+            // Y plane
+            for (row in 0 until height) {
+                yBuf.position(row * yStride)
+                yBuf.get(nv21, pos, width)
+                pos += width
+            }
+
+            // UV plane (NV21: V then U interleaved)
+            val uvHeight = height / 2
+            val uvWidth = width / 2
+            for (row in 0 until uvHeight) {
+                val uvRowOff = row * uvStride
+                for (col in 0 until uvWidth) {
+                    val uvOff = uvRowOff + col * uvPixelStride
+                    nv21[pos++] = vBuf.get(uvOff)  // V
+                    nv21[pos++] = uBuf.get(uvOff)  // U
                 }
-                Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
-            } catch (_: Exception) { null }
+            }
+
+            return nv21
         }
 
         private fun MediaFormat.getIntegerOrDefault(key: String, default: Int): Int {
@@ -570,7 +521,6 @@ class LiveWallpaperService : WallpaperService() {
 
         /**
          * Frame render loop on main thread.
-         * Consumes from frameBuffer, draws to Canvas at video fps rate.
          */
         private fun startFrameRenderer(scaleMode: ScaleMode) {
             val runnable = object : Runnable {
