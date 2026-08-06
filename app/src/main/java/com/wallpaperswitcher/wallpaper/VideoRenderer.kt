@@ -282,13 +282,22 @@ class VideoRenderer(
         val mime = format.getString(MediaFormat.KEY_MIME)!!
         videoWidth = format.getInteger(MediaFormat.KEY_WIDTH)
         videoHeight = format.getInteger(MediaFormat.KEY_HEIGHT)
+
+        // Cap to 720p for faster GL readback (wallpaper doesn't need full resolution)
+        val maxDim = maxOf(videoWidth, videoHeight)
+        if (maxDim > 1280) {
+            val scale = 1280f / maxDim
+            videoWidth = (videoWidth * scale).toInt().and(0xFFFFFFFE.toInt())
+            videoHeight = (videoHeight * scale).toInt().and(0xFFFFFFFE.toInt())
+        }
+
         durationMs = format.getLong(MediaFormat.KEY_DURATION) / 1000
         fps = format.getIntegerOrDefault(MediaFormat.KEY_FRAME_RATE, 30).coerceIn(15, 60)
 
         Log.d(TAG, "Video: ${videoWidth}x${videoHeight} @ ${fps}fps, mime=$mime")
 
         val st = surfaceTexture ?: return false
-        st.setDefaultBufferSize(videoWidth, videoHeight)
+        st.setDefaultBufferSize(videoWidth, videoHeight) // Use capped resolution
         codecSurface = android.view.Surface(st)
 
         val dec = MediaCodec.createDecoderByType(mime)
@@ -300,9 +309,14 @@ class VideoRenderer(
 
     // ======== GL Rendering: SurfaceTexture → FBO → Bitmap ========
 
+    // Pre-allocated readback buffer (reused every frame)
+    private var readbackBuffer: ByteBuffer? = null
+    private var readbackW = 0
+    private var readbackH = 0
+
     private fun drawTextureToBitmap(st: SurfaceTexture, width: Int, height: Int): Bitmap? {
         return try {
-            // Setup FBO texture for this frame size
+            // Bind FBO
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, fboTexId)
             GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, width, height, 0,
                 GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
@@ -311,16 +325,13 @@ class VideoRenderer(
                 GLES20.GL_TEXTURE_2D, fboTexId, 0)
 
             GLES20.glViewport(0, 0, width, height)
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
 
             // Draw SurfaceTexture to FBO using shader
             GLES20.glUseProgram(program)
 
-            // Texture matrix from SurfaceTexture (handles video orientation)
             val texMatrix = FloatArray(16)
             st.getTransformMatrix(texMatrix)
-            val matrixLoc = GLES20.glGetUniformLocation(program, "uTexMatrix")
-            GLES20.glUniformMatrix4fv(matrixLoc, 1, false, texMatrix, 0)
+            GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(program, "uTexMatrix"), 1, false, texMatrix, 0)
 
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
@@ -337,24 +348,23 @@ class VideoRenderer(
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
 
-            // Read pixels from FBO
-            val buf = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
+            // Reuse readback buffer if size matches
+            if (readbackW != width || readbackH != height || readbackBuffer == null) {
+                readbackBuffer = ByteBuffer.allocateDirect(width * height * 4).order(ByteOrder.nativeOrder())
+                readbackW = width
+                readbackH = height
+            }
+            val buf = readbackBuffer!!
+            buf.position(0)
             GLES20.glReadPixels(0, 0, width, height, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, buf)
             buf.position(0)
 
             val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
             bitmap.copyPixelsFromBuffer(buf)
 
-            // Flip vertically (GL origin is bottom-left)
-            val matrix = android.graphics.Matrix()
-            matrix.postScale(1f, -1f, width / 2f, height / 2f)
-            val flipped = Bitmap.createBitmap(bitmap, 0, 0, width, height, matrix, true)
-            if (flipped !== bitmap) bitmap.recycle()
-
-            // Unbind
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
 
-            flipped
+            bitmap
         } catch (e: Exception) {
             Log.e(TAG, "drawTextureToBitmap error: ${e.message}")
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
