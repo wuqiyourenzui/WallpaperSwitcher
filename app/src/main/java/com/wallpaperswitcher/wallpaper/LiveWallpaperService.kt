@@ -378,14 +378,15 @@ class LiveWallpaperService : WallpaperService() {
             // Start renderer on main thread
             startFrameRenderer(scaleMode)
 
-            // Pre-allocate reusable buffer for YUV→RGB conversion
+            // Double-buffer: decoder writes to writeBitmap, renderer reads from readBitmap
+            // Swap references when frame is ready — no Bitmap allocation per frame
             val argbBuffer = IntArray(width * height)
-            val reusableBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            var writeBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            var readBitmap: Bitmap? = null
 
             // --- Decode loop ---
             val bufferInfo = MediaCodec.BufferInfo()
             var inputDone = false
-            val frameIntervalMs = (1000L / videoFps).coerceAtLeast(16L)
 
             try {
                 while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
@@ -423,33 +424,39 @@ class LiveWallpaperService : WallpaperService() {
                         // Get decoded frame as YUV Image (API 26+)
                         val image = decoder.getOutputImage(outputIndex)
                         if (image != null) {
-                            // Direct YUV→ARGB integer conversion (no JPEG round-trip)
+                            // Direct YUV→ARGB integer conversion
                             yuvToArgb(image, width, height, argbBuffer)
                             image.close()
 
-                            // Copy into reusable bitmap
-                            reusableBitmap.setPixels(argbBuffer, 0, width, 0, 0, width, height)
+                            // Write pixels to the write-side bitmap
+                            writeBitmap.setPixels(argbBuffer, 0, width, 0, 0, width, height)
 
-                            // Offer a copy to buffer (consumer will recycle it)
-                            val frame = reusableBitmap.copy(Bitmap.Config.ARGB_8888, false)
-                            if (frame != null) {
-                                while (frameBuffer.remainingCapacity() <= 0) {
-                                    try { frameBuffer.poll()?.recycle() } catch (_: Exception) {}
-                                }
-                                frameBuffer.offer(frame)
+                            // Swap: old readBitmap goes back to write-side, old writeBitmap goes to renderer
+                            val oldRead = readBitmap
+                            readBitmap = writeBitmap
+                            if (oldRead != null) {
+                                writeBitmap = oldRead // reuse for next frame
                             }
+
+                            // Push readBitmap reference to frame buffer (no copy!)
+                            // Renderer will draw it; on next swap, we reclaim it
+                            val currentRead = readBitmap
+                            // Drain old references from buffer
+                            while (frameBuffer.isNotEmpty()) { frameBuffer.poll() }
+                            frameBuffer.offer(currentRead)
                         }
 
                         decoder.releaseOutputBuffer(outputIndex, false)
 
-                        // Frame pacing
-                        delay(frameIntervalMs)
+                        // No delay — decode at full speed, buffer backpressure paces
+                        yield()
                     } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
                         delay(1)
                     }
                 }
             } finally {
-                try { reusableBitmap.recycle() } catch (_: Exception) {}
+                try { writeBitmap.recycle() } catch (_: Exception) {}
+                try { readBitmap?.recycle() } catch (_: Exception) {}
                 try { decoder.stop() } catch (_: Exception) {}
                 try { decoder.release() } catch (_: Exception) {}
                 try { extractor.release() } catch (_: Exception) {}
@@ -509,28 +516,28 @@ class LiveWallpaperService : WallpaperService() {
 
         /**
          * Frame render loop on main thread.
+         * Uses double-buffer: reads from readBitmap reference (shared with decoder).
+         * Does NOT recycle frames — they're reused by the double-buffer swap.
          */
         private fun startFrameRenderer(scaleMode: ScaleMode) {
             val runnable = object : Runnable {
                 override fun run() {
                     if (!surfaceReady || !videoPlaying || videoStopFlag) return
 
-                    var frame: Bitmap? = null
-                    var drained = 0
-                    while (drained < 2) {
-                        val f = frameBuffer.poll() ?: break
-                        if (frame != null) frame.recycle()
-                        frame = f
-                        drained++
-                    }
+                    val startTime = System.nanoTime()
 
+                    // Get latest frame from buffer (non-blocking)
+                    val frame = frameBuffer.poll()
                     if (frame != null) {
                         try { showVideoFrame(frame, scaleMode) } catch (_: Exception) {}
-                        frame.recycle()
+                        // Do NOT recycle — frame is reused by double-buffer
                     }
 
+                    // Schedule next frame, subtracting render time for accurate pacing
+                    val renderMs = (System.nanoTime() - startTime) / 1_000_000
                     val intervalMs = (1000L / videoFps).coerceAtLeast(16L)
-                    mainHandler.postDelayed(this, intervalMs)
+                    val delay = (intervalMs - renderMs).coerceAtLeast(1L)
+                    mainHandler.postDelayed(this, delay)
                 }
             }
             frameRenderJob = scope.launch { mainHandler.post(runnable) }
