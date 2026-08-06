@@ -46,6 +46,8 @@ class VideoRenderer(
     private val renderLock = Object()
     private val destRect = RectF()
 
+    private var renderRunnable: Runnable? = null
+
     fun start(uriStr: String, scaleMode: ScaleMode, screenW: Float, screenH: Float) {
         stopped = false
         val uri = Uri.parse(uriStr)
@@ -91,8 +93,20 @@ class VideoRenderer(
 
         // Start extraction thread
         extractThread = Thread({
-            extractLoop(scaleMode, screenW, screenH)
+            extractLoop()
         }, "VideoExtract").also { it.start() }
+
+        // Start render timer on main thread (independent of extraction)
+        val renderInterval = (1000L / fps).coerceAtLeast(16L)
+        val runnable = object : Runnable {
+            override fun run() {
+                if (stopped || !isPlaying) return
+                renderFromBuffer(scaleMode, screenW, screenH)
+                mainHandler.postDelayed(this, renderInterval)
+            }
+        }
+        renderRunnable = runnable
+        mainHandler.postDelayed(runnable, renderInterval)
     }
 
     fun pause() {
@@ -108,6 +122,9 @@ class VideoRenderer(
     fun release() {
         stopped = true
         isPlaying = false
+
+        renderRunnable?.let { mainHandler.removeCallbacks(it) }
+        renderRunnable = null
 
         try { player?.setSurface(null) } catch (_: Exception) {}
         try { player?.stop() } catch (_: Exception) {}
@@ -128,9 +145,9 @@ class VideoRenderer(
     /**
      * Extraction loop on dedicated thread.
      * Extracts frames at video fps rate, puts into buffer.
-     * Waits for renderer to consume before extracting next.
+     * Render timer on main thread consumes from buffer independently.
      */
-    private fun extractLoop(scaleMode: ScaleMode, screenW: Float, screenH: Float) {
+    private fun extractLoop() {
         val r = retriever ?: return
         val intervalMs = (1000L / fps).coerceAtLeast(16L)
         var posMs = 0L
@@ -143,27 +160,20 @@ class VideoRenderer(
 
             val frameStart = System.currentTimeMillis()
 
-            // Extract frame
+            // Extract frame — OPTION_CLOSEST_SYNC returns nearest keyframe (fast)
+            // OPTION_CLOSEST decodes from keyframe to exact frame (slow, 10-50ms)
+            // For wallpaper, smooth motion > frame accuracy
             val frame = try {
-                r.getFrameAtTime(posMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST)
+                r.getFrameAtTime(posMs * 1000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
             } catch (_: Exception) { null }
 
             if (frame != null) {
-                // Wait for buffer space
-                while (frameBuffer.remainingCapacity() <= 0 && !stopped) {
-                    try { Thread.sleep(1) } catch (_: Exception) { break }
-                }
-                if (stopped) { frame.recycle(); break }
-
                 // Drop old frames if buffer full
                 while (frameBuffer.remainingCapacity() <= 0) {
                     try { frameBuffer.poll()?.recycle() } catch (_: Exception) {}
                 }
                 frameBuffer.offer(frame)
             }
-
-            // Post render to main thread
-            mainHandler.post { renderFromBuffer(scaleMode, screenW, screenH) }
 
             // Advance position
             posMs += intervalMs
