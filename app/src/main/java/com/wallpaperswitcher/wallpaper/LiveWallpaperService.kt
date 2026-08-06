@@ -400,9 +400,10 @@ class LiveWallpaperService : WallpaperService() {
             var readBitmap: Bitmap? = null
             var buffersInit = false
 
-            // --- Decode loop ---
+            // --- Decode loop with frame pacing ---
             val bufferInfo = MediaCodec.BufferInfo()
             var inputDone = false
+            val frameIntervalMs = (1000L / videoFps).coerceIn(16L, 100L) // target ms per frame
 
             try {
                 while (currentCoroutineContext().isActive && surfaceReady && !videoStopFlag) {
@@ -410,6 +411,8 @@ class LiveWallpaperService : WallpaperService() {
                         delay(50)
                         continue
                     }
+
+                    val frameStart = System.nanoTime()
 
                     // Feed compressed data to decoder input
                     if (!inputDone) {
@@ -427,8 +430,8 @@ class LiveWallpaperService : WallpaperService() {
                         }
                     }
 
-                    // Get decoded output (5ms timeout — balances latency vs CPU)
-                    val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 5000)
+                    // Get decoded output (1ms timeout — we control pacing ourselves)
+                    val outputIndex = decoder.dequeueOutputBuffer(bufferInfo, 1000)
                     if (outputIndex >= 0) {
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             decoder.releaseOutputBuffer(outputIndex, false)
@@ -439,7 +442,7 @@ class LiveWallpaperService : WallpaperService() {
 
                         val image = decoder.getOutputImage(outputIndex)
                         if (image != null) {
-                            // Init buffers on first frame with actual decoded dimensions
+                            // Init buffers on first frame
                             if (firstFrame) {
                                 firstFrame = false
                                 decW = image.width
@@ -452,13 +455,11 @@ class LiveWallpaperService : WallpaperService() {
                             }
 
                             if (buffersInit && writeBitmap != null) {
-                                // Full-res YUV→ARGB (decoder already capped resolution)
                                 yuvToArgbFull(image, decW, decH, argbBuffer)
                                 image.close()
 
                                 writeBitmap!!.setPixels(argbBuffer, 0, decW, 0, 0, decW, decH)
 
-                                // Swap double-buffer (no copy, no alloc)
                                 val oldRead = readBitmap
                                 readBitmap = writeBitmap
                                 if (oldRead != null) writeBitmap = oldRead
@@ -471,7 +472,13 @@ class LiveWallpaperService : WallpaperService() {
                         }
 
                         decoder.releaseOutputBuffer(outputIndex, false)
+
+                        // Frame pacing: sleep for remaining time in frame budget
+                        val elapsedMs = (System.nanoTime() - frameStart) / 1_000_000
+                        val sleepMs = frameIntervalMs - elapsedMs
+                        if (sleepMs > 0) delay(sleepMs)
                     } else if (outputIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        // No output ready — small yield
                         delay(1)
                     }
                 }
