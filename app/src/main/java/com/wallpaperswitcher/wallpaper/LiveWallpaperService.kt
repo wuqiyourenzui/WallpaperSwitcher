@@ -129,6 +129,7 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
+            lastDisplayedId = 0L
             releaseAll()
         }
 
@@ -164,6 +165,7 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onDestroy() {
             engineRunning = false
+            lastDisplayedId = 0L
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
             // Flush shuffle state to DB on destroy
             flushShuffleState()
@@ -191,6 +193,8 @@ class LiveWallpaperService : WallpaperService() {
             stopVideo()
             pauseGif()
             gifBitmapBuffer?.recycle(); gifBitmapBuffer = null
+            currentBitmap?.recycle(); currentBitmap = null
+            lastDisplayedId = 0L  // Force reload on next drawCurrentImage
             gifDrawable?.let {
                 try { it.stop() } catch (_: Exception) {}
                 if (Build.VERSION.SDK_INT >= 28) {
@@ -385,8 +389,8 @@ class LiveWallpaperService : WallpaperService() {
                     val imageDao = db.wallpaperImageDao()
                     var imageId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
 
-                    // Skip if already displaying this image
-                    if (imageId == lastDisplayedId && lastDisplayedId != 0L && (videoMode || currentBitmap != null)) {
+                    // Skip if already displaying this image (and media is actually active)
+                    if (imageId == lastDisplayedId && lastDisplayedId != 0L && (videoMode || (currentBitmap != null && !currentBitmap!!.isRecycled))) {
                         if (videoMode) videoRenderer?.resume()
                         return@launch
                     }
