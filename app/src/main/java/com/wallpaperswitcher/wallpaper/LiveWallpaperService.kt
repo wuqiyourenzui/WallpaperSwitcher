@@ -145,20 +145,21 @@ class LiveWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
             if (visible) {
-                // Always check if the latest image differs from what's currently displayed
                 scope.launch {
                     val dao = db.settingsDao()
                     val savedId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
                     if (savedId != lastDisplayedId || lastDisplayedId == 0L) {
-                        // Image changed while invisible — stop current and reload
                         stopVideo()
                         pauseGif()
                         videoMode = false
+                        currentBitmap = null
                         drawCurrentImage()
                     } else if (videoMode) {
-                        renderer?.isVideoPlaying.let { /* resume handled by renderer */ }
+                        // Video auto-resumes via renderer
+                    } else if (gifDrawable != null) {
+                        // GIF auto-resumes via runnable
                     } else {
-                        drawCurrentImage()
+                        // Image already displayed, no action needed
                     }
                 }
             } else {
@@ -296,16 +297,21 @@ class LiveWallpaperService : WallpaperService() {
                     // Only set lastDisplayedId AFTER media starts loading
                     when (mediaType) {
                         "VIDEO" -> {
+                            currentBitmap = null
                             startVideo(nextImage.uri, currentScaleMode)
                             if (videoMode) lastDisplayedId = nextImage.id
                         }
                         "GIF" -> {
+                            currentBitmap = null
+                            videoMode = false
                             mainHandler.post { playGif(nextImage.uri, currentScaleMode) }
                             lastDisplayedId = nextImage.id
                         }
                         else -> {
+                            videoMode = false
                             val bitmap = loadBitmap(nextImage.uri)
                             if (bitmap != null) {
+                                currentBitmap = bitmap
                                 renderer?.showImage(bitmap, currentScaleMode)
                                 lastDisplayedId = nextImage.id
                             }
@@ -438,14 +444,29 @@ class LiveWallpaperService : WallpaperService() {
                     if (image != null) {
                         lastDisplayedId = image.id
                         when (image.mediaType ?: "IMAGE") {
-                            "VIDEO" -> { startVideo(image.uri, currentScaleMode); return@launch }
-                            "GIF" -> { mainHandler.post { playGif(image.uri, currentScaleMode) }; return@launch }
+                            "VIDEO" -> {
+                                currentBitmap = null
+                                startVideo(image.uri, currentScaleMode)
+                                return@launch
+                            }
+                            "GIF" -> {
+                                currentBitmap = null
+                                videoMode = false
+                                mainHandler.post { playGif(image.uri, currentScaleMode) }
+                                return@launch
+                            }
                             else -> {
+                                videoMode = false
                                 val bitmap = loadBitmap(image.uri)
-                                if (bitmap != null) { renderer?.showImage(bitmap, currentScaleMode); return@launch }
+                                if (bitmap != null) {
+                                    currentBitmap = bitmap
+                                    renderer?.showImage(bitmap, currentScaleMode)
+                                    return@launch
+                                }
                             }
                         }
                     }
+                    videoMode = false
                     renderer?.showImage(createDefaultBitmap(), currentScaleMode)
                 } catch (ce: CancellationException) {
                     throw ce

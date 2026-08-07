@@ -442,7 +442,9 @@ class WallpaperRenderer(
             try { thread.join(2000) } catch (_: InterruptedException) {}
         }
         videoDecodeThread = null
-        cleanupVideo()
+        // Cleanup must happen on render thread (EGL context lives there)
+        renderHandler?.post { cleanupVideo() }
+            ?: cleanupVideo() // fallback if handler not available
     }
 
     private fun cleanupVideo() {
@@ -455,6 +457,11 @@ class WallpaperRenderer(
         surfaceTexture = null
         try { extractor?.release() } catch (_: Exception) {}
         extractor = null
+        // Clear the video texture so next image render doesn't show stale video frame
+        if (videoTexId != 0 && eglReady) {
+            GLES20.glDeleteTextures(1, intArrayOf(videoTexId), 0)
+            videoTexId = 0
+        }
     }
 
     // ======== EGL Setup ========
