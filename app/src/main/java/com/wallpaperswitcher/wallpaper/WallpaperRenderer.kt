@@ -23,6 +23,11 @@ import java.nio.FloatBuffer
  *
  * Image pipeline: Bitmap → GL_TEXTURE_2D → shader → eglSwapBuffers
  * Video pipeline:  MediaCodec → SurfaceTexture → GL_TEXTURE_EXTERNAL_OES → shader → eglSwapBuffers
+ *
+ * Key threading model:
+ * - ALL GL operations (including updateTexImage) happen on the render thread
+ * - Decode thread only handles MediaCodec input/output buffer operations
+ * - renderVideoFrame() is posted from decode thread to render thread
  */
 class WallpaperRenderer(
     private val context: Context,
@@ -146,11 +151,11 @@ class WallpaperRenderer(
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
 
-            // Compute transform matrix (identity for images)
+            // Identity matrix for images
             android.opengl.Matrix.setIdentityM(imageTexMatrix, 0)
 
             // Compute quad for scale mode
-            val quad = computeQuad(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
+            val quad = computeImageQuad(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
             vertexBuffer?.put(quad)?.position(0)
 
             // Render
@@ -179,6 +184,35 @@ class WallpaperRenderer(
         } catch (e: Exception) {
             Log.e(TAG, "renderImage error: ${e.message}")
         }
+    }
+
+    /**
+     * Compute image quad vertices with correct orientation.
+     *
+     * GL coordinate system: Y-axis points UP, origin at center.
+     * Image coordinate system: Y-axis points DOWN, origin at top-left.
+     *
+     * To correct the flip: map bottom vertex → bottom texcoord (t=1),
+     * top vertex → top texcoord (t=0).
+     */
+    private fun computeImageQuad(imgW: Float, imgH: Float, scaleMode: ScaleMode): FloatArray {
+        if (imgW <= 0 || imgH <= 0 || screenW <= 0 || screenH <= 0) {
+            return floatArrayOf(-1f,-1f,0f,1f, 1f,-1f,1f,1f, -1f,1f,0f,0f, 1f,1f,1f,0f)
+        }
+        val va = imgW / imgH
+        val sa = screenW / screenH
+        val (dw, dh) = when (scaleMode) {
+            ScaleMode.FIT -> if (va > sa) Pair(1f, sa / va) else Pair(va / sa, 1f)
+            ScaleMode.FILL -> if (va > sa) Pair(va / sa, 1f) else Pair(1f, sa / va)
+            ScaleMode.STRETCH -> Pair(1f, 1f)
+        }
+        // Flip texture Y: bottom vertex gets t=1, top vertex gets t=0
+        return floatArrayOf(
+            -dw, -dh, 0f, 1f,  // bottom-left  → tex bottom-left
+             dw, -dh, 1f, 1f,  // bottom-right → tex bottom-right
+            -dw,  dh, 0f, 0f,  // top-left     → tex top-left
+             dw,  dh, 1f, 0f,  // top-right    → tex top-right
+        )
     }
 
     // ======== Video Rendering (MediaCodec + SurfaceTexture + EGL) ========
@@ -220,7 +254,7 @@ class WallpaperRenderer(
             var videoW = format.getInteger(MediaFormat.KEY_WIDTH)
             var videoH = format.getInteger(MediaFormat.KEY_HEIGHT)
 
-            // Cap to 720p
+            // Cap to720p
             val maxDim = maxOf(videoW, videoH)
             if (maxDim > 1280) {
                 val scale = 1280f / maxDim
@@ -233,7 +267,7 @@ class WallpaperRenderer(
             } catch (_: Exception) { 30 }
             val intervalNs = (1_000_000_000L / fps.coerceIn(15, 60)).coerceAtLeast(16_000_000L)
 
-            // Setup SurfaceTexture
+            // Setup SurfaceTexture (on render thread, where EGL context lives)
             if (videoTexId == 0) {
                 val texIds = IntArray(1)
                 GLES20.glGenTextures(1, texIds, 0)
@@ -256,13 +290,15 @@ class WallpaperRenderer(
 
             Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps")
 
-            // Compute quad
-            val quad = computeQuad(videoW.toFloat(), videoH.toFloat(), scaleMode)
+            // Compute quad (video uses SurfaceTexture transform matrix, no manual flip needed)
+            val quad = computeVideoQuad(videoW.toFloat(), videoH.toFloat(), scaleMode)
             vertexBuffer?.put(quad)?.position(0)
 
-            // Start decode loop on a dedicated thread
+            // Start decode loop on dedicated thread
+            // The decode thread handles MediaCodec I/O only.
+            // updateTexImage + GL rendering happen on the render thread.
             videoDecodeThread = Thread({
-                decodeLoop(ext, dec, st, intervalNs, videoW, videoH)
+                decodeLoop(ext, dec, st, intervalNs)
             }, "VideoDecode").also { it.start() }
         } catch (e: Exception) {
             Log.e(TAG, "startVideo error: ${e.message}", e)
@@ -271,13 +307,40 @@ class WallpaperRenderer(
         }
     }
 
+    /**
+     * Compute video quad vertices. SurfaceTexture transform matrix handles
+     * video orientation, so no manual Y-flip needed (unlike images).
+     */
+    private fun computeVideoQuad(vidW: Float, vidH: Float, scaleMode: ScaleMode): FloatArray {
+        if (vidW <= 0 || vidH <= 0 || screenW <= 0 || screenH <= 0) {
+            return floatArrayOf(-1f,-1f,0f,0f, 1f,-1f,1f,0f, -1f,1f,0f,1f, 1f,1f,1f,1f)
+        }
+        val va = vidW / vidH
+        val sa = screenW / screenH
+        val (dw, dh) = when (scaleMode) {
+            ScaleMode.FIT -> if (va > sa) Pair(1f, sa / va) else Pair(va / sa, 1f)
+            ScaleMode.FILL -> if (va > sa) Pair(va / sa, 1f) else Pair(1f, sa / va)
+            ScaleMode.STRETCH -> Pair(1f, 1f)
+        }
+        return floatArrayOf(
+            -dw, -dh, 0f, 0f,
+             dw, -dh, 1f, 0f,
+            -dw,  dh, 0f, 1f,
+             dw,  dh, 1f, 1f,
+        )
+    }
+
+    /**
+     * Decode loop — runs on dedicated decode thread.
+     * Only handles MediaCodec input/output buffer operations.
+     * Posts renderVideoFrame() to render thread for GL operations.
+     */
     private fun decodeLoop(
         ext: MediaExtractor, dec: MediaCodec, st: SurfaceTexture,
-        intervalNs: Long, videoW: Int, videoH: Int
+        intervalNs: Long
     ) {
         val bufferInfo = MediaCodec.BufferInfo()
         var inputDone = false
-        val texMatrix = FloatArray(16)
 
         while (!videoStopped && !Thread.interrupted()) {
             val startNs = System.nanoTime()
@@ -312,14 +375,22 @@ class WallpaperRenderer(
                     break
                 }
 
+                // Send decoded frame to SurfaceTexture's buffer queue
                 dec.releaseOutputBuffer(outIdx, true)
-                st.updateTexImage()
-                st.getTransformMatrix(texMatrix)
 
-                // Render frame via EGL (on render thread)
+                // Post render to render thread — updateTexImage + GL draw happen there
                 renderHandler?.post {
                     if (!videoStopped && eglReady) {
-                        renderVideoFrame(texMatrix)
+                        try {
+                            // updateTexImage MUST be called on the thread with EGL context
+                            st.updateTexImage()
+
+                            val texMatrix = FloatArray(16)
+                            st.getTransformMatrix(texMatrix)
+                            renderVideoFrame(texMatrix)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "renderVideoFrame error: ${e.message}")
+                        }
                     }
                 }
 
@@ -474,25 +545,6 @@ class WallpaperRenderer(
 
     // ======== Helpers ========
 
-    private fun computeQuad(imgW: Float, imgH: Float, scaleMode: ScaleMode): FloatArray {
-        if (imgW <= 0 || imgH <= 0 || screenW <= 0 || screenH <= 0) {
-            return floatArrayOf(-1f,-1f,0f,0f, 1f,-1f,1f,0f, -1f,1f,0f,1f, 1f,1f,1f,1f)
-        }
-        val va = imgW / imgH
-        val sa = screenW / screenH
-        val (dw, dh) = when (scaleMode) {
-            ScaleMode.FIT -> if (va > sa) Pair(1f, sa / va) else Pair(va / sa, 1f)
-            ScaleMode.FILL -> if (va > sa) Pair(va / sa, 1f) else Pair(1f, sa / va)
-            ScaleMode.STRETCH -> Pair(1f, 1f)
-        }
-        return floatArrayOf(
-            -dw, -dh, 0f, 0f,
-             dw, -dh, 1f, 0f,
-            -dw,  dh, 0f, 1f,
-             dw,  dh, 1f, 1f,
-        )
-    }
-
     private fun createProgram(vertexSrc: String, fragmentSrc: String): Int {
         val vs = compileShader(GLES20.GL_VERTEX_SHADER, vertexSrc)
         val fs = compileShader(GLES20.GL_FRAGMENT_SHADER, fragmentSrc)
@@ -510,5 +562,9 @@ class WallpaperRenderer(
         GLES20.glShaderSource(shader, source)
         GLES20.glCompileShader(shader)
         return shader
+    }
+
+    private fun MediaFormat.getInteger(key: String): Int {
+        return try { getInteger(key) } catch (_: Exception) { 0 }
     }
 }
