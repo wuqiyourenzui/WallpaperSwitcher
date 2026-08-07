@@ -290,6 +290,14 @@ class LiveWallpaperService : WallpaperService() {
                     pauseGif()
                     delay(SWITCH_SETTLE_DELAY_MS)
 
+                    // Reset surface from Canvas mode to allow EGL (video) rendering
+                    if (mediaType == "VIDEO") {
+                        try {
+                            val canvas = surfaceHolder.lockCanvas()
+                            if (canvas != null) surfaceHolder.unlockCanvasAndPost(canvas)
+                        } catch (_: Exception) {}
+                    }
+
                     // Only set lastDisplayedId AFTER media starts loading
                     when (mediaType) {
                         "VIDEO" -> {

@@ -370,13 +370,13 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 getApplication<Application>().sendBroadcast(switchIntent)
 
-                // 3. Always launch picker to ensure system wallpaper is set.
-                //    If engine is already running, the picker will briefly destroy/recreate it,
-                //    but the new engine will read the correct LAST_IMAGE_ID from DB.
-                //    Without this, after group delete+recreate, the engine may be in a
-                //    broken state (surface destroyed, stale image reference) and the
-                //    broadcast alone won't recover it.
-                launchLiveWallpaperPicker()
+                // 3. Only launch picker if engine is NOT running (first time setup).
+                //    When engine is already running, the broadcast is sufficient.
+                //    Launching picker every time destroys/recreates the engine,
+                //    which can corrupt surface state (Canvas→EGL transition fails).
+                if (!com.wallpaperswitcher.wallpaper.LiveWallpaperService.engineRunning) {
+                    launchLiveWallpaperPicker()
+                }
 
                 _toastMessage.emit("壁纸已设置！")
             } catch (e: Exception) {
