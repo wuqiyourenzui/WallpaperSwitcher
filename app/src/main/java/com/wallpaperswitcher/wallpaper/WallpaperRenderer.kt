@@ -13,21 +13,19 @@ import com.wallpaperswitcher.data.ScaleMode
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 /**
  * Unified EGL renderer for both images and videos on a WallpaperService surface.
  *
  * Uses a single EGL context + window surface for ALL rendering.
- * This avoids the Canvas→EGL surface state conflict that causes video
- * to fail after an image has been displayed via Canvas.
- *
  * Image pipeline: Bitmap → GL_TEXTURE_2D → shader → eglSwapBuffers
  * Video pipeline:  MediaCodec → SurfaceTexture → GL_TEXTURE_EXTERNAL_OES → shader → eglSwapBuffers
  *
- * Key threading model:
- * - ALL GL operations (including updateTexImage) happen on the render thread
- * - Decode thread only handles MediaCodec input/output buffer operations
- * - renderVideoFrame() is posted from decode thread to render thread
+ * Threading model:
+ * - Render thread (HandlerThread): ALL GL ops including updateTexImage
+ * - Decode thread: MediaCodec I/O only, posts render requests to render thread
  */
 class WallpaperRenderer(
     private val context: Context,
@@ -36,7 +34,6 @@ class WallpaperRenderer(
     companion object {
         private const val TAG = "WallpaperRenderer"
 
-        // Shared vertex shader
         private const val VERTEX_SHADER = """
             attribute vec4 aPosition;
             attribute vec2 aTexCoord;
@@ -48,7 +45,6 @@ class WallpaperRenderer(
             }
         """
 
-        // Fragment shader for images (sampler2D)
         private const val IMAGE_FRAGMENT_SHADER = """
             precision mediump float;
             uniform sampler2D uTexture;
@@ -58,7 +54,6 @@ class WallpaperRenderer(
             }
         """
 
-        // Fragment shader for videos (samplerExternalOES)
         private const val VIDEO_FRAGMENT_SHADER = """
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
@@ -74,7 +69,7 @@ class WallpaperRenderer(
     private var eglDisplay = EGL14.EGL_NO_DISPLAY
     private var eglContext = EGL14.EGL_NO_CONTEXT
     private var eglSurface = EGL14.EGL_NO_SURFACE
-    private var eglReady = false
+    @Volatile private var eglReady = false
 
     // GL programs
     private var imageProgram = 0
@@ -114,6 +109,8 @@ class WallpaperRenderer(
         renderThread = thread
         renderHandler = Handler(thread.looper)
 
+        // Synchronous: wait for EGL setup to complete before returning
+        val latch = CountDownLatch(1)
         renderHandler?.post {
             if (!setupEgl()) {
                 Log.e(TAG, "EGL setup failed")
@@ -121,16 +118,27 @@ class WallpaperRenderer(
                 setupGl()
                 Log.d(TAG, "EGL renderer initialized ${sw}x${sh}")
             }
+            latch.countDown()
         }
+        latch.await(3, TimeUnit.SECONDS)
     }
 
     fun release() {
-        stopVideo()
+        // Stop video synchronously first
+        stopVideoSync()
+
         val handler = renderHandler ?: return
+        val thread = renderThread ?: return
+
+        // Post cleanup and wait for it to complete
+        val latch = CountDownLatch(1)
         handler.post {
             cleanup()
-            renderThread?.quitSafely()
+            latch.countDown()
         }
+        latch.await(3, TimeUnit.SECONDS)
+
+        thread.quitSafely()
         renderThread = null
         renderHandler = null
     }
@@ -147,18 +155,15 @@ class WallpaperRenderer(
 
     private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         try {
-            // Upload bitmap to texture
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
 
-            // Identity matrix for images
             android.opengl.Matrix.setIdentityM(imageTexMatrix, 0)
 
-            // Compute quad for scale mode
             val quad = computeImageQuad(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
+            vertexBuffer?.clear()
             vertexBuffer?.put(quad)?.position(0)
 
-            // Render
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             GLES20.glUseProgram(imageProgram)
 
@@ -186,15 +191,6 @@ class WallpaperRenderer(
         }
     }
 
-    /**
-     * Compute image quad vertices with correct orientation.
-     *
-     * GL coordinate system: Y-axis points UP, origin at center.
-     * Image coordinate system: Y-axis points DOWN, origin at top-left.
-     *
-     * To correct the flip: map bottom vertex → bottom texcoord (t=1),
-     * top vertex → top texcoord (t=0).
-     */
     private fun computeImageQuad(imgW: Float, imgH: Float, scaleMode: ScaleMode): FloatArray {
         if (imgW <= 0 || imgH <= 0 || screenW <= 0 || screenH <= 0) {
             return floatArrayOf(-1f,-1f,0f,1f, 1f,-1f,1f,1f, -1f,1f,0f,0f, 1f,1f,1f,0f)
@@ -206,23 +202,30 @@ class WallpaperRenderer(
             ScaleMode.FILL -> if (va > sa) Pair(va / sa, 1f) else Pair(1f, sa / va)
             ScaleMode.STRETCH -> Pair(1f, 1f)
         }
-        // Flip texture Y: bottom vertex gets t=1, top vertex gets t=0
         return floatArrayOf(
-            -dw, -dh, 0f, 1f,  // bottom-left  → tex bottom-left
-             dw, -dh, 1f, 1f,  // bottom-right → tex bottom-right
-            -dw,  dh, 0f, 0f,  // top-left     → tex top-left
-             dw,  dh, 1f, 0f,  // top-right    → tex top-right
+            -dw, -dh, 0f, 1f,
+             dw, -dh, 1f, 1f,
+            -dw,  dh, 0f, 0f,
+             dw,  dh, 1f, 0f,
         )
     }
 
-    // ======== Video Rendering (MediaCodec + SurfaceTexture + EGL) ========
+    // ======== Video Rendering ========
 
+    /**
+     * Start video playback. Stops any current video first (synchronously).
+     */
     fun startVideo(uriStr: String, scaleMode: ScaleMode) {
-        stopVideo()
+        // Synchronous stop: ensures old video is FULLY cleaned up before starting new one
+        stopVideoSync()
+
         videoStopped = false
         isVideoPlaying = true
 
-        val handler = renderHandler ?: return
+        val handler = renderHandler ?: run {
+            isVideoPlaying = false
+            return
+        }
         handler.post {
             if (!eglReady) {
                 Log.e(TAG, "startVideo: EGL not ready")
@@ -235,7 +238,6 @@ class WallpaperRenderer(
 
     private fun startVideoInternal(uriStr: String, scaleMode: ScaleMode) {
         try {
-            // Setup extractor
             val ext = MediaExtractor()
             ext.setDataSource(context, Uri.parse(uriStr), null)
             extractor = ext
@@ -254,7 +256,6 @@ class WallpaperRenderer(
             var videoW = format.getInteger(MediaFormat.KEY_WIDTH)
             var videoH = format.getInteger(MediaFormat.KEY_HEIGHT)
 
-            // Cap to720p
             val maxDim = maxOf(videoW, videoH)
             if (maxDim > 1280) {
                 val scale = 1280f / maxDim
@@ -267,7 +268,7 @@ class WallpaperRenderer(
             } catch (_: Exception) { 30 }
             val intervalNs = (1_000_000_000L / fps.coerceIn(15, 60)).coerceAtLeast(16_000_000L)
 
-            // Setup SurfaceTexture (on render thread, where EGL context lives)
+            // Create new SurfaceTexture (on render thread)
             if (videoTexId == 0) {
                 val texIds = IntArray(1)
                 GLES20.glGenTextures(1, texIds, 0)
@@ -282,7 +283,6 @@ class WallpaperRenderer(
             st.setDefaultBufferSize(videoW, videoH)
             codecSurface = android.view.Surface(st)
 
-            // Setup decoder
             val dec = MediaCodec.createDecoderByType(mime)
             decoder = dec
             dec.configure(format, codecSurface, null, 0)
@@ -290,13 +290,10 @@ class WallpaperRenderer(
 
             Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps")
 
-            // Compute quad (video uses SurfaceTexture transform matrix, no manual flip needed)
             val quad = computeVideoQuad(videoW.toFloat(), videoH.toFloat(), scaleMode)
+            vertexBuffer?.clear()
             vertexBuffer?.put(quad)?.position(0)
 
-            // Start decode loop on dedicated thread
-            // The decode thread handles MediaCodec I/O only.
-            // updateTexImage + GL rendering happen on the render thread.
             videoDecodeThread = Thread({
                 decodeLoop(ext, dec, st, intervalNs)
             }, "VideoDecode").also { it.start() }
@@ -307,10 +304,6 @@ class WallpaperRenderer(
         }
     }
 
-    /**
-     * Compute video quad vertices. SurfaceTexture transform matrix handles
-     * video orientation, so no manual Y-flip needed (unlike images).
-     */
     private fun computeVideoQuad(vidW: Float, vidH: Float, scaleMode: ScaleMode): FloatArray {
         if (vidW <= 0 || vidH <= 0 || screenW <= 0 || screenH <= 0) {
             return floatArrayOf(-1f,-1f,0f,0f, 1f,-1f,1f,0f, -1f,1f,0f,1f, 1f,1f,1f,1f)
@@ -330,11 +323,6 @@ class WallpaperRenderer(
         )
     }
 
-    /**
-     * Decode loop — runs on dedicated decode thread.
-     * Only handles MediaCodec input/output buffer operations.
-     * Posts renderVideoFrame() to render thread for GL operations.
-     */
     private fun decodeLoop(
         ext: MediaExtractor, dec: MediaCodec, st: SurfaceTexture,
         intervalNs: Long
@@ -345,7 +333,6 @@ class WallpaperRenderer(
         while (!videoStopped && !Thread.interrupted()) {
             val startNs = System.nanoTime()
 
-            // Feed input
             if (!inputDone) {
                 val inIdx = dec.dequeueInputBuffer(0)
                 if (inIdx >= 0) {
@@ -361,7 +348,6 @@ class WallpaperRenderer(
                 }
             }
 
-            // Get output
             val outIdx = dec.dequeueOutputBuffer(bufferInfo, 10_000)
             if (outIdx >= 0) {
                 if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
@@ -375,16 +361,13 @@ class WallpaperRenderer(
                     break
                 }
 
-                // Send decoded frame to SurfaceTexture's buffer queue
                 dec.releaseOutputBuffer(outIdx, true)
 
-                // Post render to render thread — updateTexImage + GL draw happen there
+                // Post render to render thread (updateTexImage must be on GL thread)
                 renderHandler?.post {
                     if (!videoStopped && eglReady) {
                         try {
-                            // updateTexImage MUST be called on the thread with EGL context
                             st.updateTexImage()
-
                             val texMatrix = FloatArray(16)
                             st.getTransformMatrix(texMatrix)
                             renderVideoFrame(texMatrix)
@@ -434,17 +417,38 @@ class WallpaperRenderer(
         }
     }
 
+    /**
+     * Synchronous video stop: waits for decode thread to exit AND cleanup to complete
+     * before returning. This ensures old video resources are fully released before
+     * starting a new video.
+     */
     fun stopVideo() {
+        stopVideoSync()
+    }
+
+    private fun stopVideoSync() {
         videoStopped = true
         isVideoPlaying = false
+
+        // Wait for decode thread to exit
         videoDecodeThread?.let { thread ->
             thread.interrupt()
             try { thread.join(2000) } catch (_: InterruptedException) {}
         }
         videoDecodeThread = null
-        // Cleanup must happen on render thread (EGL context lives there)
-        renderHandler?.post { cleanupVideo() }
-            ?: cleanupVideo() // fallback if handler not available
+
+        // Cleanup on render thread, wait for completion
+        val handler = renderHandler
+        if (handler != null && eglReady) {
+            val latch = CountDownLatch(1)
+            handler.post {
+                cleanupVideo()
+                latch.countDown()
+            }
+            latch.await(2, TimeUnit.SECONDS)
+        } else {
+            cleanupVideo()
+        }
     }
 
     private fun cleanupVideo() {
@@ -457,7 +461,6 @@ class WallpaperRenderer(
         surfaceTexture = null
         try { extractor?.release() } catch (_: Exception) {}
         extractor = null
-        // Clear the video texture so next image render doesn't show stale video frame
         if (videoTexId != 0 && eglReady) {
             GLES20.glDeleteTextures(1, intArrayOf(videoTexId), 0)
             videoTexId = 0
@@ -532,12 +535,11 @@ class WallpaperRenderer(
 
     private fun cleanup() {
         eglReady = false
-        stopVideo()
+        cleanupVideo()
 
         if (imageProgram != 0) { GLES20.glDeleteProgram(imageProgram); imageProgram = 0 }
         if (videoProgram != 0) { GLES20.glDeleteProgram(videoProgram); videoProgram = 0 }
         if (imageTexId != 0) { GLES20.glDeleteTextures(1, intArrayOf(imageTexId), 0); imageTexId = 0 }
-        if (videoTexId != 0) { GLES20.glDeleteTextures(1, intArrayOf(videoTexId), 0); videoTexId = 0 }
 
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
