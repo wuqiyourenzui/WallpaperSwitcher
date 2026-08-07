@@ -127,12 +127,16 @@ class LiveWallpaperService : WallpaperService() {
         override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {
             cachedScreenW = width.toFloat()
             cachedScreenH = height.toFloat()
+            // Renderer dimensions are set at initialize time and used for quad computation.
+            // On surface recreate, a new renderer is created in onSurfaceCreated with new dims.
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
             lastDisplayedId = 0L
-            renderer?.release()
+            // release() is synchronous but bounded (≤4s total)
+            // Posts cleanup to render thread and waits for completion
+            try { renderer?.release() } catch (_: Exception) {}
             renderer = null
             pauseGif()
         }

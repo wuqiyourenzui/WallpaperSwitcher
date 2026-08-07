@@ -15,17 +15,17 @@ import java.nio.ByteOrder
 import java.nio.FloatBuffer
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Unified EGL renderer for both images and videos on a WallpaperService surface.
  *
- * Uses a single EGL context + window surface for ALL rendering.
- * Image pipeline: Bitmap → GL_TEXTURE_2D → shader → eglSwapBuffers
- * Video pipeline:  MediaCodec → SurfaceTexture → GL_TEXTURE_EXTERNAL_OES → shader → eglSwapBuffers
- *
  * Threading model:
  * - Render thread (HandlerThread): ALL GL ops including updateTexImage
  * - Decode thread: MediaCodec I/O only, posts render requests to render thread
+ *
+ * Video generation: each startVideo() assigns a monotonically increasing generation
+ * number. Stale render tasks from previous videos are silently discarded.
  */
 class WallpaperRenderer(
     private val context: Context,
@@ -88,7 +88,7 @@ class WallpaperRenderer(
     private var decoder: MediaCodec? = null
     private var videoDecodeThread: Thread? = null
     @Volatile var isVideoPlaying = false; private set
-    @Volatile private var videoStopped = false
+    private val videoGeneration = AtomicInteger(0)
     @Volatile private var videoLooping = true
 
     // Render thread (all GL ops happen here)
@@ -100,6 +100,9 @@ class WallpaperRenderer(
 
     // ======== Lifecycle ========
 
+    /**
+     * Initialize EGL. Synchronous — waits for setup to complete.
+     */
     fun initialize(sw: Float, sh: Float) {
         screenW = sw
         screenH = sh
@@ -109,41 +112,47 @@ class WallpaperRenderer(
         renderThread = thread
         renderHandler = Handler(thread.looper)
 
-        // Synchronous: wait for EGL setup to complete before returning
         val latch = CountDownLatch(1)
         renderHandler?.post {
             if (!setupEgl()) {
                 Log.e(TAG, "EGL setup failed")
             } else {
                 setupGl()
-                Log.d(TAG, "EGL renderer initialized ${sw}x${sh}")
+                Log.d(TAG, "EGL initialized ${sw}x${sh}")
             }
             latch.countDown()
         }
         latch.await(3, TimeUnit.SECONDS)
     }
 
+    /**
+     * Release all resources. Posts cleanup to render thread and waits.
+     * Safe to call from main thread — total wait ≤ 4 seconds.
+     */
     fun release() {
-        // Stop video synchronously first
+        // Stop video synchronously
         stopVideoSync()
 
-        val handler = renderHandler ?: return
+        val handler = renderHandler ?: run {
+            // No render thread — nothing to clean up
+            renderThread = null
+            return
+        }
         val thread = renderThread ?: return
 
-        // Post cleanup and wait for it to complete
         val latch = CountDownLatch(1)
         handler.post {
             cleanup()
             latch.countDown()
         }
-        latch.await(3, TimeUnit.SECONDS)
+        try { latch.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
 
         thread.quitSafely()
         renderThread = null
         renderHandler = null
     }
 
-    // ======== Image Rendering (EGL, no Canvas) ========
+    // ======== Image Rendering ========
 
     fun showImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         val handler = renderHandler ?: return
@@ -155,6 +164,7 @@ class WallpaperRenderer(
 
     private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         try {
+            // Upload texture BEFORE clearing framebuffer (prevents flash of black)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
 
@@ -164,6 +174,7 @@ class WallpaperRenderer(
             vertexBuffer?.clear()
             vertexBuffer?.put(quad)?.position(0)
 
+            // Clear + draw in one pass (no gap between clear and texture bind)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             GLES20.glUseProgram(imageProgram)
 
@@ -213,13 +224,14 @@ class WallpaperRenderer(
     // ======== Video Rendering ========
 
     /**
-     * Start video playback. Stops any current video first (synchronously).
+     * Start video playback. Stops any current video synchronously first.
      */
     fun startVideo(uriStr: String, scaleMode: ScaleMode) {
-        // Synchronous stop: ensures old video is FULLY cleaned up before starting new one
+        // Synchronous stop ensures old resources are fully released
         stopVideoSync()
 
-        videoStopped = false
+        // Assign new generation BEFORE starting decode thread
+        val gen = videoGeneration.incrementAndGet()
         isVideoPlaying = true
 
         val handler = renderHandler ?: run {
@@ -232,11 +244,11 @@ class WallpaperRenderer(
                 isVideoPlaying = false
                 return@post
             }
-            startVideoInternal(uriStr, scaleMode)
+            startVideoInternal(uriStr, scaleMode, gen)
         }
     }
 
-    private fun startVideoInternal(uriStr: String, scaleMode: ScaleMode) {
+    private fun startVideoInternal(uriStr: String, scaleMode: ScaleMode, gen: Int) {
         try {
             val ext = MediaExtractor()
             ext.setDataSource(context, Uri.parse(uriStr), null)
@@ -268,7 +280,7 @@ class WallpaperRenderer(
             } catch (_: Exception) { 30 }
             val intervalNs = (1_000_000_000L / fps.coerceIn(15, 60)).coerceAtLeast(16_000_000L)
 
-            // Create new SurfaceTexture (on render thread)
+            // Create SurfaceTexture on render thread (EGL context lives here)
             if (videoTexId == 0) {
                 val texIds = IntArray(1)
                 GLES20.glGenTextures(1, texIds, 0)
@@ -288,14 +300,14 @@ class WallpaperRenderer(
             dec.configure(format, codecSurface, null, 0)
             dec.start()
 
-            Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps")
+            Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps, gen=$gen")
 
             val quad = computeVideoQuad(videoW.toFloat(), videoH.toFloat(), scaleMode)
             vertexBuffer?.clear()
             vertexBuffer?.put(quad)?.position(0)
 
             videoDecodeThread = Thread({
-                decodeLoop(ext, dec, st, intervalNs)
+                decodeLoop(ext, dec, st, intervalNs, gen)
             }, "VideoDecode").also { it.start() }
         } catch (e: Exception) {
             Log.e(TAG, "startVideo error: ${e.message}", e)
@@ -323,14 +335,19 @@ class WallpaperRenderer(
         )
     }
 
+    /**
+     * Decode loop — runs on dedicated thread.
+     * Only handles MediaCodec I/O. Posts render to render thread.
+     * Uses generation number to detect stale tasks.
+     */
     private fun decodeLoop(
         ext: MediaExtractor, dec: MediaCodec, st: SurfaceTexture,
-        intervalNs: Long
+        intervalNs: Long, gen: Int
     ) {
         val bufferInfo = MediaCodec.BufferInfo()
         var inputDone = false
 
-        while (!videoStopped && !Thread.interrupted()) {
+        while (videoGeneration.get() == gen && !Thread.interrupted()) {
             val startNs = System.nanoTime()
 
             if (!inputDone) {
@@ -352,7 +369,7 @@ class WallpaperRenderer(
             if (outIdx >= 0) {
                 if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                     dec.releaseOutputBuffer(outIdx, false)
-                    if (videoLooping && !videoStopped) {
+                    if (videoLooping && videoGeneration.get() == gen) {
                         dec.flush()
                         ext.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
                         inputDone = false
@@ -363,17 +380,18 @@ class WallpaperRenderer(
 
                 dec.releaseOutputBuffer(outIdx, true)
 
-                // Post render to render thread (updateTexImage must be on GL thread)
+                // Post render with generation check
                 renderHandler?.post {
-                    if (!videoStopped && eglReady) {
-                        try {
-                            st.updateTexImage()
-                            val texMatrix = FloatArray(16)
-                            st.getTransformMatrix(texMatrix)
-                            renderVideoFrame(texMatrix)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "renderVideoFrame error: ${e.message}")
-                        }
+                    // Stale task from old video — discard
+                    if (videoGeneration.get() != gen) return@post
+                    if (!eglReady) return@post
+                    try {
+                        st.updateTexImage()
+                        val texMatrix = FloatArray(16)
+                        st.getTransformMatrix(texMatrix)
+                        renderVideoFrame(texMatrix)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "renderVideoFrame error: ${e.message}")
                     }
                 }
 
@@ -385,7 +403,9 @@ class WallpaperRenderer(
             }
         }
 
-        isVideoPlaying = false
+        if (videoGeneration.get() == gen) {
+            isVideoPlaying = false
+        }
     }
 
     private fun renderVideoFrame(texMatrix: FloatArray) {
@@ -418,16 +438,16 @@ class WallpaperRenderer(
     }
 
     /**
-     * Synchronous video stop: waits for decode thread to exit AND cleanup to complete
-     * before returning. This ensures old video resources are fully released before
-     * starting a new video.
+     * Synchronous video stop. Bumps generation (stale tasks discarded),
+     * waits for decode thread, then cleans up on render thread.
      */
     fun stopVideo() {
         stopVideoSync()
     }
 
     private fun stopVideoSync() {
-        videoStopped = true
+        // Bump generation — all stale tasks will be discarded
+        videoGeneration.incrementAndGet()
         isVideoPlaying = false
 
         // Wait for decode thread to exit
@@ -445,7 +465,7 @@ class WallpaperRenderer(
                 cleanupVideo()
                 latch.countDown()
             }
-            latch.await(2, TimeUnit.SECONDS)
+            try { latch.await(2, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
         } else {
             cleanupVideo()
         }
