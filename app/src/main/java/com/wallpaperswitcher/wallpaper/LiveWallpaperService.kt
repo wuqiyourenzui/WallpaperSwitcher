@@ -53,8 +53,8 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile private var shuffleAllCount = 0
         @Volatile private var shuffleDirty = false
 
-        // Video renderer (MediaCodec + SurfaceTexture + EGL on HandlerThread)
-        private var videoRenderer: VideoRenderer? = null
+        // Unified EGL renderer for both images and videos
+        private var renderer: WallpaperRenderer? = null
         @Volatile private var videoMode = false
         // Pending target from broadcast, processed when current switch finishes
         @Volatile private var pendingTargetId: Long? = null
@@ -118,8 +118,10 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onSurfaceCreated(holder: SurfaceHolder?) {
             surfaceReady = true
-            // Don't call drawCurrentImage here — isVisible is still false.
-            // onVisibilityChanged(true) will trigger the load.
+            // Initialize the unified EGL renderer
+            val sw = cachedScreenW.takeIf { it > 0 } ?: getMetrics().widthPixels.toFloat()
+            val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().heightPixels.toFloat()
+            renderer = WallpaperRenderer(applicationContext, surfaceHolder).also { it.initialize(sw, sh) }
         }
 
         override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {
@@ -130,7 +132,9 @@ class LiveWallpaperService : WallpaperService() {
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
             lastDisplayedId = 0L
-            releaseAll()
+            renderer?.release()
+            renderer = null
+            pauseGif()
         }
 
         override fun onTouchEvent(event: MotionEvent) {
@@ -152,13 +156,13 @@ class LiveWallpaperService : WallpaperService() {
                         videoMode = false
                         drawCurrentImage()
                     } else if (videoMode) {
-                        videoRenderer?.resume()
+                        renderer?.isVideoPlaying.let { /* resume handled by renderer */ }
                     } else {
                         drawCurrentImage()
                     }
                 }
             } else {
-                if (videoMode) videoRenderer?.pause()
+                if (videoMode) renderer?.stopVideo()
                 pauseGif()
             }
         }
@@ -190,11 +194,11 @@ class LiveWallpaperService : WallpaperService() {
         // ======== Resource lifecycle ========
 
         private fun releaseAll() {
-            stopVideo()
+            renderer?.stopVideo()
             pauseGif()
             gifBitmapBuffer?.recycle(); gifBitmapBuffer = null
             currentBitmap?.recycle(); currentBitmap = null
-            lastDisplayedId = 0L  // Force reload on next drawCurrentImage
+            lastDisplayedId = 0L
             gifDrawable?.let {
                 try { it.stop() } catch (_: Exception) {}
                 if (Build.VERSION.SDK_INT >= 28) {
@@ -206,8 +210,7 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun stopVideo() {
             videoMode = false
-            videoRenderer?.release()
-            videoRenderer = null
+            renderer?.stopVideo()
         }
 
         private fun pauseGif() {
@@ -290,14 +293,6 @@ class LiveWallpaperService : WallpaperService() {
                     pauseGif()
                     delay(SWITCH_SETTLE_DELAY_MS)
 
-                    // Reset surface from Canvas mode to allow EGL (video) rendering
-                    if (mediaType == "VIDEO") {
-                        try {
-                            val canvas = surfaceHolder.lockCanvas()
-                            if (canvas != null) surfaceHolder.unlockCanvasAndPost(canvas)
-                        } catch (_: Exception) {}
-                    }
-
                     // Only set lastDisplayedId AFTER media starts loading
                     when (mediaType) {
                         "VIDEO" -> {
@@ -311,7 +306,7 @@ class LiveWallpaperService : WallpaperService() {
                         else -> {
                             val bitmap = loadBitmap(nextImage.uri)
                             if (bitmap != null) {
-                                mainHandler.post { showBitmap(bitmap, currentScaleMode) }
+                                renderer?.showImage(bitmap, currentScaleMode)
                                 lastDisplayedId = nextImage.id
                             }
                         }
@@ -408,7 +403,7 @@ class LiveWallpaperService : WallpaperService() {
 
                     // Skip if already displaying this image AND media is actually active
                     if (imageId == lastDisplayedId && lastDisplayedId != 0L) {
-                        if (videoMode && videoRenderer?.isPlaying == true) return@launch
+                        if (videoMode && renderer?.isVideoPlaying == true) return@launch
                         if (!videoMode && currentBitmap != null && !currentBitmap!!.isRecycled) return@launch
                     }
 
@@ -447,11 +442,11 @@ class LiveWallpaperService : WallpaperService() {
                             "GIF" -> { mainHandler.post { playGif(image.uri, currentScaleMode) }; return@launch }
                             else -> {
                                 val bitmap = loadBitmap(image.uri)
-                                if (bitmap != null) { mainHandler.post { showBitmap(bitmap, currentScaleMode) }; return@launch }
+                                if (bitmap != null) { renderer?.showImage(bitmap, currentScaleMode); return@launch }
                             }
                         }
                     }
-                    mainHandler.post { showDefault() }
+                    renderer?.showImage(createDefaultBitmap(), currentScaleMode)
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (e: Exception) {
@@ -460,35 +455,27 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video via VideoRenderer (MediaCodec + EGL + SurfaceTexture) ========
+        // ======== Video via WallpaperRenderer (unified EGL) ========
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             if (!surfaceReady || !surfaceHolder.surface.isValid) {
                 Log.w(TAG, "startVideo: surface not ready")
-                return  // Don't set videoMode=true if surface isn't ready
+                return
             }
             videoMode = true
-            // Use actual surface dimensions to avoid 0x0 when onSurfaceChanged hasn't fired yet
-            val surface = surfaceHolder.surfaceFrame
-            val sw = cachedScreenW.takeIf { it > 0 } ?: surface.width().toFloat().takeIf { it > 0 }
-                ?: getMetrics().widthPixels.toFloat()
-            val sh = cachedScreenH.takeIf { it > 0 } ?: surface.height().toFloat().takeIf { it > 0 }
-                ?: getMetrics().heightPixels.toFloat()
-            Log.d(TAG, "startVideo: ${sw}x${sh}")
-            val renderer = VideoRenderer(applicationContext, surfaceHolder, mainHandler)
-            videoRenderer = renderer
-            renderer.start(uriStr, scaleMode, sw, sh)
+            Log.d(TAG, "startVideo: $uriStr")
+            renderer?.startVideo(uriStr, scaleMode)
         }
 
-        // ======== GIF via Canvas ========
+        // ======== GIF via EGL ========
 
         private fun playGif(uriStr: String, scaleMode: ScaleMode) {
             if (!surfaceReady) return
             try {
                 if (Build.VERSION.SDK_INT >= 28) playGif28(uriStr, scaleMode)
-                else loadBitmap(uriStr)?.let { showBitmap(it, scaleMode) }
+                else loadBitmap(uriStr)?.let { renderer?.showImage(it, scaleMode) }
             } catch (e: Exception) {
-                loadBitmap(uriStr)?.let { showBitmap(it, scaleMode) }
+                loadBitmap(uriStr)?.let { renderer?.showImage(it, scaleMode) }
             }
         }
 
@@ -516,7 +503,7 @@ class LiveWallpaperService : WallpaperService() {
                             bmp.eraseColor(Color.TRANSPARENT)
                             val cv = Canvas(bmp)
                             drawable.draw(cv)
-                            showBitmapDirect(bmp, scaleMode)
+                            renderer?.showImage(bmp, scaleMode)
                         } catch (_: Exception) {}
                         mainHandler.postDelayed(this, GIF_FRAME_INTERVAL_MS)
                     }
@@ -528,65 +515,16 @@ class LiveWallpaperService : WallpaperService() {
 
         // ======== Canvas rendering ========
 
-        private fun showBitmap(bitmap: Bitmap, scaleMode: ScaleMode = ScaleMode.FIT) {
-            if (!surfaceReady) return
-            try {
-                // Don't recycle old bitmap here — unlockCanvasAndPost is async and
-                // the GPU may still be reading the old bitmap. Let GC handle it.
-                currentBitmap = bitmap
-                val canvas = surfaceHolder.lockCanvas() ?: return
-                canvas.drawColor(Color.BLACK)
-                val m = getMetrics()
-                calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(),
-                    m.widthPixels.toFloat(), m.heightPixels.toFloat(), scaleMode)
-                canvas.drawBitmap(bitmap, null, destRect, null)
-                surfaceHolder.unlockCanvasAndPost(canvas)
-            } catch (_: Exception) {}
-        }
-
-        private fun showBitmapDirect(bitmap: Bitmap, scaleMode: ScaleMode) {
-            if (!surfaceReady) return
-            try {
-                val canvas = surfaceHolder.lockCanvas() ?: return
-                canvas.drawColor(Color.BLACK)
-                val sw = cachedScreenW.takeIf { it > 0 } ?: getMetrics().let { cachedScreenW = it.widthPixels.toFloat(); cachedScreenW }
-                val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().let { cachedScreenH = it.heightPixels.toFloat(); cachedScreenH }
-                calcDestRect(bitmap.width.toFloat(), bitmap.height.toFloat(), sw, sh, scaleMode)
-                canvas.drawBitmap(bitmap, null, destRect, null)
-                surfaceHolder.unlockCanvasAndPost(canvas)
-            } catch (_: Exception) {}
-        }
-
-        private fun calcDestRect(bw: Float, bh: Float, sw: Float, sh: Float, scaleMode: ScaleMode) {
-            when (scaleMode) {
-                ScaleMode.FIT -> {
-                    val r = bw / bh; val sr = sw / sh
-                    val dw: Float; val dh: Float
-                    if (r > sr) { dw = sw; dh = dw / r } else { dh = sh; dw = dh * r }
-                    destRect.set((sw - dw) / 2f, (sh - dh) / 2f, (sw + dw) / 2f, (sh + dh) / 2f)
-                }
-                ScaleMode.FILL -> {
-                    val r = bw / bh; val sr = sw / sh
-                    val dw: Float; val dh: Float
-                    if (r < sr) { dw = sw; dh = dw / r } else { dh = sh; dw = dh * r }
-                    destRect.set((sw - dw) / 2f, (sh - dh) / 2f, (sw + dw) / 2f, (sh + dh) / 2f)
-                }
-                ScaleMode.STRETCH -> destRect.set(0f, 0f, sw, sh)
+        private fun createDefaultBitmap(): Bitmap {
+            val m = getMetrics()
+            val bmp = Bitmap.createBitmap(m.widthPixels, m.heightPixels, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bmp)
+            canvas.drawColor(Color.DKGRAY)
+            val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE; textSize = 48f; textAlign = Paint.Align.CENTER
             }
-        }
-
-        private fun showDefault() {
-            if (!surfaceReady) return
-            try {
-                val canvas = surfaceHolder.lockCanvas() ?: return
-                canvas.drawColor(Color.DKGRAY)
-                val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.WHITE; textSize = 48f; textAlign = Paint.Align.CENTER
-                }
-                val m = getMetrics()
-                canvas.drawText("Wallpaper Switcher", m.widthPixels / 2f, m.heightPixels / 2f, p)
-                surfaceHolder.unlockCanvasAndPost(canvas)
-            } catch (_: Exception) {}
+            canvas.drawText("Wallpaper Switcher", m.widthPixels / 2f, m.heightPixels / 2f, p)
+            return bmp
         }
 
         private fun loadBitmap(uriStr: String): Bitmap? {
