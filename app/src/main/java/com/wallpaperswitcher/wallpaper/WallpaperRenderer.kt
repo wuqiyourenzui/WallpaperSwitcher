@@ -359,148 +359,165 @@ class WallpaperRenderer(
         var localExtractor: MediaExtractor? = null
         var localDecoder: MediaCodec? = null
         try {
-            // --- Setup MediaExtractor ---
-            val ext = MediaExtractor()
-            localExtractor = ext
-            ext.setDataSource(context, Uri.parse(uriStr), null)
-            val trackIdx = (0 until ext.trackCount).firstOrNull { i ->
-                ext.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
-            } ?: run {
-                Log.e(TAG, "No video track"); isVideoPlaying = false; ext.release(); return
-            }
-            ext.selectTrack(trackIdx)
-            val format = ext.getTrackFormat(trackIdx)
-            val mime = format.getString(MediaFormat.KEY_MIME)!!
-            var videoW = format.getIntegerSafe(MediaFormat.KEY_WIDTH)
-            var videoH = format.getIntegerSafe(MediaFormat.KEY_HEIGHT)
-            val maxDim = maxOf(videoW, videoH)
-            if (maxDim > 1280) {
-                val scale = 1280f / maxDim
-                videoW = (videoW * scale).toInt().and(0xFFFFFFFE.toInt())
-                videoH = (videoH * scale).toInt().and(0xFFFFFFFE.toInt())
-            }
-            // Videos with a 90/270 degree rotation (e.g. portrait phone
-            // recordings) display with swapped width/height. Use the rotated
-            // dimensions for the render quad so the video is not stretched;
-            // SurfaceTexture's transform matrix already handles the rotation.
-            val rotation = format.getIntegerSafe(MediaFormat.KEY_ROTATION)
-            val isRotated = rotation == 90 || rotation == 270
-            val quadW = if (isRotated) videoH else videoW
-            val quadH = if (isRotated) videoW else videoH
-            val fps = format.getIntegerSafe(MediaFormat.KEY_FRAME_RATE).coerceIn(15, 60)
-            val intervalNs = (1_000_000_000L / fps.coerceIn(15, 60)).coerceAtLeast(16_000_000L)
-
-            // --- Setup GL texture + SurfaceTexture on render thread ---
-            val setupLatch = CountDownLatch(1)
-            var setupOk = false
-            handler.post {
-                if (videoGeneration.get() != gen) {
-                    setupLatch.countDown()
-                    return@post
-                }
-                if (!surfaceReady || !contextReady) {
-                    setupLatch.countDown()
-                    return@post
-                }
-                if (videoTexId == 0) {
-                    val texIds = IntArray(1)
-                    GLES20.glGenTextures(1, texIds, 0)
-                    videoTexId = texIds[0]
-                }
-                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTexId)
-                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-
-                val st = SurfaceTexture(videoTexId)
-                st.setDefaultBufferSize(videoW, videoH)
-                surfaceTexture = st
-                codecSurface = Surface(st)
-                setupOk = true
-                setupLatch.countDown()
-            }
-            try { setupLatch.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
-            if (!setupOk) {
-                Log.e(TAG, "Video GL setup failed"); isVideoPlaying = false
-                ext.release(); return
-            }
-
-            // --- Setup MediaCodec on THIS thread (decode thread) ---
-            val dec = MediaCodec.createDecoderByType(mime)
-            localDecoder = dec
-            decoder = dec
-            dec.configure(format, codecSurface, null, 0)
-            dec.start()
-
-            // Cache render quad on render thread
-            handler.post {
-                if (videoGeneration.get() != gen) return@post
-                val quad = computeVideoQuad(quadW.toFloat(), quadH.toFloat(), scaleMode)
-                vertexBuffer?.clear()
-                vertexBuffer?.put(quad)?.position(0)
-            }
-
-            Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps")
-
-            // --- Decode loop ---
-            val bufferInfo = MediaCodec.BufferInfo()
-            var inputDone = false
-            val st = surfaceTexture!!
-
+            // Outer loop: restart the codec cleanly when the video loops.
+            // Flushing and re-feeding an in-place codec can crash some hardware
+            // decoders during repeat playback, which is how the engine died
+            // while just playing (no switch involved) in the captured logs.
             while (videoGeneration.get() == gen && !Thread.interrupted()) {
-                val startNs = System.nanoTime()
+                // --- Setup MediaExtractor ---
+                val ext = MediaExtractor()
+                localExtractor = ext
+                ext.setDataSource(context, Uri.parse(uriStr), null)
+                val trackIdx = (0 until ext.trackCount).firstOrNull { i ->
+                    ext.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+                } ?: run {
+                    Log.e(TAG, "No video track"); isVideoPlaying = false; return
+                }
+                ext.selectTrack(trackIdx)
+                val format = ext.getTrackFormat(trackIdx)
+                val mime = format.getString(MediaFormat.KEY_MIME)!!
+                var videoW = format.getIntegerSafe(MediaFormat.KEY_WIDTH)
+                var videoH = format.getIntegerSafe(MediaFormat.KEY_HEIGHT)
+                val maxDim = maxOf(videoW, videoH)
+                if (maxDim > 1280) {
+                    val scale = 1280f / maxDim
+                    videoW = (videoW * scale).toInt().and(0xFFFFFFFE.toInt())
+                    videoH = (videoH * scale).toInt().and(0xFFFFFFFE.toInt())
+                }
+                // Videos with a 90/270 degree rotation (e.g. portrait phone
+                // recordings) display with swapped width/height.
+                val rotation = format.getIntegerSafe(MediaFormat.KEY_ROTATION)
+                val isRotated = rotation == 90 || rotation == 270
+                val quadW = if (isRotated) videoH else videoW
+                val quadH = if (isRotated) videoW else videoH
+                val fps = format.getIntegerSafe(MediaFormat.KEY_FRAME_RATE).coerceIn(15, 60)
+                val intervalNs = (1_000_000_000L / fps).coerceAtLeast(16_000_000L)
 
-                if (!inputDone) {
-                    val inIdx = dec.dequeueInputBuffer(0)
-                    if (inIdx >= 0) {
-                        val buf = dec.getInputBuffer(inIdx) ?: continue
-                        val size = ext.readSampleData(buf, 0)
-                        if (size < 0) {
-                            dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            inputDone = true
-                        } else {
-                            dec.queueInputBuffer(inIdx, 0, size, ext.sampleTime, 0)
-                            ext.advance()
+                // --- Setup GL texture + SurfaceTexture on render thread ---
+                val setupLatch = CountDownLatch(1)
+                var setupOk = false
+                handler.post {
+                    if (videoGeneration.get() != gen) {
+                        setupLatch.countDown()
+                        return@post
+                    }
+                    if (!surfaceReady || !contextReady) {
+                        setupLatch.countDown()
+                        return@post
+                    }
+                    if (videoTexId == 0) {
+                        val texIds = IntArray(1)
+                        GLES20.glGenTextures(1, texIds, 0)
+                        videoTexId = texIds[0]
+                    }
+                    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTexId)
+                    GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                    GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+
+                    val st = SurfaceTexture(videoTexId)
+                    st.setDefaultBufferSize(videoW, videoH)
+                    surfaceTexture = st
+                    codecSurface = Surface(st)
+                    setupOk = true
+                    setupLatch.countDown()
+                }
+                try { setupLatch.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
+                if (!setupOk || videoGeneration.get() != gen) {
+                    Log.e(TAG, "Video GL setup failed"); isVideoPlaying = false
+                    return
+                }
+
+                // --- Setup MediaCodec on THIS thread (decode thread) ---
+                val dec = MediaCodec.createDecoderByType(mime)
+                localDecoder = dec
+                decoder = dec
+                dec.configure(format, codecSurface, null, 0)
+                dec.start()
+
+                // Cache render quad on render thread
+                handler.post {
+                    if (videoGeneration.get() != gen) return@post
+                    val quad = computeVideoQuad(quadW.toFloat(), quadH.toFloat(), scaleMode)
+                    vertexBuffer?.clear()
+                    vertexBuffer?.put(quad)?.position(0)
+                }
+
+                Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps")
+
+                // --- Inner decode loop (one playback pass) ---
+                val bufferInfo = MediaCodec.BufferInfo()
+                var inputDone = false
+                var eof = false
+                val st = surfaceTexture!!
+                while (videoGeneration.get() == gen && !Thread.interrupted() && !eof) {
+                    val startNs = System.nanoTime()
+
+                    if (!inputDone) {
+                        val inIdx = dec.dequeueInputBuffer(0)
+                        if (inIdx >= 0) {
+                            val buf = dec.getInputBuffer(inIdx) ?: continue
+                            val size = ext.readSampleData(buf, 0)
+                            if (size < 0) {
+                                dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                inputDone = true
+                            } else {
+                                dec.queueInputBuffer(inIdx, 0, size, ext.sampleTime, 0)
+                                ext.advance()
+                            }
                         }
+                    }
+
+                    val outIdx = dec.dequeueOutputBuffer(bufferInfo, 10_000)
+                    if (outIdx >= 0) {
+                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                            dec.releaseOutputBuffer(outIdx, false)
+                            eof = true
+                            continue
+                        }
+
+                        dec.releaseOutputBuffer(outIdx, true)
+
+                        handler.post {
+                            if (videoGeneration.get() != gen) return@post
+                            if (!surfaceReady || !contextReady) return@post
+                            try {
+                                st.updateTexImage()
+                                val texMatrix = FloatArray(16)
+                                st.getTransformMatrix(texMatrix)
+                                renderVideoFrame(texMatrix)
+                            } catch (t: Throwable) {
+                                Log.e(TAG, "renderVideoFrame failed", t)
+                            }
+                        }
+
+                        val elapsedNs = System.nanoTime() - startNs
+                        val sleepNs = intervalNs - elapsedNs
+                        if (sleepNs > 0) {
+                            // InterruptedException is the normal "stop" signal.
+                            try {
+                                Thread.sleep(sleepNs / 1_000_000, (sleepNs % 1_000_000).toInt())
+                            } catch (_: InterruptedException) {}
+                        }
+                    } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                        try { Thread.sleep(1) } catch (_: InterruptedException) {}
                     }
                 }
 
-                val outIdx = dec.dequeueOutputBuffer(bufferInfo, 10_000)
-                if (outIdx >= 0) {
-                    if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                        dec.releaseOutputBuffer(outIdx, false)
-                        dec.flush()
-                        ext.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-                        inputDone = false
-                        continue
-                    }
+                // Release this round's codec cleanly.
+                try { dec.stop() } catch (_: Exception) {}
+                try { dec.release() } catch (_: Exception) {}
+                if (decoder === dec) decoder = null
 
-                    dec.releaseOutputBuffer(outIdx, true)
-
+                if (videoGeneration.get() != gen || Thread.interrupted()) break
+                if (eof) {
+                    // Loop: clean this round's GL resources, then the outer
+                    // loop recreates the extractor + codec + SurfaceTexture.
                     handler.post {
-                        if (videoGeneration.get() != gen) return@post
-                        if (!surfaceReady || !contextReady) return@post
-                        try {
-                            st.updateTexImage()
-                            val texMatrix = FloatArray(16)
-                            st.getTransformMatrix(texMatrix)
-                            renderVideoFrame(texMatrix)
-                        } catch (t: Throwable) {
-                            Log.e(TAG, "renderVideoFrame failed", t)
-                        }
+                        cleanupVideoResourcesOnRenderThread()
                     }
-
-                    val elapsedNs = System.nanoTime() - startNs
-                    val sleepNs = intervalNs - elapsedNs
-                    if (sleepNs > 0) {
-                        // InterruptedException is the normal "stop" signal; the
-                        // while condition will exit. Do not treat it as an error.
-                        try {
-                            Thread.sleep(sleepNs / 1_000_000, (sleepNs % 1_000_000).toInt())
-                        } catch (_: InterruptedException) {}
-                    }
-                } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                    try { Thread.sleep(1) } catch (_: InterruptedException) {}
+                    continue
                 }
+                break
             }
         } catch (t: Throwable) {
             // Catch Throwable (incl. OutOfMemoryError) so a decode failure can

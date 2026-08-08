@@ -63,6 +63,7 @@ class LiveWallpaperService : WallpaperService() {
         private val consumerStarted = AtomicBoolean(false)
         @Volatile private var switchInProgress = false
         @Volatile private var switchStartedAt = 0L
+        private val redrawInProgress = AtomicBoolean(false)
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
@@ -497,6 +498,10 @@ class LiveWallpaperService : WallpaperService() {
                 mainHandler.postDelayed({ drawCurrentImage() }, 100L)
                 return
             }
+            // Guard against concurrent redraws (e.g. a surface event and a
+            // visibility change firing at the same time) - two concurrent
+            // drawCurrentImage calls would start the same video twice.
+            if (!redrawInProgress.compareAndSet(false, true)) return
 
             scope.launch {
                 try {
@@ -577,6 +582,8 @@ class LiveWallpaperService : WallpaperService() {
                     throw ce
                 } catch (t: Throwable) {
                     Log.e(TAG, "drawCurrentImage error", t)
+                } finally {
+                    redrawInProgress.set(false)
                 }
             }
         }
