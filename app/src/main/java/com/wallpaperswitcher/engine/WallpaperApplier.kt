@@ -33,31 +33,31 @@ object WallpaperApplier {
      * @return true when the wallpaper was applied successfully.
      */
     fun apply(context: Context, image: WallpaperImage): Boolean {
-        return try {
-            val bitmap = when (image.mediaType) {
-                "VIDEO" -> videoFrame(context, image.uri)
-                "GIF" -> gifFirstFrame(context, image.uri)
-                else -> BitmapUtils.loadBitmap(context, image.uri)
-            } ?: run {
-                Log.e(TAG, "No bitmap for: ${image.displayName} uri=${image.uri}")
-                return false
-            }
+        val bitmap = when (image.mediaType) {
+            "VIDEO" -> videoFrame(context, image.uri)
+            "GIF" -> gifFirstFrame(context, image.uri)
+            else -> BitmapUtils.loadBitmap(context, image.uri)
+        }
+        if (bitmap == null) {
+            Log.e(TAG, "No bitmap for: ${image.displayName} uri=${image.uri}")
+            return false
+        }
 
-            val ok = try {
-                WallpaperManager.getInstance(context).setBitmap(bitmap)
-            } finally {
-                if (!bitmap.isRecycled) bitmap.recycle()
-            }
-            if (ok) {
-                Log.d(TAG, "Wallpaper applied: ${image.displayName}")
-            } else {
-                Log.e(TAG, "WallpaperManager.setBitmap returned false: ${image.displayName}")
-            }
-            ok
+        var applied = false
+        try {
+            applied = WallpaperManager.getInstance(context).setBitmap(bitmap)
         } catch (e: Exception) {
             Log.e(TAG, "apply failed for ${image.displayName}", e)
-            false
+        } finally {
+            if (!bitmap.isRecycled) bitmap.recycle()
         }
+
+        if (applied) {
+            Log.d(TAG, "Wallpaper applied: ${image.displayName}")
+        } else {
+            Log.e(TAG, "WallpaperManager.setBitmap returned false: ${image.displayName}")
+        }
+        return applied
     }
 
     /**
@@ -80,8 +80,8 @@ object WallpaperApplier {
 
         val image = when (mode) {
             SwitchMode.RANDOM, SwitchMode.SHUFFLE -> {
-                imageDao.getRandomFromEnabledGroupsExcluding(lastId)
-                    ?: imageDao.getRandomFromEnabledGroups()
+                imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                    ?: imageDao.getRandomImageFromEnabledGroups()
             }
             SwitchMode.SEQUENTIAL -> {
                 val count = imageDao.countByEnabledGroups()
@@ -105,7 +105,7 @@ object WallpaperApplier {
             retriever = MediaMetadataRetriever()
             retriever.setDataSource(context, Uri.parse(uriStr))
             retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                ?: if (Build.VERSION.SDK_INT >= 28) retriever.frameAt else null
+                ?: retriever.getFrameAtTime()
         } catch (e: Exception) {
             Log.e(TAG, "videoFrame failed: $uriStr", e)
             null
@@ -129,7 +129,7 @@ object WallpaperApplier {
                     drawable.draw(Canvas(bmp))
                     bmp
                 } finally {
-                    try { drawable.close() } catch (_: Exception) {}
+                    try { (drawable as java.lang.AutoCloseable).close() } catch (_: Exception) {}
                 }
             } else {
                 BitmapUtils.loadBitmap(context, uriStr)
