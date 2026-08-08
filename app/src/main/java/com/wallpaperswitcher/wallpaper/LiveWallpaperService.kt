@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
 import android.util.Log
 import android.view.GestureDetector
@@ -51,6 +52,7 @@ class LiveWallpaperService : WallpaperService() {
         // would otherwise make double-tap / unlock switching appear dead.
         @Volatile private var isVisible = true
         private val isSwitching = AtomicBoolean(false)
+        @Volatile private var switchStartedAt = 0L
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
@@ -86,11 +88,11 @@ class LiveWallpaperService : WallpaperService() {
                         return
                     }
                     val source = intent.getStringExtra(EXTRA_SOURCE)
-                    // Automatic switches (timer/unlock) must not interrupt the
-                    // currently playing video while the wallpaper is invisible
-                    // (e.g. another app is open in the foreground). Otherwise
-                    // returning to the desktop would show a "restarted" video.
-                    if (!isVisible && (source == SOURCE_TIMER || source == SOURCE_UNLOCK)) {
+                    // Timer switching is skipped while the wallpaper is invisible
+                    // (e.g. another app is open) so it cannot restart the video
+                    // behind the app. Unlock is an explicit user action and always
+                    // applies.
+                    if (!isVisible && source == SOURCE_TIMER) {
                         Log.d(TAG, "Wallpaper not visible, skip automatic switch ($source)")
                         return
                     }
@@ -194,6 +196,8 @@ class LiveWallpaperService : WallpaperService() {
         override fun onDestroy() {
             engineRunning = false
             lastDisplayedId = 0L
+            isSwitching.set(false)
+            switchStartedAt = 0L
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
             flushShuffleState()
             try { renderer?.release() } catch (_: Exception) {}
@@ -238,8 +242,28 @@ class LiveWallpaperService : WallpaperService() {
 
         // ======== Switch logic ========
 
+        /**
+         * Try to begin a switch. Defensively force-resets the lock if a
+         * previous switch has been stuck for more than 30 seconds, so a single
+         * failed switch can never permanently disable double-tap / unlock /
+         * timer switching.
+         */
+        private fun tryBeginSwitch(): Boolean {
+            val now = SystemClock.elapsedRealtime()
+            if (isSwitching.get() && switchStartedAt != 0L && now - switchStartedAt > 30_000L) {
+                Log.w(TAG, "Switch stuck >30s, forcing reset")
+                isSwitching.set(false)
+                switchStartedAt = 0L
+            }
+            if (isSwitching.compareAndSet(false, true)) {
+                switchStartedAt = now
+                return true
+            }
+            return false
+        }
+
         private fun doSwitch(source: String, targetId: Long? = null) {
-            if (!isSwitching.compareAndSet(false, true)) {
+            if (!tryBeginSwitch()) {
                 Log.d(TAG, "Already switching, skip ($source)")
                 return
             }
@@ -348,6 +372,7 @@ class LiveWallpaperService : WallpaperService() {
                     Log.e(TAG, "doSwitch error", e)
                 } finally {
                     isSwitching.set(false)
+                    switchStartedAt = 0L
                     val pending = pendingTargetId
                     if (pending != null) {
                         pendingTargetId = null

@@ -498,8 +498,10 @@ class WallpaperRenderer(
             if (extractor === localExtractor) extractor = null
             // Only post GL cleanup if stopVideoInternal/stopVideoAndRender hasn't already done it.
             // Those methods set videoCleanupDone=true and post their own cleanup.
-            // Posting here would race: old cleanup runs AFTER new video's setup, destroying new resources.
-            if (!videoCleanupDone.getAndSet(true)) {
+            // Posting here would race: an old decode thread that exits late could
+            // clean up the NEW video's resources after its setup. The generation
+            // check makes sure only the CURRENT video's thread may clean up.
+            if (videoGeneration.get() == gen && !videoCleanupDone.getAndSet(true)) {
                 handler.post {
                     cleanupVideoResourcesOnRenderThread()
                 }
