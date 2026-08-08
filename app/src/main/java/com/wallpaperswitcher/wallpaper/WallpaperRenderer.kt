@@ -24,9 +24,14 @@ import java.util.concurrent.atomic.AtomicInteger
  * - Render thread (HandlerThread): ALL GL ops including updateTexImage
  * - Decode thread: MediaCodec I/O only, posts render requests to render thread
  *
- * CRITICAL: onSurfaceDestroyed is called on the main thread. release() must
- * NOT block the main thread for extended periods — the system will ANR-kill
- * the wallpaper engine. release() posts cleanup asynchronously.
+ * CRITICAL: onSurfaceDestroyed → release() must wait for the render thread to
+ * finish before returning, because onSurfaceCreated will create a new renderer
+ * on the SAME Surface. If the old render thread is still doing eglSwapBuffers
+ * when the new renderer creates its EGL context, the EGL state is corrupted
+ * and all subsequent rendering fails → black screen → system reverts wallpaper.
+ *
+ * release() uses a bounded wait (≤2s) to avoid ANR while ensuring the old
+ * render thread is done.
  */
 class WallpaperRenderer(
     private val context: Context,
@@ -101,11 +106,6 @@ class WallpaperRenderer(
 
     // ======== Lifecycle ========
 
-    /**
-     * Initialize EGL. Synchronous — waits for setup to complete.
-     * Called from onSurfaceCreated (main thread). ≤3s wait is acceptable
-     * for initialization (first call only).
-     */
     fun initialize(sw: Float, sh: Float) {
         screenW = sw
         screenH = sh
@@ -129,33 +129,35 @@ class WallpaperRenderer(
     }
 
     /**
-     * Release all resources. NON-BLOCKING on main thread.
+     * Release all resources. Waits briefly for the render thread to finish.
      *
-     * CRITICAL: onSurfaceDestroyed is called on the main thread. The system
-     * enforces a ~5s ANR timeout. Blocking here causes the wallpaper engine
-     * to be killed, reverting to system default wallpaper.
-     *
-     * Solution: post all cleanup to render thread asynchronously. The old
-     * render thread will clean up and quit on its own. A new renderer can
-     * be created immediately on a new thread — EGL contexts are independent.
+     * BOUNDED WAIT (≤2s): onSurfaceDestroyed is on the main thread. We must
+     * wait long enough for the old render thread to stop using the Surface,
+     * but not so long that we ANR. If the render thread doesn't finish in 2s,
+     * we proceed anyway — the new renderer will create a fresh EGL context.
      */
     fun release() {
-        // Bump generation to invalidate all pending video tasks immediately
         videoGeneration.incrementAndGet()
         isVideoPlaying = false
         eglReady = false
 
-        // Interrupt decode thread (non-blocking)
         videoDecodeThread?.interrupt()
         videoDecodeThread = null
 
-        // Post ALL cleanup to render thread — do NOT wait
-        renderHandler?.post {
-            cleanup()
-            renderThread?.quitSafely()
+        val handler = renderHandler
+        val thread = renderThread
+
+        if (handler != null && thread != null) {
+            val latch = CountDownLatch(1)
+            handler.post {
+                cleanup()
+                latch.countDown()
+            }
+            // Wait up to 2s for render thread to finish cleanup
+            try { latch.await(2, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
+            thread.quitSafely()
         }
 
-        // Clear references immediately (new renderer gets fresh ones)
         renderHandler = null
         renderThread = null
     }
@@ -172,7 +174,6 @@ class WallpaperRenderer(
 
     private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         try {
-            // Upload texture BEFORE clearing (prevents flash of black)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
 
@@ -231,7 +232,6 @@ class WallpaperRenderer(
     // ======== Video Rendering ========
 
     fun startVideo(uriStr: String, scaleMode: ScaleMode) {
-        // Synchronous stop ensures old resources are fully released
         stopVideoSync()
 
         val gen = videoGeneration.incrementAndGet()
@@ -437,7 +437,7 @@ class WallpaperRenderer(
     }
 
     /**
-     * Synchronous video stop. Called from IO thread (not main thread).
+     * Synchronous video stop. Called from IO thread.
      * Waits for decode thread to exit and cleanup to complete.
      */
     private fun stopVideoSync() {

@@ -135,9 +135,11 @@ class LiveWallpaperService : WallpaperService() {
             // Set flags FIRST to prevent any new rendering
             surfaceReady = false
             lastDisplayedId = 0L
-            // release() is NON-BLOCKING — posts cleanup to render thread asynchronously.
-            // This is critical: onSurfaceDestroyed runs on main thread. Any blocking
-            // longer than ~5s causes ANR → system kills wallpaper → reverts to default.
+
+            // release() waits up to 2s for the render thread to finish cleanup.
+            // This ensures the old render thread is done with the Surface before
+            // onSurfaceCreated creates a new renderer on the same Surface.
+            // 2s is safe — well under the 5s ANR timeout.
             try { renderer?.release() } catch (_: Exception) {}
             renderer = null
             pauseGif()
