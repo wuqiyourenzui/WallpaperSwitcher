@@ -108,6 +108,16 @@ class WallpaperRenderer(
     private var renderThread: HandlerThread? = null
     private var renderHandler: Handler? = null
 
+    /**
+     * Invoked (on the decode thread) when a video fails to start, e.g. the GL
+     * setup was skipped because a newer switch already replaced it, or the
+     * surface/resources were torn down concurrently. The engine uses this to
+     * reset its state and retry the current media instead of leaving the
+     * previous video's last frame frozen on screen.
+     */
+    @Volatile
+    var onVideoStartFailed: (() -> Unit)? = null
+
     // ======== Lifecycle ========
 
     fun initialize(initW: Float, initH: Float) {
@@ -436,6 +446,7 @@ class WallpaperRenderer(
                 try { setupLatch.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
                 if (!setupOk || videoGeneration.get() != gen) {
                     Log.e(TAG, "Video GL setup failed"); isVideoPlaying = false
+                    onVideoStartFailed?.invoke()
                     return
                 }
                 // A concurrent stopVideoAndRender/stopVideoInternal may have
@@ -449,6 +460,7 @@ class WallpaperRenderer(
                 if (st == null || cs == null || videoGeneration.get() != gen) {
                     Log.e(TAG, "Video resources torn down during setup")
                     isVideoPlaying = false
+                    onVideoStartFailed?.invoke()
                     return
                 }
 

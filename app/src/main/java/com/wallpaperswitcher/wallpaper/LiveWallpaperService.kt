@@ -152,7 +152,10 @@ class LiveWallpaperService : WallpaperService() {
             if (!rendererInitialized) {
                 val sw = cachedScreenW.takeIf { it > 0 } ?: getMetrics().widthPixels.toFloat()
                 val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().heightPixels.toFloat()
-                renderer = WallpaperRenderer(applicationContext, holder).also { it.initialize(sw, sh) }
+                renderer = WallpaperRenderer(applicationContext, holder).also {
+                    it.initialize(sw, sh)
+                    it.onVideoStartFailed = { onVideoStartFailed() }
+                }
                 rendererInitialized = true
             }
             // Ensure the EGL window surface exists for this SurfaceHolder. This
@@ -178,6 +181,25 @@ class LiveWallpaperService : WallpaperService() {
                 return
             }
             mainHandler.postDelayed({ redrawWhenSurfaceReady() }, 50L)
+        }
+
+        /**
+         * Called (on the decode thread) when a video failed to start - e.g. it
+         * was superseded by an even newer switch, or the GL resources were torn
+         * down concurrently. lastDisplayedId must be reset, otherwise the
+         * engine thinks the new media is already on screen and the previous
+         * video's last frame stays frozen forever. A delayed redraw retries the
+         * current media if nothing else started playing.
+         */
+        private fun onVideoStartFailed() {
+            Log.w(TAG, "Video failed to start; scheduling recovery")
+            videoMode = false
+            lastDisplayedId = 0L
+            mainHandler.postDelayed({
+                if (isVisible && surfaceReady && !switchInProgress && renderer?.isVideoPlaying != true) {
+                    drawCurrentImage()
+                }
+            }, 1500L)
         }
 
         override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {
