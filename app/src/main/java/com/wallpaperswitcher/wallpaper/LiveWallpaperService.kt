@@ -120,6 +120,11 @@ class LiveWallpaperService : WallpaperService() {
             } else {
                 renderer?.surfaceCreated()
             }
+            // Trigger redraw: surface may have become ready after onVisibilityChanged(true)
+            // was called but skipped because surfaceReady was false.
+            if (isVisible) {
+                drawCurrentImage()
+            }
         }
 
         override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {

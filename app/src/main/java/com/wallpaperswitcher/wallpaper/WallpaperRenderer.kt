@@ -241,15 +241,26 @@ class WallpaperRenderer(
      *
      * Flow:
      * 1. Stop any existing video (generation flag + post cleanup to render thread)
-     * 2. Start decode thread which:
+     * 2. WAIT for old decode thread to finish (prevents resource conflicts)
+     * 3. Start decode thread which:
      *    a. Sets up MediaExtractor
      *    b. Posts GL texture + SurfaceTexture creation to render thread (needs EGL context)
      *    c. Creates MediaCodec on decode thread
      *    d. Runs decode loop
      */
     fun startVideo(uriStr: String, scaleMode: ScaleMode) {
+        // Save reference before stopping (stopVideoInternal nulls the field)
+        val oldThread = videoDecodeThread
+
         // First stop any existing video
         stopVideoInternal()
+
+        // CRITICAL: Wait for old decode thread to fully exit.
+        // Without this, the old thread's finally block can destroy the new video's
+    	// decoder/SurfaceTexture (race condition: old thread nulls shared fields).
+        if (oldThread != null && oldThread.isAlive) {
+            try { oldThread.join(2000) } catch (_: InterruptedException) {}
+        }
 
         val gen = videoGeneration.incrementAndGet()
         isVideoPlaying = true
@@ -320,9 +331,13 @@ class WallpaperRenderer(
      * MediaExtractor + MediaCodec I/O only. No GL operations here.
      */
     private fun decodeLoop(uriStr: String, scaleMode: ScaleMode, gen: Int, handler: Handler) {
+        // Use local variables to avoid race with new decode thread's instance fields.
+        var localExtractor: MediaExtractor? = null
+        var localDecoder: MediaCodec? = null
         try {
             // --- Setup MediaExtractor ---
             val ext = MediaExtractor()
+            localExtractor = ext
             ext.setDataSource(context, Uri.parse(uriStr), null)
             val trackIdx = (0 until ext.trackCount).firstOrNull { i ->
                 ext.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
@@ -379,6 +394,7 @@ class WallpaperRenderer(
 
             // --- Setup MediaCodec on THIS thread (decode thread) ---
             val dec = MediaCodec.createDecoderByType(mime)
+            localDecoder = dec
             decoder = dec
             dec.configure(format, codecSurface, null, 0)
             dec.start()
@@ -452,11 +468,11 @@ class WallpaperRenderer(
             Log.e(TAG, "Decode error: ${e.message}", e)
         } finally {
             isVideoPlaying = false
-            try { decoder?.stop() } catch (_: Exception) {}
-            try { decoder?.release() } catch (_: Exception) {}
-            decoder = null
-            try { extractor?.release() } catch (_: Exception) {}
-            extractor = null
+            try { localDecoder?.stop() } catch (_: Exception) {}
+            try { localDecoder?.release() } catch (_: Exception) {}
+            if (decoder === localDecoder) decoder = null
+            try { localExtractor?.release() } catch (_: Exception) {}
+            if (extractor === localExtractor) extractor = null
             // Post GL resource cleanup to render thread
             handler.post {
                 cleanupVideoResourcesOnRenderThread()
