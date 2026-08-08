@@ -13,6 +13,7 @@ import com.wallpaperswitcher.engine.WallpaperApplier
 import com.wallpaperswitcher.service.WallpaperSwitchService
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import kotlinx.coroutines.*
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.withContext
 
@@ -48,6 +49,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     private val _selectedGroupId = MutableStateFlow<Long?>(null)
     val selectedGroupId: StateFlow<Long?> = _selectedGroupId
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     val selectedGroup: StateFlow<WallpaperGroup?> = _selectedGroupId
         .filterNotNull()
         .flatMapLatest { groupDao.getGroupByIdFlow(it) }
@@ -217,7 +219,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun addImages(groupId: Long, uris: List<Uri>, names: List<String>) {
         viewModelScope.launch {
             val group = groupDao.getGroupById(groupId) ?: return@launch
-            val imagePairs = uris.zip(names).filter { (uri, name) ->
+            val imagePairs = uris.zip(names).filter { (_, name) ->
                 if (!isSupportedMedia(name)) return@filter false
                 val mt = detectMediaType(name)
                 if (group.type == "IMAGE" && mt == "VIDEO") return@filter false

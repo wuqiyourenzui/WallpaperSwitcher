@@ -654,7 +654,7 @@ fun WallpaperPreviewDialog(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    if ((image.mediaType ?: "IMAGE") == "VIDEO") "将此视频设置为壁纸" else "将此图片设置为壁纸",
+                    if (image.mediaType == "VIDEO") "将此视频设置为壁纸" else "将此图片设置为壁纸",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

@@ -304,7 +304,7 @@ class WallpaperRenderer(
      * Call from ANY thread (typically IO coroutine thread).
      */
     fun stopVideoAndRender(bitmap: Bitmap, scaleMode: ScaleMode) {
-        val gen = videoGeneration.incrementAndGet()
+        videoGeneration.incrementAndGet()
         isVideoPlaying = false
         videoCleanupDone.set(true)
 
@@ -329,7 +329,7 @@ class WallpaperRenderer(
      * startVideo() nulls it after join().
      */
     private fun stopVideoInternal() {
-        val gen = videoGeneration.incrementAndGet()
+        videoGeneration.incrementAndGet()
         isVideoPlaying = false
         videoCleanupDone.set(true)
 
@@ -362,8 +362,8 @@ class WallpaperRenderer(
             ext.selectTrack(trackIdx)
             val format = ext.getTrackFormat(trackIdx)
             val mime = format.getString(MediaFormat.KEY_MIME)!!
-            var videoW = format.getInteger(MediaFormat.KEY_WIDTH)
-            var videoH = format.getInteger(MediaFormat.KEY_HEIGHT)
+            var videoW = format.getIntegerSafe(MediaFormat.KEY_WIDTH)
+            var videoH = format.getIntegerSafe(MediaFormat.KEY_HEIGHT)
             val maxDim = maxOf(videoW, videoH)
             if (maxDim > 1280) {
                 val scale = 1280f / maxDim
@@ -374,11 +374,11 @@ class WallpaperRenderer(
             // recordings) display with swapped width/height. Use the rotated
             // dimensions for the render quad so the video is not stretched;
             // SurfaceTexture's transform matrix already handles the rotation.
-            val rotation = format.getInteger(MediaFormat.KEY_ROTATION)
+            val rotation = format.getIntegerSafe(MediaFormat.KEY_ROTATION)
             val isRotated = rotation == 90 || rotation == 270
             val quadW = if (isRotated) videoH else videoW
             val quadH = if (isRotated) videoW else videoH
-            val fps = try { format.getInteger(MediaFormat.KEY_FRAME_RATE) } catch (_: Exception) { 30 }
+            val fps = format.getIntegerSafe(MediaFormat.KEY_FRAME_RATE).coerceIn(15, 60)
             val intervalNs = (1_000_000_000L / fps.coerceIn(15, 60)).coerceAtLeast(16_000_000L)
 
             // --- Setup GL texture + SurfaceTexture on render thread ---
@@ -736,7 +736,7 @@ class WallpaperRenderer(
         return s
     }
 
-    private fun MediaFormat.getInteger(key: String): Int {
+    private fun MediaFormat.getIntegerSafe(key: String): Int {
         return try { getInteger(key) } catch (_: Exception) { 0 }
     }
 }

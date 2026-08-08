@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -42,7 +43,7 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                 navigationIcon = {
                     if (currentScreen !is Screen.Home) {
                         IconButton(onClick = { currentScreen = Screen.Home }) {
-                            Icon(Icons.Filled.ArrowBack, "返回")
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
                         }
                     }
                 },

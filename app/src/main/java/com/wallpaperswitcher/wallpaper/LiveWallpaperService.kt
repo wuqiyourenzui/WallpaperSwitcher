@@ -295,7 +295,7 @@ class LiveWallpaperService : WallpaperService() {
                     }
 
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
-                    val mediaType = nextImage.mediaType ?: "IMAGE"
+                    val mediaType = nextImage.mediaType
                     Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
 
                     pauseGif()
@@ -452,7 +452,7 @@ class LiveWallpaperService : WallpaperService() {
                     videoMode = false
 
                     if (image != null) {
-                        when (image.mediaType ?: "IMAGE") {
+                        when (image.mediaType) {
                             "VIDEO" -> {
                                 currentBitmap = null
                                 if (startVideo(image.uri, currentScaleMode)) {
