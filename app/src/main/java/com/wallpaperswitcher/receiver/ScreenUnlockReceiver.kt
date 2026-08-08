@@ -44,7 +44,9 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
                     val enabled = db.settingsDao().getBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, false)
                     Log.d(TAG, "unlockEnabled=$enabled")
                     if (enabled) {
-                        val switchIntent = Intent(LiveWallpaperService.ACTION_SWITCH)
+                        val switchIntent = Intent(LiveWallpaperService.ACTION_SWITCH).apply {
+                            putExtra(LiveWallpaperService.EXTRA_SOURCE, LiveWallpaperService.SOURCE_UNLOCK)
+                        }
                         switchIntent.setPackage(context.packageName)
                         context.sendBroadcast(switchIntent)
                         Log.d(TAG, "Switch broadcast sent")

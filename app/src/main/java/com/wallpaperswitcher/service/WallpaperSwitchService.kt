@@ -36,7 +36,7 @@ class WallpaperSwitchService : Service() {
 
         when (intent?.action) {
             ACTION_SWITCH_NOW -> {
-                sendSwitch()
+                sendSwitch(LiveWallpaperService.SOURCE_MANUAL)
             }
             ACTION_STOP -> {
                 // Persist the disabled state BEFORE stopping. onDestroy() is not a
@@ -71,7 +71,7 @@ class WallpaperSwitchService : Service() {
         switchJob?.cancel()
         switchJob = scope.launch {
             // First switch immediately on start
-            sendSwitch()
+            sendSwitch(LiveWallpaperService.SOURCE_TIMER)
             while (isActive) {
                 try {
                     val db = AppDatabase.getInstance(applicationContext)
@@ -88,7 +88,7 @@ class WallpaperSwitchService : Service() {
                     val interval = db.settingsDao().getLong(SettingsKeys.GLOBAL_INTERVAL_MS, 60_000L)
                         .coerceAtLeast(10_000L)
                     delay(interval)
-                    sendSwitch()
+                    sendSwitch(LiveWallpaperService.SOURCE_TIMER)
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
                     Log.e(TAG, "Switch loop error", e)
@@ -103,9 +103,9 @@ class WallpaperSwitchService : Service() {
      * - Live wallpaper engine running -> broadcast to the engine.
      * - Otherwise -> apply a static wallpaper via WallpaperManager.
      */
-    private fun sendSwitch() {
+    private fun sendSwitch(source: String) {
         if (LiveWallpaperService.engineRunning) {
-            sendSwitchBroadcast()
+            sendSwitchBroadcast(source)
         } else {
             scope.launch {
                 val ok = WallpaperApplier.applyNext(applicationContext)
@@ -118,11 +118,12 @@ class WallpaperSwitchService : Service() {
         }
     }
 
-    private fun sendSwitchBroadcast() {
+    private fun sendSwitchBroadcast(source: String) {
         val intent = Intent(LiveWallpaperService.ACTION_SWITCH)
         intent.setPackage(applicationContext.packageName)
+        intent.putExtra(LiveWallpaperService.EXTRA_SOURCE, source)
         applicationContext.sendBroadcast(intent)
-        Log.d(TAG, "Switch broadcast sent")
+        Log.d(TAG, "Switch broadcast sent ($source)")
     }
 
     private fun createNotification(): Notification {
@@ -162,7 +163,9 @@ class WallpaperSwitchService : Service() {
 
         fun switchNow(context: Context) {
             if (LiveWallpaperService.engineRunning) {
-                val intent = Intent(LiveWallpaperService.ACTION_SWITCH)
+                val intent = Intent(LiveWallpaperService.ACTION_SWITCH).apply {
+                    putExtra(LiveWallpaperService.EXTRA_SOURCE, LiveWallpaperService.SOURCE_MANUAL)
+                }
                 intent.setPackage(context.packageName)
                 context.sendBroadcast(intent)
             } else {
@@ -177,6 +180,7 @@ class WallpaperSwitchService : Service() {
                 val intent = Intent(LiveWallpaperService.ACTION_SWITCH).apply {
                     setPackage(context.packageName)
                     putExtra(LiveWallpaperService.EXTRA_TARGET_ID, targetId)
+                    putExtra(LiveWallpaperService.EXTRA_SOURCE, LiveWallpaperService.SOURCE_MANUAL)
                 }
                 context.sendBroadcast(intent)
             } else {

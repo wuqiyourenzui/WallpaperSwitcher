@@ -407,6 +407,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         val switchIntent = android.content.Intent(LiveWallpaperService.ACTION_SWITCH).apply {
             setPackage(getApplication<Application>().packageName)
             putExtra(LiveWallpaperService.EXTRA_TARGET_ID, targetId)
+            putExtra(LiveWallpaperService.EXTRA_SOURCE, LiveWallpaperService.SOURCE_MANUAL)
         }
         getApplication<Application>().sendBroadcast(switchIntent)
         Log.d(TAG, "Switch broadcast sent with targetId=$targetId")

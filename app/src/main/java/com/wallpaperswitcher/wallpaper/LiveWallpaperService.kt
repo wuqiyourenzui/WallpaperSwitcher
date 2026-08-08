@@ -25,6 +25,10 @@ class LiveWallpaperService : WallpaperService() {
         private const val TAG = "LiveWallpaperService"
         const val ACTION_SWITCH = "com.wallpaperswitcher.ACTION_SWITCH"
         const val EXTRA_TARGET_ID = "target_id"
+        const val EXTRA_SOURCE = "switch_source"
+        const val SOURCE_TIMER = "timer"
+        const val SOURCE_UNLOCK = "unlock"
+        const val SOURCE_MANUAL = "manual"
         private const val SWITCH_SETTLE_DELAY_MS = 80L
         private const val GIF_FRAME_INTERVAL_MS = 33L
         private const val SHUFFLE_MAX_ATTEMPTS = 10
@@ -76,9 +80,18 @@ class LiveWallpaperService : WallpaperService() {
                         } else {
                             doSwitch("broadcast", targetId)
                         }
-                    } else {
-                        doSwitch("broadcast", null)
+                        return
                     }
+                    val source = intent.getStringExtra(EXTRA_SOURCE)
+                    // Automatic switches (timer/unlock) must not interrupt the
+                    // currently playing video while the wallpaper is invisible
+                    // (e.g. another app is open in the foreground). Otherwise
+                    // returning to the desktop would show a "restarted" video.
+                    if (!isVisible && (source == SOURCE_TIMER || source == SOURCE_UNLOCK)) {
+                        Log.d(TAG, "Wallpaper not visible, skip automatic switch ($source)")
+                        return
+                    }
+                    doSwitch("broadcast", null)
                 }
             }
         }
@@ -87,7 +100,12 @@ class LiveWallpaperService : WallpaperService() {
             applicationContext,
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDoubleTap(e: MotionEvent): Boolean {
-                    doSwitch("double-tap")
+                    scope.launch {
+                        val enabled = db.settingsDao().getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
+                        if (enabled && isVisible) {
+                            doSwitch("double-tap")
+                        }
+                    }
                     return true
                 }
             }
@@ -158,17 +176,10 @@ class LiveWallpaperService : WallpaperService() {
                         drawCurrentImage()
                     }
                 }
-            } else {
-                // Stop playback to save power, but reset lastDisplayedId so that
-                // returning to the desktop restarts the video/GIF. Without this
-                // the visibility handler thinks the current media is still shown
-                // and never redraws (video stays black after opening an app).
-                val wasVideo = videoMode || gifDrawable != null
-                renderer?.stopVideo()
-                videoMode = false
-                pauseGif()
-                if (wasVideo) lastDisplayedId = 0L
             }
+            // When the wallpaper becomes invisible (e.g. an app is opened) the
+            // playback intentionally continues: the video keeps running and is
+            // not restarted or interrupted by opening apps / visibility changes.
         }
 
         override fun onDestroy() {
@@ -536,7 +547,7 @@ class LiveWallpaperService : WallpaperService() {
                 val r = renderer
                 val runnable = object : Runnable {
                     override fun run() {
-                        if (!surfaceReady || !isVisible || gifDrawable == null) return
+                        if (!surfaceReady || gifDrawable == null) return
                         try {
                             val bmp = gifBitmapBuffer ?: return
                             bmp.eraseColor(Color.TRANSPARENT)
