@@ -1,6 +1,7 @@
 package com.wallpaperswitcher.wallpaper
 
 import android.content.Context
+import android.content.res.AssetFileDescriptor
 import android.graphics.*
 import android.media.*
 import android.net.Uri
@@ -358,6 +359,7 @@ class WallpaperRenderer(
         // Use local variables to avoid race with new decode thread's instance fields.
         var localExtractor: MediaExtractor? = null
         var localDecoder: MediaCodec? = null
+        var localAfd: AssetFileDescriptor? = null
         try {
             // Outer loop: restart the codec cleanly when the video loops.
             // Flushing and re-feeding an in-place codec can crash some hardware
@@ -367,7 +369,17 @@ class WallpaperRenderer(
                 // --- Setup MediaExtractor ---
                 val ext = MediaExtractor()
                 localExtractor = ext
-                ext.setDataSource(context, Uri.parse(uriStr), null)
+                // Prefer an AssetFileDescriptor: MediaExtractor streaming through
+                // a ContentResolver on cloud-mounted SAF URIs (e.g. PikPak) can
+                // block for tens of seconds, which made the engine look dead.
+                val afd = context.contentResolver.openAssetFileDescriptor(Uri.parse(uriStr), "r")
+                if (afd == null) {
+                    Log.e(TAG, "Cannot open video stream: $uriStr")
+                    isVideoPlaying = false
+                    return
+                }
+                localAfd = afd
+                ext.setDataSource(afd.fileDescriptor)
                 val trackIdx = (0 until ext.trackCount).firstOrNull { i ->
                     ext.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
                 } ?: run {
@@ -507,6 +519,9 @@ class WallpaperRenderer(
                 try { dec.stop() } catch (_: Exception) {}
                 try { dec.release() } catch (_: Exception) {}
                 if (decoder === dec) decoder = null
+                val afdToClose = localAfd
+                localAfd = null
+                try { afdToClose.close() } catch (_: Exception) {}
 
                 if (videoGeneration.get() != gen || Thread.interrupted()) break
                 if (eof) {
@@ -530,6 +545,7 @@ class WallpaperRenderer(
             if (decoder === localDecoder) decoder = null
             try { localExtractor?.release() } catch (_: Exception) {}
             if (extractor === localExtractor) extractor = null
+            try { localAfd?.close() } catch (_: Exception) {}
             // Only post GL cleanup if stopVideoInternal/stopVideoAndRender hasn't already done it.
             // Those methods set videoCleanupDone=true and post their own cleanup.
             // Posting here would race: an old decode thread that exits late could
