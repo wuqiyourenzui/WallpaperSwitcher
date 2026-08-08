@@ -41,7 +41,7 @@ fun HomeScreen(
         // 服务总开关卡片
         ServiceControlCard(
             serviceEnabled = serviceEnabled,
-            onToggle = { viewModel.toggleService(it) },
+            onToggle = { viewModel.setAllSwitches(it) },
             onSwitchNow = { viewModel.switchNow() }
         )
 

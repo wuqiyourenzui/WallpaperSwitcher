@@ -121,6 +121,9 @@ class LiveWallpaperService : WallpaperService() {
             engineRunning = true
             db = AppDatabase.getInstance(applicationContext)
             setTouchEventsEnabled(true)
+            // Start the switch queue consumer up-front so triggers are always
+            // processed immediately.
+            ensureSwitchConsumer()
             val filter = IntentFilter(ACTION_SWITCH)
             try {
                 try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
@@ -253,12 +256,24 @@ class LiveWallpaperService : WallpaperService() {
                 Log.w(TAG, "Switch stuck >30s, starting fallback consumer")
                 scope.launch { consumeSwitches() }
             }
-            switchChannel.trySend(SwitchRequest(source, targetId))
+            Log.d(TAG, "Switch requested: $source target=$targetId")
+            // Guaranteed enqueue: send suspends until the queue has space, so a
+            // trigger can never be silently dropped when the queue is full.
+            scope.launch {
+                switchChannel.send(SwitchRequest(source, targetId))
+            }
         }
 
         private fun ensureSwitchConsumer() {
             if (consumerStarted.compareAndSet(false, true)) {
-                scope.launch { consumeSwitches() }
+                scope.launch {
+                    try {
+                        consumeSwitches()
+                    } finally {
+                        // Allow the consumer to be restarted if it ever dies.
+                        consumerStarted.set(false)
+                    }
+                }
             }
         }
 
@@ -267,13 +282,16 @@ class LiveWallpaperService : WallpaperService() {
                 switchInProgress = true
                 switchStartedAt = SystemClock.elapsedRealtime()
                 try {
+                    Log.d(TAG, "Switch start: ${req.source}")
                     executeSwitch(req.source, req.targetId)
                 } catch (ce: CancellationException) {
                     throw ce
-                } catch (e: Exception) {
-                    Log.e(TAG, "Switch failed: ${req.source}", e)
+                } catch (t: Throwable) {
+                    // Never let one bad switch kill the queue consumer.
+                    Log.e(TAG, "Switch failed: ${req.source}", t)
                 } finally {
                     switchInProgress = false
+                    Log.d(TAG, "Switch done: ${req.source}")
                 }
             }
         }
