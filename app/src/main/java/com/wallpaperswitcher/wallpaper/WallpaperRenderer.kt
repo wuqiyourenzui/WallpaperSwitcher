@@ -24,8 +24,9 @@ import java.util.concurrent.atomic.AtomicInteger
  * - Render thread (HandlerThread): ALL GL ops including updateTexImage
  * - Decode thread: MediaCodec I/O only, posts render requests to render thread
  *
- * Video generation: each startVideo() assigns a monotonically increasing generation
- * number. Stale render tasks from previous videos are silently discarded.
+ * CRITICAL: onSurfaceDestroyed is called on the main thread. release() must
+ * NOT block the main thread for extended periods — the system will ANR-kill
+ * the wallpaper engine. release() posts cleanup asynchronously.
  */
 class WallpaperRenderer(
     private val context: Context,
@@ -91,7 +92,7 @@ class WallpaperRenderer(
     private val videoGeneration = AtomicInteger(0)
     @Volatile private var videoLooping = true
 
-    // Render thread (all GL ops happen here)
+    // Render thread
     private var renderThread: HandlerThread? = null
     private var renderHandler: Handler? = null
 
@@ -102,6 +103,8 @@ class WallpaperRenderer(
 
     /**
      * Initialize EGL. Synchronous — waits for setup to complete.
+     * Called from onSurfaceCreated (main thread). ≤3s wait is acceptable
+     * for initialization (first call only).
      */
     fun initialize(sw: Float, sh: Float) {
         screenW = sw
@@ -122,34 +125,39 @@ class WallpaperRenderer(
             }
             latch.countDown()
         }
-        latch.await(3, TimeUnit.SECONDS)
+        try { latch.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
     }
 
     /**
-     * Release all resources. Posts cleanup to render thread and waits.
-     * Safe to call from main thread — total wait ≤ 4 seconds.
+     * Release all resources. NON-BLOCKING on main thread.
+     *
+     * CRITICAL: onSurfaceDestroyed is called on the main thread. The system
+     * enforces a ~5s ANR timeout. Blocking here causes the wallpaper engine
+     * to be killed, reverting to system default wallpaper.
+     *
+     * Solution: post all cleanup to render thread asynchronously. The old
+     * render thread will clean up and quit on its own. A new renderer can
+     * be created immediately on a new thread — EGL contexts are independent.
      */
     fun release() {
-        // Stop video synchronously
-        stopVideoSync()
+        // Bump generation to invalidate all pending video tasks immediately
+        videoGeneration.incrementAndGet()
+        isVideoPlaying = false
+        eglReady = false
 
-        val handler = renderHandler ?: run {
-            // No render thread — nothing to clean up
-            renderThread = null
-            return
-        }
-        val thread = renderThread ?: return
+        // Interrupt decode thread (non-blocking)
+        videoDecodeThread?.interrupt()
+        videoDecodeThread = null
 
-        val latch = CountDownLatch(1)
-        handler.post {
+        // Post ALL cleanup to render thread — do NOT wait
+        renderHandler?.post {
             cleanup()
-            latch.countDown()
+            renderThread?.quitSafely()
         }
-        try { latch.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
 
-        thread.quitSafely()
-        renderThread = null
+        // Clear references immediately (new renderer gets fresh ones)
         renderHandler = null
+        renderThread = null
     }
 
     // ======== Image Rendering ========
@@ -164,7 +172,7 @@ class WallpaperRenderer(
 
     private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         try {
-            // Upload texture BEFORE clearing framebuffer (prevents flash of black)
+            // Upload texture BEFORE clearing (prevents flash of black)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
 
@@ -174,7 +182,6 @@ class WallpaperRenderer(
             vertexBuffer?.clear()
             vertexBuffer?.put(quad)?.position(0)
 
-            // Clear + draw in one pass (no gap between clear and texture bind)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             GLES20.glUseProgram(imageProgram)
 
@@ -223,14 +230,10 @@ class WallpaperRenderer(
 
     // ======== Video Rendering ========
 
-    /**
-     * Start video playback. Stops any current video synchronously first.
-     */
     fun startVideo(uriStr: String, scaleMode: ScaleMode) {
         // Synchronous stop ensures old resources are fully released
         stopVideoSync()
 
-        // Assign new generation BEFORE starting decode thread
         val gen = videoGeneration.incrementAndGet()
         isVideoPlaying = true
 
@@ -280,7 +283,6 @@ class WallpaperRenderer(
             } catch (_: Exception) { 30 }
             val intervalNs = (1_000_000_000L / fps.coerceIn(15, 60)).coerceAtLeast(16_000_000L)
 
-            // Create SurfaceTexture on render thread (EGL context lives here)
             if (videoTexId == 0) {
                 val texIds = IntArray(1)
                 GLES20.glGenTextures(1, texIds, 0)
@@ -335,11 +337,6 @@ class WallpaperRenderer(
         )
     }
 
-    /**
-     * Decode loop — runs on dedicated thread.
-     * Only handles MediaCodec I/O. Posts render to render thread.
-     * Uses generation number to detect stale tasks.
-     */
     private fun decodeLoop(
         ext: MediaExtractor, dec: MediaCodec, st: SurfaceTexture,
         intervalNs: Long, gen: Int
@@ -380,9 +377,7 @@ class WallpaperRenderer(
 
                 dec.releaseOutputBuffer(outIdx, true)
 
-                // Post render with generation check
                 renderHandler?.post {
-                    // Stale task from old video — discard
                     if (videoGeneration.get() != gen) return@post
                     if (!eglReady) return@post
                     try {
@@ -437,27 +432,24 @@ class WallpaperRenderer(
         }
     }
 
-    /**
-     * Synchronous video stop. Bumps generation (stale tasks discarded),
-     * waits for decode thread, then cleans up on render thread.
-     */
     fun stopVideo() {
         stopVideoSync()
     }
 
+    /**
+     * Synchronous video stop. Called from IO thread (not main thread).
+     * Waits for decode thread to exit and cleanup to complete.
+     */
     private fun stopVideoSync() {
-        // Bump generation — all stale tasks will be discarded
         videoGeneration.incrementAndGet()
         isVideoPlaying = false
 
-        // Wait for decode thread to exit
         videoDecodeThread?.let { thread ->
             thread.interrupt()
             try { thread.join(2000) } catch (_: InterruptedException) {}
         }
         videoDecodeThread = null
 
-        // Cleanup on render thread, wait for completion
         val handler = renderHandler
         if (handler != null && eglReady) {
             val latch = CountDownLatch(1)
@@ -571,8 +563,6 @@ class WallpaperRenderer(
         eglSurface = EGL14.EGL_NO_SURFACE
         eglContext = EGL14.EGL_NO_CONTEXT
     }
-
-    // ======== Helpers ========
 
     private fun createProgram(vertexSrc: String, fragmentSrc: String): Int {
         val vs = compileShader(GLES20.GL_VERTEX_SHADER, vertexSrc)

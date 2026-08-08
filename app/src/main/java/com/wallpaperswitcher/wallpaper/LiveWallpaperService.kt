@@ -134,8 +134,9 @@ class LiveWallpaperService : WallpaperService() {
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
             lastDisplayedId = 0L
-            // release() is synchronous but bounded (≤4s total)
-            // Posts cleanup to render thread and waits for completion
+            // release() is NON-BLOCKING — posts cleanup to render thread asynchronously.
+            // This is critical: onSurfaceDestroyed runs on main thread. Any blocking
+            // longer than ~5s causes ANR → system kills wallpaper → reverts to default.
             try { renderer?.release() } catch (_: Exception) {}
             renderer = null
             pauseGif()
