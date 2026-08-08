@@ -22,9 +22,6 @@ object BitmapUtils {
     fun loadBitmap(context: Context, uriStr: String): Bitmap? {
         return try {
             val uri = Uri.parse(uriStr)
-            val metrics = getScreenMetrics(context)
-            val screenW = metrics.widthPixels
-            val screenH = metrics.heightPixels
 
             // Open InputStream twice: once for bounds, once for decode.
             // Using openInputStream avoids fd position issues with decodeFileDescriptor.
@@ -40,9 +37,12 @@ object BitmapUtils {
                 return null
             }
 
-            // Only downsample if image is more than 4x screen size
+            // Cap the longest edge at ~2560px. Wallpapers only need ~2x the
+            // screen resolution; loading 12MP photos at full size during
+            // frequent switches wastes memory and risks OOM crashes.
             var sample = 1
-            while (opts.outWidth / sample > screenW * 4 || opts.outHeight / sample > screenH * 4) sample *= 2
+            val maxDim = maxOf(opts.outWidth, opts.outHeight)
+            while (maxDim / sample > 2560) sample *= 2
 
             // Second pass: decode actual bitmap from a fresh stream
             val stream2 = context.contentResolver.openInputStream(uri)

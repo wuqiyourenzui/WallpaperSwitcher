@@ -40,6 +40,8 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile
         var engineRunning = false
             private set
+        @Volatile
+        private var activeEngine: LiveWallpaperEngine? = null
     }
 
     override fun onCreateEngine(): Engine = LiveWallpaperEngine()
@@ -84,6 +86,13 @@ class LiveWallpaperService : WallpaperService() {
 
         private val switchReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
+                // Only the currently active engine handles switch broadcasts.
+                // When the wallpaper is re-applied, a stale engine can still be
+                // registered for a moment; without this guard one broadcast
+                // would trigger two concurrent switches and corrupt the GL
+                // renderer (this showed up as an engine crash right after a
+                // timed switch in the logs).
+                if (activeEngine !== this@LiveWallpaperEngine) return
                 if (intent.action == ACTION_SWITCH) {
                     val targetId = intent.getLongExtra(EXTRA_TARGET_ID, -1L)
                     if (targetId > 0) {
@@ -119,6 +128,7 @@ class LiveWallpaperService : WallpaperService() {
         override fun onCreate(surfaceHolder: SurfaceHolder?) {
             super.onCreate(surfaceHolder)
             engineRunning = true
+            activeEngine = this
             db = AppDatabase.getInstance(applicationContext)
             setTouchEventsEnabled(true)
             // Start the switch queue consumer up-front so triggers are always
@@ -208,6 +218,7 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onDestroy() {
             engineRunning = false
+            if (activeEngine === this) activeEngine = null
             lastDisplayedId = 0L
             switchInProgress = false
             switchStartedAt = 0L
