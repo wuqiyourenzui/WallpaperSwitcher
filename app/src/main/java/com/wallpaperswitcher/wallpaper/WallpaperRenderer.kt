@@ -438,12 +438,25 @@ class WallpaperRenderer(
                     Log.e(TAG, "Video GL setup failed"); isVideoPlaying = false
                     return
                 }
+                // A concurrent stopVideoAndRender/stopVideoInternal may have
+                // already posted cleanup that nulled the shared fields right
+                // after our generation check. Capture the references now and
+                // bail out if they are gone instead of hitting an NPE in
+                // configure() or the decode loop (seen in the logs as
+                // decodeLoop NullPointerException right after a timed switch).
+                val st = surfaceTexture
+                val cs = codecSurface
+                if (st == null || cs == null || videoGeneration.get() != gen) {
+                    Log.e(TAG, "Video resources torn down during setup")
+                    isVideoPlaying = false
+                    return
+                }
 
                 // --- Setup MediaCodec on THIS thread (decode thread) ---
                 val dec = MediaCodec.createDecoderByType(mime)
                 localDecoder = dec
                 decoder = dec
-                dec.configure(format, codecSurface, null, 0)
+                dec.configure(format, cs, null, 0)
                 dec.start()
 
                 // Cache render quad on render thread
@@ -460,7 +473,6 @@ class WallpaperRenderer(
                 val bufferInfo = MediaCodec.BufferInfo()
                 var inputDone = false
                 var eof = false
-                val st = surfaceTexture!!
                 while (videoGeneration.get() == gen && !Thread.interrupted() && !eof) {
                     val startNs = System.nanoTime()
 
