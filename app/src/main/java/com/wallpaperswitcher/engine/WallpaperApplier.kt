@@ -45,7 +45,8 @@ object WallpaperApplier {
 
         var applied = false
         try {
-            applied = WallpaperManager.getInstance(context).setBitmap(bitmap)
+            WallpaperManager.getInstance(context).setBitmap(bitmap)
+            applied = true
         } catch (e: Exception) {
             Log.e(TAG, "apply failed for ${image.displayName}", e)
         } finally {
