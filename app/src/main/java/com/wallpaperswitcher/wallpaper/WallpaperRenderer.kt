@@ -21,14 +21,16 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Unified EGL renderer with MediaCodec + SurfaceTexture for video.
  *
- * KEY FIXES over previous version:
- * 1. SurfaceTexture released BEFORE GL texture (prevents dangling reference)
- * 2. MediaCodec setup on decode thread (not render thread — no blocking)
- * 3. Decode thread captures renderHandler locally (prevents dangling after release)
- * 4. stopVideo is non-blocking (just flag + interrupt)
- * 5. surfaceDestroyed stops video first, then cleans up EGL surface
+ * ARCHITECTURE:
+ * - All GL/EGL operations happen exclusively on the render thread.
+ * - stopVideo() is non-blocking: sets generation flag, then posts cleanup to render thread.
+ * - SurfaceTexture and GL textures are released together on the render thread.
+ * - EGL context survives surface recreation (GLSurfaceView pattern).
  *
- * EGL context survives surface recreation (GLSurfaceView pattern).
+ * THREAD SAFETY:
+ * - renderHandler is the ONLY thread that touches GL/EGL state.
+ * - Decode thread only handles MediaExtractor + MediaCodec I/O.
+ * - stopVideo() / release() post cleanup to render thread and return immediately.
  */
 class WallpaperRenderer(
     private val context: Context,
@@ -88,7 +90,7 @@ class WallpaperRenderer(
     private var screenW = 0f
     private var screenH = 0f
 
-    // Video state
+    // Video state — ALL accessed only on render thread (after initial setup)
     private var videoTexId = 0
     private var surfaceTexture: SurfaceTexture? = null
     private var codecSurface: Surface? = null
@@ -97,6 +99,10 @@ class WallpaperRenderer(
     private var videoDecodeThread: Thread? = null
     @Volatile var isVideoPlaying = false; private set
     private val videoGeneration = AtomicInteger(0)
+
+    // Pending image to show after video stops (avoids race between stop and show)
+    @Volatile private var pendingShowImage: Bitmap? = null
+    @Volatile private var pendingShowScaleMode: ScaleMode? = null
 
     // Render thread (persists across surface recreations)
     private var renderThread: HandlerThread? = null
@@ -141,9 +147,9 @@ class WallpaperRenderer(
     }
 
     fun surfaceDestroyed() {
-        // Stop video FIRST (interrupt decode thread)
-        stopVideo()
-        // Then clean up EGL surface on render thread
+        // Stop video (sets generation flag, posts cleanup to render thread)
+        stopVideoInternal()
+        // Destroy EGL surface on render thread
         renderHandler?.post {
             surfaceReady = false
             destroyEglSurface()
@@ -151,7 +157,7 @@ class WallpaperRenderer(
     }
 
     fun release() {
-        stopVideo()
+        stopVideoInternal()
         val handler = renderHandler
         val thread = renderThread
         if (handler != null && thread != null) {
@@ -172,7 +178,8 @@ class WallpaperRenderer(
     // ======== Image Rendering ========
 
     fun showImage(bitmap: Bitmap, scaleMode: ScaleMode) {
-        renderHandler?.post {
+        val handler = renderHandler ?: return
+        handler.post {
             if (!surfaceReady || !contextReady) return@post
             renderImage(bitmap, scaleMode)
         }
@@ -180,6 +187,8 @@ class WallpaperRenderer(
 
     private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         try {
+            if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
+
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
             android.opengl.Matrix.setIdentityM(imageTexMatrix, 0)
@@ -229,16 +238,23 @@ class WallpaperRenderer(
     // ======== Video: MediaCodec + SurfaceTexture ========
 
     /**
-     * Start video. MediaCodec setup happens on the decode thread (not render thread).
-     * Decode thread captures renderHandler locally to prevent dangling reference.
+     * Start video playback.
+     *
+     * Flow:
+     * 1. Stop any existing video (generation flag + post cleanup to render thread)
+     * 2. Start decode thread which:
+     *    a. Sets up MediaExtractor
+     *    b. Posts GL texture + SurfaceTexture creation to render thread (needs EGL context)
+     *    c. Creates MediaCodec on decode thread
+     *    d. Runs decode loop
      */
     fun startVideo(uriStr: String, scaleMode: ScaleMode) {
-        stopVideo()
+        // First stop any existing video
+        stopVideoInternal()
 
         val gen = videoGeneration.incrementAndGet()
         isVideoPlaying = true
 
-        // Capture handler locally — decode thread uses this, not the field
         val handler = renderHandler ?: run { isVideoPlaying = false; return }
 
         videoDecodeThread = Thread({
@@ -247,9 +263,51 @@ class WallpaperRenderer(
     }
 
     /**
+     * Public stopVideo — called from outside (e.g. LiveWallpaperService).
+     * Non-blocking: sets generation flag and posts cleanup to render thread.
+     */
+    fun stopVideo() {
+        stopVideoInternal()
+    }
+
+    /**
+     * Internal stop: interrupt decode thread, post cleanup to render thread.
+     * Does NOT block waiting for decode thread (avoids deadlock when called from render thread).
+     */
+    private fun stopVideoInternal() {
+        val gen = videoGeneration.incrementAndGet()
+        isVideoPlaying = false
+
+        // Interrupt decode thread (it checks generation flag in its loop)
+        val decodeThread = videoDecodeThread
+        videoDecodeThread = null
+        decodeThread?.interrupt()
+        // Don't join — the decode thread's finally block will post cleanup
+
+        // Post video resource cleanup to render thread (where EGL context lives)
+        val handler = renderHandler ?: return
+        handler.post {
+            cleanupVideoResourcesOnRenderThread()
+
+            // If there's a pending image to show after video stops, show it now
+            val pendingBmp = pendingShowImage
+            val pendingMode = pendingShowScaleMode
+            if (pendingBmp != null && pendingMode != null) {
+                pendingShowImage = null
+                pendingShowScaleMode = null
+                if (surfaceReady && contextReady) {
+                    renderImage(pendingBmp, pendingMode)
+                }
+            }
+        }
+    }
+
+    /**
      * Decode loop — runs on dedicated decode thread.
-     * ALL MediaCodec/SurfaceTexture setup happens here (not on render thread).
-     * Captures handler locally to prevent dangling reference after release().
+     * MediaExtractor + MediaCodec I/O only. No GL operations here.
+     *
+     * SurfaceTexture + GL texture setup is posted to render thread (needs EGL context).
+     * Video frame rendering (updateTexImage + draw) is posted to render thread.
      */
     private fun decodeLoop(uriStr: String, scaleMode: ScaleMode, gen: Int, handler: Handler) {
         try {
@@ -276,16 +334,19 @@ class WallpaperRenderer(
             val intervalNs = (1_000_000_000L / fps.coerceIn(15, 60)).coerceAtLeast(16_000_000L)
 
             // --- Setup GL texture + SurfaceTexture on render thread ---
-            // SurfaceTexture must be created on the thread with the EGL context.
-            // updateTexImage() must be called on the same thread that created it.
-            // Both happen on the render thread — correct.
             val setupLatch = CountDownLatch(1)
             var setupOk = false
             handler.post {
+                // Check generation — another startVideo may have been called
+                if (videoGeneration.get() != gen) {
+                    setupLatch.countDown()
+                    return@post
+                }
                 if (!surfaceReady || !contextReady) {
                     setupLatch.countDown()
                     return@post
                 }
+                // Create GL texture for video (EXTERNAL_OES)
                 if (videoTexId == 0) {
                     val texIds = IntArray(1)
                     GLES20.glGenTextures(1, texIds, 0)
@@ -317,6 +378,7 @@ class WallpaperRenderer(
 
             // Cache render quad on render thread
             handler.post {
+                if (videoGeneration.get() != gen) return@post
                 val quad = computeVideoQuad(videoW.toFloat(), videoH.toFloat(), scaleMode)
                 vertexBuffer?.clear()
                 vertexBuffer?.put(quad)?.position(0)
@@ -327,6 +389,8 @@ class WallpaperRenderer(
             // --- Decode loop ---
             val bufferInfo = MediaCodec.BufferInfo()
             var inputDone = false
+            // Capture SurfaceTexture locally — if cleanup releases the field, we still have a ref
+            // (the ref becomes invalid only when we exit this method)
             val st = surfaceTexture!!
 
             while (videoGeneration.get() == gen && !Thread.interrupted()) {
@@ -384,7 +448,16 @@ class WallpaperRenderer(
             Log.e(TAG, "Decode error: ${e.message}", e)
         } finally {
             isVideoPlaying = false
-            cleanupVideoCodec()
+            // Release MediaCodec + MediaExtractor on decode thread (safe, no GL)
+            try { decoder?.stop() } catch (_: Exception) {}
+            try { decoder?.release() } catch (_: Exception) {}
+            decoder = null
+            try { extractor?.release() } catch (_: Exception) {}
+            extractor = null
+            // Post GL resource cleanup to render thread
+            handler.post {
+                cleanupVideoResourcesOnRenderThread()
+            }
         }
     }
 
@@ -403,6 +476,8 @@ class WallpaperRenderer(
 
     private fun renderVideoFrame(texMatrix: FloatArray) {
         try {
+            if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
+
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             GLES20.glUseProgram(videoProgram)
 
@@ -430,39 +505,36 @@ class WallpaperRenderer(
         }
     }
 
-    fun stopVideo() {
-        videoGeneration.incrementAndGet()
-        isVideoPlaying = false
-        videoDecodeThread?.let {
-            it.interrupt()
-            try { it.join(1000) } catch (_: InterruptedException) {}
-        }
-        videoDecodeThread = null
-        // Cleanup on decode thread's finally block, or here as fallback
-        cleanupVideoCodec()
-    }
-
     /**
-     * FIX: Release SurfaceTexture BEFORE deleting GL texture.
-     * Old code deleted videoTexId first → SurfaceTexture held dangling reference → crash.
+     * Clean up video GL resources. MUST be called on render thread (EGL context required).
+     *
+     * Order matters:
+     * 1. Release SurfaceTexture first (it holds a reference to the GL texture)
+     * 2. Release codecSurface (backed by SurfaceTexture)
+     * 3. Delete GL texture (SurfaceTexture no longer references it)
      */
-    private fun cleanupVideoCodec() {
-        // 1. Release SurfaceTexture first (it references videoTexId)
+    private fun cleanupVideoResourcesOnRenderThread() {
+        // 1. Release SurfaceTexture (references videoTexId)
         try { surfaceTexture?.release() } catch (_: Exception) {}
         surfaceTexture = null
+        // 2. Release codec Surface
         try { codecSurface?.release() } catch (_: Exception) {}
         codecSurface = null
-        // 2. THEN delete GL texture (SurfaceTexture no longer references it)
+        // 3. Delete GL texture (no longer referenced by SurfaceTexture)
         if (videoTexId != 0) {
             GLES20.glDeleteTextures(1, intArrayOf(videoTexId), 0)
             videoTexId = 0
         }
-        // 3. Release MediaCodec and extractor
-        try { decoder?.stop() } catch (_: Exception) {}
-        try { decoder?.release() } catch (_: Exception) {}
-        decoder = null
-        try { extractor?.release() } catch (_: Exception) {}
-        extractor = null
+    }
+
+    /**
+     * Queue an image to be shown after the current video finishes stopping.
+     * This avoids the race where showImage() is called before video cleanup completes.
+     */
+    fun showImageAfterVideoStop(bitmap: Bitmap, scaleMode: ScaleMode) {
+        pendingShowImage = bitmap
+        pendingShowScaleMode = scaleMode
+        // The stopVideoInternal() call that preceded this will post cleanup + pending show
     }
 
     // ======== EGL: Context (once) + Surface (per recreation) ========
@@ -568,7 +640,7 @@ class WallpaperRenderer(
     }
 
     private fun cleanupAll() {
-        cleanupVideoCodec()
+        cleanupVideoResourcesOnRenderThread()
         cleanupGlResources()
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)

@@ -131,9 +131,6 @@ class LiveWallpaperService : WallpaperService() {
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
             lastDisplayedId = 0L
-            // Only destroy EGL surface — context and GL resources survive.
-            // When surface is recreated, surfaceCreated() creates a new EGL surface
-            // from the existing context. No race condition possible.
             renderer?.surfaceDestroyed()
             pauseGif()
         }
@@ -268,6 +265,7 @@ class LiveWallpaperService : WallpaperService() {
                     val mediaType = nextImage.mediaType ?: "IMAGE"
                     Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
 
+                    // Stop current video (non-blocking, cleanup posted to render thread)
                     stopVideo()
                     pauseGif()
                     delay(SWITCH_SETTLE_DELAY_MS)
@@ -289,7 +287,10 @@ class LiveWallpaperService : WallpaperService() {
                             val bitmap = loadBitmap(nextImage.uri)
                             if (bitmap != null) {
                                 currentBitmap = bitmap
-                                renderer?.showImage(bitmap, currentScaleMode)
+                                // Use showImageAfterVideoStop to handle the case where
+                                // video cleanup hasn't completed yet on the render thread.
+                                // This queues the image and shows it once cleanup finishes.
+                                renderer?.showImageAfterVideoStop(bitmap, currentScaleMode)
                                 lastDisplayedId = nextImage.id
                             }
                         }
@@ -402,6 +403,7 @@ class LiveWallpaperService : WallpaperService() {
                         }
                     }
 
+                    // Stop video (non-blocking)
                     stopVideo()
                     pauseGif()
                     videoMode = false
@@ -425,7 +427,7 @@ class LiveWallpaperService : WallpaperService() {
                                 val bitmap = loadBitmap(image.uri)
                                 if (bitmap != null) {
                                     currentBitmap = bitmap
-                                    r.showImage(bitmap, currentScaleMode)
+                                    r.showImageAfterVideoStop(bitmap, currentScaleMode)
                                     return@launch
                                 }
                             }
