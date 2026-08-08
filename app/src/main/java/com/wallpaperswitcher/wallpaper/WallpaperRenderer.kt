@@ -8,6 +8,7 @@ import android.opengl.*
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.view.Surface
 import android.view.SurfaceHolder
 import com.wallpaperswitcher.data.ScaleMode
 import java.nio.ByteBuffer
