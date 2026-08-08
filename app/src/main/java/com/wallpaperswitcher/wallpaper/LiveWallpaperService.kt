@@ -218,8 +218,16 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         override fun onDestroy() {
-            engineRunning = false
-            if (activeEngine === this) activeEngine = null
+            // Only the active engine owns the static engineRunning flag. When
+            // the wallpaper is re-applied, the OLD engine may receive its
+            // onDestroy AFTER the new engine already started; clearing the flag
+            // unconditionally would make the timer fall back to the static path
+            // and drop unlock/double-tap while the new engine is alive (exactly
+            // what the captured logs showed).
+            if (activeEngine === this) {
+                activeEngine = null
+                engineRunning = false
+            }
             lastDisplayedId = 0L
             switchInProgress = false
             switchStartedAt = 0L
