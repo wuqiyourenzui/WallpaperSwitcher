@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import com.wallpaperswitcher.ui.theme.WallpaperSwitcherTheme
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
@@ -31,6 +32,21 @@ class MainActivity : ComponentActivity() {
         setContent {
             val vm: WallpaperViewModel = viewModel()
             val themeColor by vm.themeColor.collectAsStateWithLifecycle()
+            val serviceEnabled by vm.serviceEnabled.collectAsStateWithLifecycle()
+
+            // If the timer switch is enabled but the live wallpaper engine is
+            // not running, timer/double-tap/unlock switching cannot work (the
+            // engine receives none of the triggers). Tell the user to re-apply
+            // the live wallpaper instead of silently staying in a broken state.
+            androidx.compose.runtime.LaunchedEffect(serviceEnabled) {
+                if (serviceEnabled && !LiveWallpaperService.engineRunning) {
+                    android.widget.Toast.makeText(
+                        this@MainActivity,
+                        "动态壁纸引擎未运行，定时/双击/解锁切换无法生效，请重新设置动态壁纸",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
 
             WallpaperSwitcherTheme(themeColorHex = themeColor) {
                 Surface(
