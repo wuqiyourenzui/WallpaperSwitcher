@@ -360,7 +360,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun setImageAsWallpaper(image: WallpaperImage) {
         viewModelScope.launch {
             try {
-                // 1. Save target ID (live wallpaper reads this from DB)
+                // 1. Save target ID — MUST complete before launching picker.
+                //    The engine reads this from DB when it starts.
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
 
                 // 2. Send broadcast to running live wallpaper engine

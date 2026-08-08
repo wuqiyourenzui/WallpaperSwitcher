@@ -100,6 +100,8 @@ class WallpaperRenderer(
     private var videoDecodeThread: Thread? = null
     @Volatile var isVideoPlaying = false; private set
     private val videoGeneration = AtomicInteger(0)
+    // Flag to prevent double-cleanup: stopVideoInternal sets this, decodeLoop checks it.
+    private val videoCleanupDone = AtomicBoolean(false)
 
     // Render thread (persists across surface recreations)
     private var renderThread: HandlerThread? = null
@@ -262,6 +264,8 @@ class WallpaperRenderer(
             try { oldThread.join(2000) } catch (_: InterruptedException) {}
         }
 
+        // Reset cleanup flag for the new video
+        videoCleanupDone.set(false)
         val gen = videoGeneration.incrementAndGet()
         isVideoPlaying = true
 
@@ -292,6 +296,7 @@ class WallpaperRenderer(
     fun stopVideoAndRender(bitmap: Bitmap, scaleMode: ScaleMode) {
         val gen = videoGeneration.incrementAndGet()
         isVideoPlaying = false
+        videoCleanupDone.set(true)
 
         // Interrupt decode thread
         val decodeThread = videoDecodeThread
@@ -311,10 +316,12 @@ class WallpaperRenderer(
     /**
      * Internal stop: interrupt decode thread, post cleanup to render thread.
      * Does NOT block waiting for decode thread.
+     * Sets cleanupDone so the decode loop's finally block won't duplicate cleanup.
      */
     private fun stopVideoInternal() {
         val gen = videoGeneration.incrementAndGet()
         isVideoPlaying = false
+        videoCleanupDone.set(true)
 
         val decodeThread = videoDecodeThread
         videoDecodeThread = null
@@ -473,9 +480,13 @@ class WallpaperRenderer(
             if (decoder === localDecoder) decoder = null
             try { localExtractor?.release() } catch (_: Exception) {}
             if (extractor === localExtractor) extractor = null
-            // Post GL resource cleanup to render thread
-            handler.post {
-                cleanupVideoResourcesOnRenderThread()
+            // Only post GL cleanup if stopVideoInternal/stopVideoAndRender hasn't already done it.
+            // Those methods set videoCleanupDone=true and post their own cleanup.
+            // Posting here would race: old cleanup runs AFTER new video's setup, destroying new resources.
+            if (!videoCleanupDone.getAndSet(true)) {
+                handler.post {
+                    cleanupVideoResourcesOnRenderThread()
+                }
             }
         }
     }
