@@ -218,25 +218,6 @@ class LiveWallpaperService : WallpaperService() {
 
         // ======== Switch logic ========
 
-        /**
-         * Pick next media type for scheduled switching.
-         * Alternates between IMAGE and VIDEO when both types are enabled.
-         * videoMode=true means currently showing video → next pick IMAGE.
-         * videoMode=false means currently showing image → next pick VIDEO.
-         */
-        private suspend fun pickMediaType(): String {
-            val imageGroups = db.wallpaperGroupDao().getEnabledGroupsByType("IMAGE")
-            val videoGroups = db.wallpaperGroupDao().getEnabledGroupsByType("VIDEO")
-            return when {
-                imageGroups.isEmpty() && videoGroups.isEmpty() -> "IMAGE"
-                imageGroups.isEmpty() -> "VIDEO"
-                videoGroups.isEmpty() -> "IMAGE"
-                // Both types enabled: alternate based on current state
-                videoMode -> "IMAGE"   // Currently showing video → pick image
-                else -> "VIDEO"        // Currently showing image (or just reset) → pick video
-            }
-        }
-
         private fun doSwitch(source: String, targetId: Long? = null) {
             if (!isSwitching.compareAndSet(false, true)) {
                 Log.d(TAG, "Already switching, skip ($source)")
@@ -273,20 +254,19 @@ class LiveWallpaperService : WallpaperService() {
                         if (img != null) {
                             val group = db.wallpaperGroupDao().getGroupById(img.groupId)
                             if (group == null || !group.isEnabled) {
-                                pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao, pickMediaType())
+                                pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao)
                             } else {
                                 img
                             }
                         } else {
-                            pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao, pickMediaType())
+                            pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao)
                         }
                     } else {
-                        val mediaType = pickMediaType()
                         val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
                         val switchMode = try {
                             SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
                         } catch (_: Exception) { SwitchMode.RANDOM }
-                        pickNextImage(switchMode, imageDao, lastId, dao, mediaType)
+                        pickNextImage(switchMode, imageDao, lastId, dao)
                     }
 
                     if (nextImage == null) {
@@ -358,32 +338,31 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private suspend fun pickNextImage(
-            switchMode: SwitchMode, imageDao: WallpaperImageDao, lastId: Long, dao: SettingsDao, groupType: String
+            switchMode: SwitchMode, imageDao: WallpaperImageDao, lastId: Long, dao: SettingsDao
         ): WallpaperImage? {
             return when (switchMode) {
                 SwitchMode.RANDOM -> {
-                    imageDao.getRandomFromEnabledGroupsByTypeExcluding(groupType, lastId)
-                        ?: imageDao.getRandomFromEnabledGroupsByType(groupType)
+                    imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                        ?: imageDao.getRandomImageFromEnabledGroups()
                 }
                 SwitchMode.SEQUENTIAL -> {
-                    val count = imageDao.countByEnabledGroupsOfType(groupType)
+                    val count = imageDao.countByEnabledGroups()
                     if (count == 0) null else {
-                        val key = if (groupType == "VIDEO") SettingsKeys.VIDEO_SEQ_INDEX else SettingsKeys.SEQUENTIAL_INDEX
-                        val idx = dao.getLong(key).toInt()
+                        val idx = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
                         val next = idx % count
-                        val img = imageDao.getSequentialFromEnabledGroupsByType(groupType, next)
+                        val img = imageDao.getSequentialImageFromEnabledGroups(next)
                         if (img != null) {
-                            dao.setLong(key, (next + 1).toLong())
+                            dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, (next + 1).toLong())
                             img
                         } else {
-                            dao.setLong(key, 0L)
-                            imageDao.getSequentialFromEnabledGroupsByType(groupType, 0)
-                                ?: imageDao.getRandomFromEnabledGroupsByType(groupType)
+                            dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, 0L)
+                            imageDao.getSequentialImageFromEnabledGroups(0)
+                                ?: imageDao.getRandomImageFromEnabledGroups()
                         }
                     }
                 }
                 SwitchMode.SHUFFLE -> {
-                    val totalCount = imageDao.countByEnabledGroupsOfType(groupType)
+                    val totalCount = imageDao.countByEnabledGroups()
                     if (totalCount == 0) null else {
                         if (shuffleShownIds.isEmpty() && shuffleAllCount == 0) {
                             val savedIds = dao.getString(SettingsKeys.SHUFFLE_SHOWN_IDS, "")
@@ -398,13 +377,20 @@ class LiveWallpaperService : WallpaperService() {
                         }
                         var attempts = 0; var candidate: WallpaperImage? = null
                         while (attempts < SHUFFLE_MAX_ATTEMPTS && candidate == null) {
-                            val img = imageDao.getRandomFromEnabledGroupsByTypeExcluding(groupType, lastId)
-                                ?: imageDao.getRandomFromEnabledGroupsByType(groupType)
+                            val img = imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                                ?: imageDao.getRandomImageFromEnabledGroups()
                             if (img != null && img.id !in shuffleShownIds) candidate = img
                             else if (img != null && shuffleShownIds.size >= totalCount) {
                                 shuffleShownIds.clear(); candidate = img
                             }
                             attempts++
+                        }
+                        if (candidate == null) {
+                            // Random sampling failed to find an unseen item (e.g. only
+                            // one media exists): reset the shown set and accept any media.
+                            shuffleShownIds.clear()
+                            candidate = imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                                ?: imageDao.getRandomImageFromEnabledGroups()
                         }
                         candidate?.also {
                             shuffleShownIds.add(it.id)

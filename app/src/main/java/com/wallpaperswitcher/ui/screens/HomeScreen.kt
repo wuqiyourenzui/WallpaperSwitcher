@@ -88,10 +88,10 @@ fun HomeScreen(
     if (showCreateDialog) {
         CreateGroupDialog(
             onDismiss = { showCreateDialog = false },
-            onCreate = { name, type ->
+            onCreate = { name ->
                 showCreateDialog = false
                 coroutineScope.launch {
-                    val groupId = viewModel.createGroup(name, type)
+                    val groupId = viewModel.createGroup(name)
                     onGroupClick(groupId)
                 }
             }
@@ -208,7 +208,7 @@ private fun GroupCard(
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    if (group.type == "VIDEO") Icons.Outlined.Videocam else Icons.Outlined.Image,
+                    Icons.Outlined.Image,
                     contentDescription = null,
                     tint = if (group.isEnabled)
                         MaterialTheme.colorScheme.primary
@@ -231,7 +231,7 @@ private fun GroupCard(
                         MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
                 Text(
-                    if (group.type == "VIDEO") "视频分组" else "图片分组",
+                    "图片 / 视频",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -278,10 +278,9 @@ private fun EmptyGroupsHint() {
 @OptIn(ExperimentalMaterial3Api::class)
 fun CreateGroupDialog(
     onDismiss: () -> Unit,
-    onCreate: (String, String) -> Unit
+    onCreate: (String) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
-    var selectedType by remember { mutableStateOf("IMAGE") }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -295,26 +294,16 @@ fun CreateGroupDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Text("分组类型", style = MaterialTheme.typography.bodyMedium)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = selectedType == "IMAGE",
-                        onClick = { selectedType = "IMAGE" },
-                        label = { Text("图片") },
-                        leadingIcon = { Icon(Icons.Outlined.Image, null, Modifier.size(16.dp)) }
-                    )
-                    FilterChip(
-                        selected = selectedType == "VIDEO",
-                        onClick = { selectedType = "VIDEO" },
-                        label = { Text("视频") },
-                        leadingIcon = { Icon(Icons.Outlined.Videocam, null, Modifier.size(16.dp)) }
-                    )
-                }
+                Text(
+                    "分组内可混合添加图片和视频",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
         },
         confirmButton = {
             TextButton(
-                onClick = { if (name.isNotBlank()) onCreate(name, selectedType) },
+                onClick = { if (name.isNotBlank()) onCreate(name) },
                 enabled = name.isNotBlank()
             ) {
                 Text("创建")

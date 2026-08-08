@@ -128,8 +128,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Create a new group and return its ID.
      */
-    suspend fun createGroup(name: String, type: String = "IMAGE"): Long {
-        return groupDao.insert(WallpaperGroup(name = name, type = type))
+    suspend fun createGroup(name: String): Long {
+        return groupDao.insert(WallpaperGroup(name = name))
     }
 
     fun updateGroup(group: WallpaperGroup) {
@@ -194,17 +194,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addImage(groupId: Long, uri: Uri, displayName: String) {
         viewModelScope.launch {
-            val group = groupDao.getGroupById(groupId) ?: return@launch
+            if (groupDao.getGroupById(groupId) == null) return@launch
             val mediaType = detectMediaType(displayName)
-            // Validate: IMAGE group can only have images, VIDEO group can only have videos
-            if (group.type == "IMAGE" && mediaType == "VIDEO") {
-                _toastMessage.emit("图片分组不能添加视频")
-                return@launch
-            }
-            if (group.type == "VIDEO" && mediaType != "VIDEO") {
-                _toastMessage.emit("视频分组只能添加视频")
-                return@launch
-            }
             imageDao.insert(WallpaperImage(
                 groupId = groupId,
                 uri = uri.toString(),
@@ -218,12 +209,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addImages(groupId: Long, uris: List<Uri>, names: List<String>) {
         viewModelScope.launch {
-            val group = groupDao.getGroupById(groupId) ?: return@launch
+            if (groupDao.getGroupById(groupId) == null) return@launch
             val imagePairs = uris.zip(names).filter { (_, name) ->
                 if (!isSupportedMedia(name)) return@filter false
-                val mt = detectMediaType(name)
-                if (group.type == "IMAGE" && mt == "VIDEO") return@filter false
-                if (group.type == "VIDEO" && mt != "VIDEO") return@filter false
                 true
             }
             val images = imagePairs.map { (uri, name) ->
@@ -250,7 +238,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         addFolderJob?.cancel()
         addFolderJob = viewModelScope.launch {
             try {
-                val group = groupDao.getGroupById(groupId) ?: return@launch
+                if (groupDao.getGroupById(groupId) == null) return@launch
                 _toastMessage.emit("正在扫描文件夹...")
                 var total = 0
                 val batch = mutableListOf<WallpaperImage>()
@@ -279,15 +267,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                                 if (file.isDirectory) {
                                     scanDir(file)
                                 } else if (file.isFile && isSupportedMedia(file.name ?: "")) {
-                                    val mt = detectMediaType(file.name ?: "")
-                                    // Filter by group type
-                                    if (group.type == "IMAGE" && mt == "VIDEO") continue
-                                    if (group.type == "VIDEO" && mt != "VIDEO") continue
                                     batch.add(WallpaperImage(
                                         groupId = groupId,
                                         uri = file.uri.toString(),
                                         displayName = file.name ?: "untitled",
-                                        mediaType = mt,
+                                        mediaType = detectMediaType(file.name ?: ""),
                                         isFromFolder = true,
                                         folderPath = folderUri.toString()
                                     ))

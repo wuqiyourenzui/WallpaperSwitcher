@@ -70,8 +70,8 @@ fun GroupDetailScreen(
     }
 
     val currentGroup = group
-    val groupType = currentGroup?.type ?: "IMAGE"
-    val mimeTypes = if (groupType == "VIDEO") arrayOf("video/*") else arrayOf("image/*", "video/*")
+    // Groups are mixed: allow both images and videos to be added.
+    val mimeTypes = arrayOf("image/*", "video/*")
 
     // 图片选择器
     val imagePickerLauncher = rememberLauncherForActivityResult(
@@ -577,7 +577,7 @@ fun AddWallpaperDialog(
                 ) {
                     Icon(Icons.Outlined.Image, null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("选择单张图片", modifier = Modifier.weight(1f))
+                    Text("选择单张图片/视频", modifier = Modifier.weight(1f))
                 }
                 TextButton(
                     onClick = onAddMultiple,
@@ -585,7 +585,7 @@ fun AddWallpaperDialog(
                 ) {
                     Icon(Icons.Outlined.PhotoLibrary, null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(12.dp))
-                    Text("选择多张图片", modifier = Modifier.weight(1f))
+                    Text("选择多张图片/视频", modifier = Modifier.weight(1f))
                 }
                 TextButton(
                     onClick = onAddFolder,

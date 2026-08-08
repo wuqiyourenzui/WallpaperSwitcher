@@ -88,6 +88,7 @@ com.wallpaperswitcher/
 | name | String | 分组名称 |
 | isEnabled | Boolean | 是否启用 (默认 true) |
 | createdAt | Long | 创建时间戳 |
+| type | String | 兼容字段（历史版本区分 IMAGE/VIDEO），当前分组已混合存放，不再参与切换逻辑 |
 
 #### wallpaper_images (壁纸图片表)
 
