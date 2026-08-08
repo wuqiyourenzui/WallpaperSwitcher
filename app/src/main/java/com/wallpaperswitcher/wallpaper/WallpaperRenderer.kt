@@ -251,18 +251,17 @@ class WallpaperRenderer(
      *    d. Runs decode loop
      */
     fun startVideo(uriStr: String, scaleMode: ScaleMode) {
-        // Save reference before stopping (stopVideoInternal nulls the field)
-        val oldThread = videoDecodeThread
-
         // First stop any existing video
         stopVideoInternal()
 
         // CRITICAL: Wait for old decode thread to fully exit.
         // Without this, the old thread's finally block can destroy the new video's
     	// decoder/SurfaceTexture (race condition: old thread nulls shared fields).
+        val oldThread = videoDecodeThread
         if (oldThread != null && oldThread.isAlive) {
             try { oldThread.join(2000) } catch (_: InterruptedException) {}
         }
+        videoDecodeThread = null
 
         // Reset cleanup flag for the new video
         videoCleanupDone.set(false)
@@ -285,6 +284,17 @@ class WallpaperRenderer(
     }
 
     /**
+     * Wait for the decode thread to exit. Call after stopVideo() when you need
+     * the decode thread's cleanup to complete before the next operation.
+     */
+    fun waitForDecodeThread(timeoutMs: Long) {
+        val thread = videoDecodeThread ?: return
+        if (thread.isAlive) {
+            try { thread.join(timeoutMs) } catch (_: InterruptedException) {}
+        }
+    }
+
+    /**
      * Stop video AND atomically render an image — the key to smooth transitions.
      *
      * Cleanup and image rendering happen in a SINGLE render-handler post:
@@ -298,10 +308,8 @@ class WallpaperRenderer(
         isVideoPlaying = false
         videoCleanupDone.set(true)
 
-        // Interrupt decode thread
-        val decodeThread = videoDecodeThread
-        videoDecodeThread = null
-        decodeThread?.interrupt()
+        // Interrupt decode thread (don't null — caller may need to join)
+        videoDecodeThread?.interrupt()
 
         // Atomic: cleanup + render on same handler post
         val handler = renderHandler ?: return
@@ -317,15 +325,15 @@ class WallpaperRenderer(
      * Internal stop: interrupt decode thread, post cleanup to render thread.
      * Does NOT block waiting for decode thread.
      * Sets cleanupDone so the decode loop's finally block won't duplicate cleanup.
+     * Does NOT null videoDecodeThread — callers may need to join() on it.
+     * startVideo() nulls it after join().
      */
     private fun stopVideoInternal() {
         val gen = videoGeneration.incrementAndGet()
         isVideoPlaying = false
         videoCleanupDone.set(true)
 
-        val decodeThread = videoDecodeThread
-        videoDecodeThread = null
-        decodeThread?.interrupt()
+        videoDecodeThread?.interrupt()
 
         val handler = renderHandler ?: return
         handler.post {

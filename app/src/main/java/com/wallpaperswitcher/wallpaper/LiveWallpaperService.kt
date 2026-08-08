@@ -203,6 +203,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun stopVideo() {
             videoMode = false
             renderer?.stopVideo()
+            renderer?.waitForDecodeThread(500)
         }
 
         private fun pauseGif() {
@@ -211,6 +212,12 @@ class LiveWallpaperService : WallpaperService() {
 
         // ======== Switch logic ========
 
+        /**
+         * Pick next media type for scheduled switching.
+         * Alternates between IMAGE and VIDEO when both types are enabled.
+         * videoMode=true means currently showing video → next pick IMAGE.
+         * videoMode=false means currently showing image → next pick VIDEO.
+         */
         private suspend fun pickMediaType(): String {
             val imageGroups = db.wallpaperGroupDao().getEnabledGroupsByType("IMAGE")
             val videoGroups = db.wallpaperGroupDao().getEnabledGroupsByType("VIDEO")
@@ -218,8 +225,9 @@ class LiveWallpaperService : WallpaperService() {
                 imageGroups.isEmpty() && videoGroups.isEmpty() -> "IMAGE"
                 imageGroups.isEmpty() -> "VIDEO"
                 videoGroups.isEmpty() -> "IMAGE"
-                videoMode -> "IMAGE"
-                else -> "VIDEO"
+                // Both types enabled: alternate based on current state
+                videoMode -> "IMAGE"   // Currently showing video → pick image
+                else -> "VIDEO"        // Currently showing image (or just reset) → pick video
             }
         }
 
@@ -267,6 +275,10 @@ class LiveWallpaperService : WallpaperService() {
                             pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao, pickMediaType())
                         }
                     } else {
+                        // FIX: Reset videoMode BEFORE pickMediaType so alternation works.
+                        // If the previous image failed to load, videoMode might be stuck as true,
+                        // causing pickMediaType to always pick IMAGE. Reset ensures fair alternation.
+                        videoMode = false
                         val mediaType = pickMediaType()
                         val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
                         val switchMode = try {
