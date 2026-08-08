@@ -225,8 +225,8 @@ class WallpaperRenderer(
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             EGL14.eglSwapBuffers(eglDisplay, eglSurface)
-        } catch (e: Exception) {
-            Log.e(TAG, "renderImage: ${e.message}")
+        } catch (t: Throwable) {
+            Log.e(TAG, "renderImage failed", t)
         }
     }
 
@@ -261,12 +261,14 @@ class WallpaperRenderer(
         // First stop any existing video
         stopVideoInternal()
 
-        // CRITICAL: Wait for old decode thread to fully exit.
-        // Without this, the old thread's finally block can destroy the new video's
-    	// decoder/SurfaceTexture (race condition: old thread nulls shared fields).
+        // Give the old decode thread a short grace period to exit. It is NOT
+        // mandatory to wait: the generation guard in decodeLoop's finally block
+        // ensures a late-exiting old thread can never clean up the new video's
+        // resources. Waiting too long here just makes the switch appear as a
+        // long black screen when the old thread is stuck in blocking I/O.
         val oldThread = videoDecodeThread
         if (oldThread != null && oldThread.isAlive) {
-            try { oldThread.join(2000) } catch (_: InterruptedException) {}
+            try { oldThread.join(500) } catch (_: InterruptedException) {}
         }
         videoDecodeThread = null
 
@@ -482,8 +484,8 @@ class WallpaperRenderer(
                             val texMatrix = FloatArray(16)
                             st.getTransformMatrix(texMatrix)
                             renderVideoFrame(texMatrix)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "renderVideoFrame: ${e.message}")
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "renderVideoFrame failed", t)
                         }
                     }
 
@@ -494,8 +496,10 @@ class WallpaperRenderer(
                     Thread.sleep(1)
                 }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Decode error: ${e.message}", e)
+        } catch (t: Throwable) {
+            // Catch Throwable (incl. OutOfMemoryError) so a decode failure can
+            // never crash the whole process and kill the wallpaper engine.
+            Log.e(TAG, "Decode error", t)
         } finally {
             isVideoPlaying = false
             try { localDecoder?.stop() } catch (_: Exception) {}
@@ -559,8 +563,8 @@ class WallpaperRenderer(
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             EGL14.eglSwapBuffers(eglDisplay, eglSurface)
-        } catch (e: Exception) {
-            Log.e(TAG, "renderVideoFrame: ${e.message}")
+        } catch (t: Throwable) {
+            Log.e(TAG, "renderVideoFrame failed", t)
         }
     }
 

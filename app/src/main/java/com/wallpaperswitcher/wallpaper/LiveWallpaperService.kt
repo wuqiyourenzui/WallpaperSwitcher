@@ -554,8 +554,8 @@ class LiveWallpaperService : WallpaperService() {
                     r.showImage(createDefaultBitmap(), currentScaleMode)
                 } catch (ce: CancellationException) {
                     throw ce
-                } catch (e: Exception) {
-                    Log.e(TAG, "drawCurrentImage error", e)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "drawCurrentImage error", t)
                 }
             }
         }
@@ -581,7 +581,8 @@ class LiveWallpaperService : WallpaperService() {
             try {
                 if (Build.VERSION.SDK_INT >= 28) playGif28(uriStr, scaleMode)
                 else loadBitmap(uriStr)?.let { renderer?.showImage(it, scaleMode) }
-            } catch (e: Exception) {
+            } catch (t: Throwable) {
+                Log.e(TAG, "playGif failed, falling back to static frame", t)
                 loadBitmap(uriStr)?.let { renderer?.showImage(it, scaleMode) }
             }
         }
@@ -617,7 +618,9 @@ class LiveWallpaperService : WallpaperService() {
                             val cv = Canvas(bmp)
                             drawable.draw(cv)
                             r?.showImage(bmp, scaleMode)
-                        } catch (_: Exception) {}
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "GIF frame draw failed", t)
+                        }
                         mainHandler.postDelayed(this, GIF_FRAME_INTERVAL_MS)
                     }
                 }
@@ -632,7 +635,9 @@ class LiveWallpaperService : WallpaperService() {
                     val bmp = Bitmap.createBitmap(frameW, frameH, Bitmap.Config.ARGB_8888)
                     drawable.draw(Canvas(bmp))
                     renderer?.showImage(bmp, scaleMode)
-                } catch (_: Exception) {}
+                } catch (t: Throwable) {
+                    Log.e(TAG, "GIF static frame failed", t)
+                }
                 try { (drawable as java.lang.AutoCloseable).close() } catch (_: Exception) {}
             }
         }
