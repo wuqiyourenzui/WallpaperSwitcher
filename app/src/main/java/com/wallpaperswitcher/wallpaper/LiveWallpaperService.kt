@@ -148,6 +148,7 @@ class LiveWallpaperService : WallpaperService() {
             isVisible = visible
             if (visible) {
                 scope.launch {
+                    // Re-check surface state inside coroutine (may have changed)
                     if (!surfaceReady || renderer == null) return@launch
                     val dao = db.settingsDao()
                     val savedId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
