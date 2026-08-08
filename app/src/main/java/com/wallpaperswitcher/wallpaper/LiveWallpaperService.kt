@@ -17,8 +17,11 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import com.wallpaperswitcher.data.*
 import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+
+private data class SwitchRequest(val source: String, val targetId: Long? = null)
 
 class LiveWallpaperService : WallpaperService() {
 
@@ -51,9 +54,13 @@ class LiveWallpaperService : WallpaperService() {
         // not deliver onVisibilityChanged reliably right after unlock, which
         // would otherwise make double-tap / unlock switching appear dead.
         @Volatile private var isVisible = true
-        private val isSwitching = AtomicBoolean(false)
+        // All switch triggers (timer / double-tap / unlock / manual) are sent
+        // through a single serialized queue. A switch in progress never blocks
+        // or drops new triggers: they wait in the queue and run in order.
+        private val switchChannel = Channel<SwitchRequest>(8)
+        private val consumerStarted = AtomicBoolean(false)
+        @Volatile private var switchInProgress = false
         @Volatile private var switchStartedAt = 0L
-        private val pendingAutoSwitch = AtomicBoolean(false)
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
@@ -65,7 +72,6 @@ class LiveWallpaperService : WallpaperService() {
         private var renderer: WallpaperRenderer? = null
         private var rendererInitialized = false
         @Volatile private var videoMode = false
-        @Volatile private var pendingTargetId: Long? = null
         @Volatile private var lastDisplayedId = 0L
 
         private val destRect = RectF()
@@ -81,14 +87,10 @@ class LiveWallpaperService : WallpaperService() {
                 if (intent.action == ACTION_SWITCH) {
                     val targetId = intent.getLongExtra(EXTRA_TARGET_ID, -1L)
                     if (targetId > 0) {
-                        if (isSwitching.get()) {
-                            pendingTargetId = targetId
-                        } else {
-                            doSwitch("broadcast", targetId)
-                        }
-                        return
+                        requestSwitch("broadcast", targetId)
+                    } else {
+                        requestSwitch("broadcast", null)
                     }
-                    doSwitch("broadcast", null)
                 }
             }
         }
@@ -101,12 +103,12 @@ class LiveWallpaperService : WallpaperService() {
                         try {
                             val enabled = db.settingsDao().getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
                             if (enabled) {
-                                doSwitch("double-tap")
+                                requestSwitch("double-tap")
                             }
                         } catch (_: Exception) {
                             // A double tap is an explicit user action: switch even
                             // if reading the setting fails.
-                            doSwitch("double-tap")
+                            requestSwitch("double-tap")
                         }
                     }
                     return true
@@ -188,9 +190,9 @@ class LiveWallpaperService : WallpaperService() {
         override fun onDestroy() {
             engineRunning = false
             lastDisplayedId = 0L
-            isSwitching.set(false)
+            switchInProgress = false
             switchStartedAt = 0L
-            pendingAutoSwitch.set(false)
+            consumerStarted.set(false)
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
             flushShuffleState()
             try { renderer?.release() } catch (_: Exception) {}
@@ -236,149 +238,140 @@ class LiveWallpaperService : WallpaperService() {
         // ======== Switch logic ========
 
         /**
-         * Try to begin a switch. Defensively force-resets the lock if a
-         * previous switch has been stuck for more than 30 seconds, so a single
-         * failed switch can never permanently disable double-tap / unlock /
-         * timer switching.
+         * Submit a switch request. Requests are processed one at a time by a
+         * single consumer, so a busy engine queues new triggers instead of
+         * dropping them, and a single stuck/failed switch can never disable
+         * timer / double-tap / unlock switching permanently.
          */
-        private fun tryBeginSwitch(): Boolean {
-            val now = SystemClock.elapsedRealtime()
-            if (isSwitching.get() && switchStartedAt != 0L && now - switchStartedAt > 30_000L) {
-                Log.w(TAG, "Switch stuck >30s, forcing reset")
-                isSwitching.set(false)
-                switchStartedAt = 0L
+        private fun requestSwitch(source: String, targetId: Long? = null) {
+            ensureSwitchConsumer()
+            // Watchdog: if the current switch has been stuck for >30s, start a
+            // fresh consumer so queued triggers are still executed.
+            if (switchInProgress && switchStartedAt != 0L &&
+                SystemClock.elapsedRealtime() - switchStartedAt > 30_000L
+            ) {
+                Log.w(TAG, "Switch stuck >30s, starting fallback consumer")
+                scope.launch { consumeSwitches() }
             }
-            if (isSwitching.compareAndSet(false, true)) {
-                switchStartedAt = now
-                return true
-            }
-            return false
+            switchChannel.trySend(SwitchRequest(source, targetId))
         }
 
-        private fun doSwitch(source: String, targetId: Long? = null) {
-            if (!tryBeginSwitch()) {
-                if (targetId == null) {
-                    // Queue automatic triggers (timer / double-tap / unlock)
-                    // instead of dropping them: enabling the timer must never
-                    // make double-tap or unlock switching silently disappear.
-                    pendingAutoSwitch.set(true)
-                    Log.d(TAG, "Switch in progress, queuing ($source)")
-                }
-                return
+        private fun ensureSwitchConsumer() {
+            if (consumerStarted.compareAndSet(false, true)) {
+                scope.launch { consumeSwitches() }
             }
-            Log.d(TAG, "doSwitch from $source, targetId=$targetId")
+        }
 
-            scope.launch {
+        private suspend fun consumeSwitches() {
+            for (req in switchChannel) {
+                switchInProgress = true
+                switchStartedAt = SystemClock.elapsedRealtime()
                 try {
-                    val dao = db.settingsDao()
-                    val imageDao = db.wallpaperImageDao()
-
-                    val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
-                    if (groups.isEmpty()) return@launch
-
-                    // If target is already playing, skip restart (avoids video pause on "apply")
-                    if (targetId != null && targetId > 0 && targetId == lastDisplayedId) {
-                        if (videoMode && renderer?.isVideoPlaying == true) {
-                            Log.d(TAG, "Target $targetId already playing, skip")
-                            return@launch
-                        }
-                        if (!videoMode && currentBitmap != null && !currentBitmap!!.isRecycled) {
-                            Log.d(TAG, "Target $targetId already showing, skip")
-                            return@launch
-                        }
-                    }
-
-                    currentScaleMode = try {
-                        ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
-                    } catch (_: Exception) { ScaleMode.FIT }
-
-                    var nextImage = if (targetId != null && targetId > 0) {
-                        val img = imageDao.getImageById(targetId)
-                        if (img != null) {
-                            val group = db.wallpaperGroupDao().getGroupById(img.groupId)
-                            if (group == null || !group.isEnabled) {
-                                pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao)
-                            } else {
-                                img
-                            }
-                        } else {
-                            pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao)
-                        }
-                    } else {
-                        val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
-                        val switchMode = try {
-                            SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
-                        } catch (_: Exception) { SwitchMode.RANDOM }
-                        pickNextImage(switchMode, imageDao, lastId, dao)
-                    }
-
-                    if (nextImage == null) {
-                        nextImage = imageDao.getFirstFromEnabledGroups()
-                        if (nextImage == null) return@launch
-                    }
-
-                    dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
-                    val mediaType = nextImage.mediaType
-                    Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
-
-                    pauseGif()
-
-                    when (mediaType) {
-                        "VIDEO" -> {
-                            // Image/GIF → Video: stop old, delay for settle, start new
-                            stopVideo()
-                            delay(SWITCH_SETTLE_DELAY_MS)
-                            currentBitmap = null
-                            if (startVideo(nextImage.uri, currentScaleMode)) {
-                                lastDisplayedId = nextImage.id
-                            }
-                        }
-                        "GIF" -> {
-                            // Any → GIF: stop video atomically (show nothing, GIF will overwrite)
-                            stopVideo()
-                            delay(SWITCH_SETTLE_DELAY_MS)
-                            currentBitmap = null
-                            videoMode = false
-                            mainHandler.post { playGif(nextImage.uri, currentScaleMode) }
-                            lastDisplayedId = nextImage.id
-                        }
-                        else -> {
-                            // Any → Image: load bitmap FIRST, then stop video + render atomically
-                            videoMode = false
-                            Log.d(TAG, "Loading image bitmap: ${nextImage.uri}")
-                            val bitmap = loadBitmap(nextImage.uri)
-                            if (bitmap != null) {
-                                Log.d(TAG, "Bitmap loaded: ${bitmap.width}x${bitmap.height}")
-                                // Recycle old bitmap to avoid memory leak
-                                val old = currentBitmap
-                                currentBitmap = bitmap
-                                if (old != null && old != bitmap && !old.isRecycled) {
-                                    old.recycle()
-                                }
-                                // Always use stopVideoAndRender for clean transition.
-                                // Even if isVideoPlaying is false, the decode thread might
-                                // still be running and its cleanup could interfere.
-                                renderer?.stopVideoAndRender(bitmap, currentScaleMode)
-                                lastDisplayedId = nextImage.id
-                            } else {
-                                Log.e(TAG, "Failed to load bitmap for: ${nextImage.displayName} uri=${nextImage.uri}")
-                            }
-                        }
-                    }
+                    executeSwitch(req.source, req.targetId)
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (e: Exception) {
-                    Log.e(TAG, "doSwitch error", e)
+                    Log.e(TAG, "Switch failed: ${req.source}", e)
                 } finally {
-                    isSwitching.set(false)
-                    switchStartedAt = 0L
-                    val pending = pendingTargetId
-                    val autoQueued = pendingAutoSwitch.getAndSet(false)
-                    if (pending != null) {
-                        pendingTargetId = null
-                        doSwitch("pending", pending)
-                    } else if (autoQueued) {
-                        doSwitch("queued", null)
+                    switchInProgress = false
+                }
+            }
+        }
+
+        private suspend fun executeSwitch(source: String, targetId: Long?) {
+            Log.d(TAG, "doSwitch from $source, targetId=$targetId")
+            val dao = db.settingsDao()
+            val imageDao = db.wallpaperImageDao()
+
+            val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
+            if (groups.isEmpty()) return
+
+            // If target is already playing, skip restart (avoids video pause on "apply")
+            if (targetId != null && targetId > 0 && targetId == lastDisplayedId) {
+                if (videoMode && renderer?.isVideoPlaying == true) {
+                    Log.d(TAG, "Target $targetId already playing, skip")
+                    return
+                }
+                if (!videoMode && currentBitmap != null && !currentBitmap!!.isRecycled) {
+                    Log.d(TAG, "Target $targetId already showing, skip")
+                    return
+                }
+            }
+
+            currentScaleMode = try {
+                ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
+            } catch (_: Exception) { ScaleMode.FIT }
+
+            var nextImage = if (targetId != null && targetId > 0) {
+                val img = imageDao.getImageById(targetId)
+                if (img != null) {
+                    val group = db.wallpaperGroupDao().getGroupById(img.groupId)
+                    if (group == null || !group.isEnabled) {
+                        pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao)
+                    } else {
+                        img
+                    }
+                } else {
+                    pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao)
+                }
+            } else {
+                val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
+                val switchMode = try {
+                    SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
+                } catch (_: Exception) { SwitchMode.RANDOM }
+                pickNextImage(switchMode, imageDao, lastId, dao)
+            }
+
+            if (nextImage == null) {
+                nextImage = imageDao.getFirstFromEnabledGroups()
+                if (nextImage == null) return
+            }
+
+            dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
+            val mediaType = nextImage.mediaType
+            Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
+
+            pauseGif()
+
+            when (mediaType) {
+                "VIDEO" -> {
+                    // Image/GIF → Video: stop old, delay for settle, start new
+                    stopVideo()
+                    delay(SWITCH_SETTLE_DELAY_MS)
+                    currentBitmap = null
+                    if (startVideo(nextImage.uri, currentScaleMode)) {
+                        lastDisplayedId = nextImage.id
+                    }
+                }
+                "GIF" -> {
+                    // Any → GIF: stop video atomically (show nothing, GIF will overwrite)
+                    stopVideo()
+                    delay(SWITCH_SETTLE_DELAY_MS)
+                    currentBitmap = null
+                    videoMode = false
+                    mainHandler.post { playGif(nextImage.uri, currentScaleMode) }
+                    lastDisplayedId = nextImage.id
+                }
+                else -> {
+                    // Any → Image: load bitmap FIRST, then stop video + render atomically
+                    videoMode = false
+                    Log.d(TAG, "Loading image bitmap: ${nextImage.uri}")
+                    val bitmap = loadBitmap(nextImage.uri)
+                    if (bitmap != null) {
+                        Log.d(TAG, "Bitmap loaded: ${bitmap.width}x${bitmap.height}")
+                        // Recycle old bitmap to avoid memory leak
+                        val old = currentBitmap
+                        currentBitmap = bitmap
+                        if (old != null && old != bitmap && !old.isRecycled) {
+                            old.recycle()
+                        }
+                        // Always use stopVideoAndRender for clean transition.
+                        // Even if isVideoPlaying is false, the decode thread might
+                        // still be running and its cleanup could interfere.
+                        renderer?.stopVideoAndRender(bitmap, currentScaleMode)
+                        lastDisplayedId = nextImage.id
+                    } else {
+                        Log.e(TAG, "Failed to load bitmap for: ${nextImage.displayName} uri=${nextImage.uri}")
                     }
                 }
             }
@@ -451,7 +444,7 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
-            if (isSwitching.get()) return
+            if (switchInProgress) return
             val r = renderer ?: return
 
             scope.launch {
