@@ -27,7 +27,7 @@ class LiveWallpaperService : WallpaperService() {
         const val ACTION_SWITCH = "com.wallpaperswitcher.ACTION_SWITCH"
         const val EXTRA_TARGET_ID = "target_id"
         private const val SWITCH_SETTLE_DELAY_MS = 100L
-        private const val GIF_FRAME_INTERVAL_MS = 33L // ~30fps
+        private const val GIF_FRAME_INTERVAL_MS = 33L
         private const val SHUFFLE_MAX_ATTEMPTS = 10
 
         @Volatile
@@ -48,25 +48,21 @@ class LiveWallpaperService : WallpaperService() {
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
-        // Shuffle state — cached in memory, flushed to DB only on destroy
         private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
         @Volatile private var shuffleAllCount = 0
         @Volatile private var shuffleDirty = false
 
-        // Unified EGL renderer for both images and videos
+        // Unified EGL renderer — lives across surface recreations
         private var renderer: WallpaperRenderer? = null
+        private var rendererInitialized = false
         @Volatile private var videoMode = false
-        // Pending target from broadcast, processed when current switch finishes
         @Volatile private var pendingTargetId: Long? = null
-        // Track what's currently displayed to detect changes
         @Volatile private var lastDisplayedId = 0L
 
-        // Reusable display objects
         private val destRect = RectF()
         private var cachedScreenW = 0f
         private var cachedScreenH = 0f
 
-        // GIF
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
         private var gifFrameRunnable: Runnable? = null
         private var gifBitmapBuffer: Bitmap? = null
@@ -76,7 +72,6 @@ class LiveWallpaperService : WallpaperService() {
                 if (intent.action == ACTION_SWITCH) {
                     val targetId = intent.getLongExtra(EXTRA_TARGET_ID, -1L)
                     if (targetId > 0) {
-                        // If currently switching, save as pending so it's not lost
                         if (isSwitching.get()) {
                             pendingTargetId = targetId
                         } else {
@@ -106,7 +101,6 @@ class LiveWallpaperService : WallpaperService() {
             setTouchEventsEnabled(true)
             val filter = IntentFilter(ACTION_SWITCH)
             try {
-                // Unregister first to prevent duplicate registration on engine recreate
                 try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
                 if (Build.VERSION.SDK_INT >= 33) {
                     applicationContext.registerReceiver(switchReceiver, filter, Context.RECEIVER_EXPORTED)
@@ -118,30 +112,31 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onSurfaceCreated(holder: SurfaceHolder?) {
             surfaceReady = true
-            // Initialize the unified EGL renderer
-            val sw = cachedScreenW.takeIf { it > 0 } ?: getMetrics().widthPixels.toFloat()
-            val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().heightPixels.toFloat()
-            renderer = WallpaperRenderer(applicationContext, surfaceHolder).also { it.initialize(sw, sh) }
+            if (!rendererInitialized) {
+                // First time: create renderer (EGL context + GL resources)
+                val sw = cachedScreenW.takeIf { it > 0 } ?: getMetrics().widthPixels.toFloat()
+                val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().heightPixels.toFloat()
+                renderer = WallpaperRenderer(applicationContext, holder).also { it.initialize(sw, sh) }
+                rendererInitialized = true
+            } else {
+                // Surface recreation: just create new EGL surface (context survives)
+                renderer?.surfaceCreated()
+            }
         }
 
         override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {
             cachedScreenW = width.toFloat()
             cachedScreenH = height.toFloat()
-            // Renderer dimensions are set at initialize time and used for quad computation.
-            // On surface recreate, a new renderer is created in onSurfaceCreated with new dims.
+            renderer?.surfaceChanged(width, height)
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
-            // Set flags FIRST to prevent any new rendering
             surfaceReady = false
             lastDisplayedId = 0L
-
-            // release() waits up to 2s for the render thread to finish cleanup.
-            // This ensures the old render thread is done with the Surface before
-            // onSurfaceCreated creates a new renderer on the same Surface.
-            // 2s is safe — well under the 5s ANR timeout.
-            try { renderer?.release() } catch (_: Exception) {}
-            renderer = null
+            // Only destroy EGL surface — context and GL resources survive.
+            // When surface is recreated, surfaceCreated() creates a new EGL surface
+            // from the existing context. No race condition possible.
+            renderer?.surfaceDestroyed()
             pauseGif()
         }
 
@@ -154,9 +149,7 @@ class LiveWallpaperService : WallpaperService() {
             isVisible = visible
             if (visible) {
                 scope.launch {
-                    // Check if surface is still valid
                     if (!surfaceReady || renderer == null) return@launch
-
                     val dao = db.settingsDao()
                     val savedId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
                     if (savedId != lastDisplayedId || lastDisplayedId == 0L) {
@@ -169,8 +162,6 @@ class LiveWallpaperService : WallpaperService() {
                         // Video auto-resumes via renderer
                     } else if (gifDrawable != null) {
                         // GIF auto-resumes via runnable
-                    } else {
-                        // Image already displayed, no action needed
                     }
                 }
             } else {
@@ -183,15 +174,10 @@ class LiveWallpaperService : WallpaperService() {
             engineRunning = false
             lastDisplayedId = 0L
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
-
-            // 1. Flush shuffle state FIRST (needs scope to be active)
             flushShuffleState()
-
-            // 2. Release renderer (non-blocking, posts cleanup to render thread)
             try { renderer?.release() } catch (_: Exception) {}
             renderer = null
-
-            // 3. Clean up local resources
+            rendererInitialized = false
             pauseGif()
             gifBitmapBuffer?.recycle(); gifBitmapBuffer = null
             currentBitmap?.recycle(); currentBitmap = null
@@ -202,43 +188,19 @@ class LiveWallpaperService : WallpaperService() {
                 }
             }
             gifDrawable = null
-
-            // 4. Cancel scope AFTER flush completes
             scope.cancel()
             super.onDestroy()
         }
 
         private fun flushShuffleState() {
             if (!shuffleDirty) return
-            // Use runBlocking to ensure state is saved before scope.cancel()
             kotlinx.coroutines.runBlocking(Dispatchers.IO) {
                 try {
                     val dao = db.settingsDao()
-                    val shuffleKey = "shuffle_ids"
-                    val countKey = "shuffle_count"
-                    dao.setString(shuffleKey, shuffleShownIds.joinToString(","))
-                    dao.setLong(countKey, shuffleAllCount.toLong())
+                    dao.setString("shuffle_ids", shuffleShownIds.joinToString(","))
+                    dao.setLong("shuffle_count", shuffleAllCount.toLong())
                 } catch (_: Exception) {}
             }
-        }
-
-        // ======== Resource lifecycle ========
-
-        private fun releaseAll() {
-            // NOTE: Do NOT call renderer?.stopVideo() here — release() already handles
-            // video cleanup. Calling stopVideo() after release() causes cleanupVideo()
-            // to run on the wrong thread (renderHandler is already null).
-            pauseGif()
-            gifBitmapBuffer?.recycle(); gifBitmapBuffer = null
-            currentBitmap?.recycle(); currentBitmap = null
-            lastDisplayedId = 0L
-            gifDrawable?.let {
-                try { it.stop() } catch (_: Exception) {}
-                if (Build.VERSION.SDK_INT >= 28) {
-                    try { (it as java.io.Closeable).close() } catch (_: Exception) {}
-                }
-            }
-            gifDrawable = null
         }
 
         private fun stopVideo() {
@@ -252,11 +214,6 @@ class LiveWallpaperService : WallpaperService() {
 
         // ======== Switch logic ========
 
-        /**
-         * Determine which media type to switch to based on enabled groups.
-         * If only one type has enabled groups, use that type.
-         * If both exist, alternate based on current state.
-         */
         private suspend fun pickMediaType(): String {
             val imageGroups = db.wallpaperGroupDao().getEnabledGroupsByType("IMAGE")
             val videoGroups = db.wallpaperGroupDao().getEnabledGroupsByType("VIDEO")
@@ -264,9 +221,8 @@ class LiveWallpaperService : WallpaperService() {
                 imageGroups.isEmpty() && videoGroups.isEmpty() -> "IMAGE"
                 imageGroups.isEmpty() -> "VIDEO"
                 videoGroups.isEmpty() -> "IMAGE"
-                // Both exist: check what's currently displayed
-                videoMode -> "IMAGE"  // Currently showing video → switch to image
-                else -> "VIDEO"       // Currently showing image → switch to video
+                videoMode -> "IMAGE"
+                else -> "VIDEO"
             }
         }
 
@@ -291,7 +247,6 @@ class LiveWallpaperService : WallpaperService() {
 
                     var nextImage = if (targetId != null && targetId > 0) {
                         val img = imageDao.getImageById(targetId)
-                        // Verify the image's group is enabled; if not, fall back
                         if (img != null) {
                             val group = db.wallpaperGroupDao().getGroupById(img.groupId)
                             if (group == null || !group.isEnabled) {
@@ -312,7 +267,6 @@ class LiveWallpaperService : WallpaperService() {
                     }
 
                     if (nextImage == null) {
-                        // No enabled groups with images — try fallback
                         nextImage = imageDao.getFirstFromEnabledGroups()
                         if (nextImage == null) return@launch
                     }
@@ -321,12 +275,10 @@ class LiveWallpaperService : WallpaperService() {
                     val mediaType = nextImage.mediaType ?: "IMAGE"
                     Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
 
-                    // Stop everything before switching
                     stopVideo()
                     pauseGif()
                     delay(SWITCH_SETTLE_DELAY_MS)
 
-                    // Only set lastDisplayedId AFTER media starts loading
                     when (mediaType) {
                         "VIDEO" -> {
                             currentBitmap = null
@@ -355,7 +307,6 @@ class LiveWallpaperService : WallpaperService() {
                     Log.e(TAG, "doSwitch error", e)
                 } finally {
                     isSwitching.set(false)
-                    // Process pending target if one was queued during this switch
                     val pending = pendingTargetId
                     if (pending != null) {
                         pendingTargetId = null
@@ -384,7 +335,6 @@ class LiveWallpaperService : WallpaperService() {
                             dao.setLong(key, (next + 1).toLong())
                             img
                         } else {
-                            // Offset out of range (e.g. images deleted) — reset index
                             dao.setLong(key, 0L)
                             imageDao.getSequentialFromEnabledGroupsByType(groupType, 0)
                                 ?: imageDao.getRandomFromEnabledGroupsByType(groupType)
@@ -394,7 +344,6 @@ class LiveWallpaperService : WallpaperService() {
                 SwitchMode.SHUFFLE -> {
                     val totalCount = imageDao.countByEnabledGroupsOfType(groupType)
                     if (totalCount == 0) null else {
-                        // Load shuffle state from DB only if not yet loaded in memory
                         if (shuffleShownIds.isEmpty() && shuffleAllCount == 0) {
                             val shuffleKey = if (groupType == "VIDEO") "video_shuffle" else "image_shuffle"
                             val countKey = if (groupType == "VIDEO") "video_shuffle_count" else "image_shuffle_count"
@@ -439,9 +388,8 @@ class LiveWallpaperService : WallpaperService() {
                     val imageDao = db.wallpaperImageDao()
                     var imageId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
 
-                    // Skip if already displaying this image AND media is actually active
                     if (imageId == lastDisplayedId && lastDisplayedId != 0L) {
-                        if (videoMode && renderer?.isVideoPlaying == true) return@launch
+                        if (videoMode && r.isVideoPlaying) return@launch
                         if (!videoMode && currentBitmap != null && !currentBitmap!!.isRecycled) return@launch
                     }
 
@@ -450,25 +398,17 @@ class LiveWallpaperService : WallpaperService() {
                     } catch (_: Exception) { ScaleMode.FIT }
                     var image = if (imageId > 0) imageDao.getImageById(imageId) else null
 
-                    // Fallback: if saved image was deleted or its group is disabled,
-                    // pick any available image from enabled groups
                     if (image == null) {
                         image = imageDao.getFirstFromEnabledGroups()
-                        if (image != null) {
-                            dao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                        }
+                        if (image != null) dao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
                     } else {
-                        // Verify the image's group is still enabled
                         val group = db.wallpaperGroupDao().getGroupById(image.groupId)
                         if (group == null || !group.isEnabled) {
                             image = imageDao.getFirstFromEnabledGroups()
-                            if (image != null) {
-                                dao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                            }
+                            if (image != null) dao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
                         }
                     }
 
-                    // Stop current media before loading new
                     stopVideo()
                     pauseGif()
                     videoMode = false
@@ -508,8 +448,6 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        // ======== Video via WallpaperRenderer (unified EGL) ========
-
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
             if (!surfaceReady || !surfaceHolder.surface.isValid) {
                 Log.w(TAG, "startVideo: surface not ready")
@@ -517,10 +455,14 @@ class LiveWallpaperService : WallpaperService() {
             }
             videoMode = true
             Log.d(TAG, "startVideo: $uriStr")
+            val sw = cachedScreenW.takeIf { it > 0 }
+                ?: surfaceHolder.surfaceFrame.width().toFloat().takeIf { it > 0 }
+                ?: getMetrics().widthPixels.toFloat()
+            val sh = cachedScreenH.takeIf { it > 0 }
+                ?: surfaceHolder.surfaceFrame.height().toFloat().takeIf { it > 0 }
+                ?: getMetrics().heightPixels.toFloat()
             renderer?.startVideo(uriStr, scaleMode)
         }
-
-        // ======== GIF via EGL ========
 
         private fun playGif(uriStr: String, scaleMode: ScaleMode) {
             if (!surfaceReady) return
@@ -548,6 +490,7 @@ class LiveWallpaperService : WallpaperService() {
                 gifBitmapBuffer?.recycle()
                 gifBitmapBuffer = Bitmap.createBitmap(frameW, frameH, Bitmap.Config.ARGB_8888)
 
+                val r = renderer
                 val runnable = object : Runnable {
                     override fun run() {
                         if (!surfaceReady || !isVisible || gifDrawable == null) return
@@ -556,7 +499,7 @@ class LiveWallpaperService : WallpaperService() {
                             bmp.eraseColor(Color.TRANSPARENT)
                             val cv = Canvas(bmp)
                             drawable.draw(cv)
-                            renderer?.showImage(bmp, scaleMode)
+                            r?.showImage(bmp, scaleMode)
                         } catch (_: Exception) {}
                         mainHandler.postDelayed(this, GIF_FRAME_INTERVAL_MS)
                     }
@@ -565,8 +508,6 @@ class LiveWallpaperService : WallpaperService() {
                 mainHandler.post(runnable)
             }
         }
-
-        // ======== Canvas rendering ========
 
         private fun createDefaultBitmap(): Bitmap {
             val m = getMetrics()

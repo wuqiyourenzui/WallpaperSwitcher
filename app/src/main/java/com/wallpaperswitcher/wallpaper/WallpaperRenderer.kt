@@ -18,20 +18,20 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Unified EGL renderer for both images and videos on a WallpaperService surface.
+ * Unified EGL renderer following the GLSurfaceView pattern.
  *
- * Threading model:
- * - Render thread (HandlerThread): ALL GL ops including updateTexImage
- * - Decode thread: MediaCodec I/O only, posts render requests to render thread
+ * KEY DESIGN: EGL context is created ONCE and survives surface recreations.
+ * Only the EGL surface is destroyed/recreated when the wallpaper surface
+ * changes. GL resources (textures, programs, buffers) live as long as the
+ * context does — they are never unnecessarily recreated.
  *
- * CRITICAL: onSurfaceDestroyed → release() must wait for the render thread to
- * finish before returning, because onSurfaceCreated will create a new renderer
- * on the SAME Surface. If the old render thread is still doing eglSwapBuffers
- * when the new renderer creates its EGL context, the EGL state is corrupted
- * and all subsequent rendering fails → black screen → system reverts wallpaper.
+ * Lifecycle:
+ *   initialize()  → create render thread + EGL context + GL resources
+ *   surfaceCreated()  → create new EGL surface from holder
+ *   surfaceDestroyed() → destroy EGL surface only (context survives)
+ *   release() → destroy everything
  *
- * release() uses a bounded wait (≤2s) to avoid ANR while ensuring the old
- * render thread is done.
+ * Video uses generation counter for safe lifecycle transitions.
  */
 class WallpaperRenderer(
     private val context: Context,
@@ -71,22 +71,22 @@ class WallpaperRenderer(
         """
     }
 
-    // EGL
+    // EGL — context lives once, surface is recreated per wallpaper surface
     private var eglDisplay = EGL14.EGL_NO_DISPLAY
     private var eglContext = EGL14.EGL_NO_CONTEXT
     private var eglSurface = EGL14.EGL_NO_SURFACE
-    @Volatile private var eglReady = false
+    private var eglConfig: EGLConfig? = null
+    @Volatile private var surfaceReady = false
+    @Volatile private var contextReady = false
 
-    // GL programs
+    // GL resources (created once, survive surface recreation)
     private var imageProgram = 0
     private var videoProgram = 0
     private var vertexBuffer: FloatBuffer? = null
-
-    // Image rendering
     private var imageTexId = 0
     private var imageTexMatrix = FloatArray(16)
 
-    // Video rendering
+    // Video state
     private var videoTexId = 0
     private var surfaceTexture: SurfaceTexture? = null
     private var codecSurface: android.view.Surface? = null
@@ -97,7 +97,7 @@ class WallpaperRenderer(
     private val videoGeneration = AtomicInteger(0)
     @Volatile private var videoLooping = true
 
-    // Render thread
+    // Render thread (persists across surface recreations)
     private var renderThread: HandlerThread? = null
     private var renderHandler: Handler? = null
 
@@ -106,6 +106,10 @@ class WallpaperRenderer(
 
     // ======== Lifecycle ========
 
+    /**
+     * One-time initialization: create render thread + EGL context + GL resources.
+     * Called once from onSurfaceCreated. Survives subsequent surface recreations.
+     */
     fun initialize(sw: Float, sh: Float) {
         screenW = sw
         screenH = sh
@@ -115,13 +119,13 @@ class WallpaperRenderer(
         renderThread = thread
         renderHandler = Handler(thread.looper)
 
+        // Create EGL context + GL resources once
         val latch = CountDownLatch(1)
         renderHandler?.post {
-            if (!setupEgl()) {
-                Log.e(TAG, "EGL setup failed")
-            } else {
-                setupGl()
-                Log.d(TAG, "EGL initialized ${sw}x${sh}")
+            setupEglContext()
+            if (contextReady) {
+                setupGlResources()
+                Log.d(TAG, "EGL context + GL resources initialized")
             }
             latch.countDown()
         }
@@ -129,35 +133,75 @@ class WallpaperRenderer(
     }
 
     /**
-     * Release all resources. Waits briefly for the render thread to finish.
-     *
-     * BOUNDED WAIT (≤2s): onSurfaceDestroyed is on the main thread. We must
-     * wait long enough for the old render thread to stop using the Surface,
-     * but not so long that we ANR. If the render thread doesn't finish in 2s,
-     * we proceed anyway — the new renderer will create a fresh EGL context.
+     * Called from onSurfaceCreated. Creates a new EGL surface from the holder.
+     * If the context already exists (surface recreation), just creates the surface.
      */
-    fun release() {
+    fun surfaceCreated() {
+        val handler = renderHandler ?: return
+        handler.post {
+            if (!contextReady) {
+                Log.e(TAG, "surfaceCreated: no EGL context")
+                return@post
+            }
+            createEglSurface()
+        }
+    }
+
+    /**
+     * Called from onSurfaceChanged. Updates viewport.
+     */
+    fun surfaceChanged(width: Int, height: Int) {
+        screenW = width.toFloat()
+        screenH = height.toFloat()
+        val handler = renderHandler ?: return
+        handler.post {
+            if (surfaceReady) {
+                GLES20.glViewport(0, 0, width, height)
+            }
+        }
+    }
+
+    /**
+     * Called from onSurfaceDestroyed. Destroys EGL surface only.
+     * EGL context and GL resources survive — they'll be reused when
+     * a new surface is created.
+     */
+    fun surfaceDestroyed() {
+        surfaceReady = false
         videoGeneration.incrementAndGet()
         isVideoPlaying = false
-        eglReady = false
+        videoDecodeThread?.interrupt()
+        videoDecodeThread = null
 
+        val handler = renderHandler ?: return
+        handler.post {
+            destroyEglSurface()
+            cleanupVideoCodec()
+        }
+    }
+
+    /**
+     * Full release. Destroys everything. Called when engine is destroyed.
+     */
+    fun release() {
+        surfaceReady = false
+        contextReady = false
+        videoGeneration.incrementAndGet()
+        isVideoPlaying = false
         videoDecodeThread?.interrupt()
         videoDecodeThread = null
 
         val handler = renderHandler
         val thread = renderThread
-
         if (handler != null && thread != null) {
             val latch = CountDownLatch(1)
             handler.post {
-                cleanup()
+                cleanupAll()
                 latch.countDown()
             }
-            // Wait up to 2s for render thread to finish cleanup
             try { latch.await(2, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
             thread.quitSafely()
         }
-
         renderHandler = null
         renderThread = null
     }
@@ -167,7 +211,7 @@ class WallpaperRenderer(
     fun showImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         val handler = renderHandler ?: return
         handler.post {
-            if (!eglReady) return@post
+            if (!surfaceReady || !contextReady) return@post
             renderImage(bitmap, scaleMode)
         }
     }
@@ -242,8 +286,8 @@ class WallpaperRenderer(
             return
         }
         handler.post {
-            if (!eglReady) {
-                Log.e(TAG, "startVideo: EGL not ready")
+            if (!surfaceReady || !contextReady) {
+                Log.e(TAG, "startVideo: surface/context not ready")
                 isVideoPlaying = false
                 return@post
             }
@@ -314,7 +358,7 @@ class WallpaperRenderer(
         } catch (e: Exception) {
             Log.e(TAG, "startVideo error: ${e.message}", e)
             isVideoPlaying = false
-            cleanupVideo()
+            cleanupVideoCodec()
         }
     }
 
@@ -379,7 +423,7 @@ class WallpaperRenderer(
 
                 renderHandler?.post {
                     if (videoGeneration.get() != gen) return@post
-                    if (!eglReady) return@post
+                    if (!surfaceReady || !contextReady) return@post
                     try {
                         st.updateTexImage()
                         val texMatrix = FloatArray(16)
@@ -432,14 +476,8 @@ class WallpaperRenderer(
         }
     }
 
-    fun stopVideo() {
-        stopVideoSync()
-    }
+    fun stopVideo() { stopVideoSync() }
 
-    /**
-     * Synchronous video stop. Called from IO thread.
-     * Waits for decode thread to exit and cleanup to complete.
-     */
     private fun stopVideoSync() {
         videoGeneration.incrementAndGet()
         isVideoPlaying = false
@@ -451,19 +489,19 @@ class WallpaperRenderer(
         videoDecodeThread = null
 
         val handler = renderHandler
-        if (handler != null && eglReady) {
+        if (handler != null && surfaceReady && contextReady) {
             val latch = CountDownLatch(1)
             handler.post {
-                cleanupVideo()
+                cleanupVideoCodec()
                 latch.countDown()
             }
             try { latch.await(2, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
         } else {
-            cleanupVideo()
+            cleanupVideoCodec()
         }
     }
 
-    private fun cleanupVideo() {
+    private fun cleanupVideoCodec() {
         try { decoder?.stop() } catch (_: Exception) {}
         try { decoder?.release() } catch (_: Exception) {}
         decoder = null
@@ -473,26 +511,24 @@ class WallpaperRenderer(
         surfaceTexture = null
         try { extractor?.release() } catch (_: Exception) {}
         extractor = null
-        if (videoTexId != 0 && eglReady) {
+        if (videoTexId != 0 && contextReady) {
             GLES20.glDeleteTextures(1, intArrayOf(videoTexId), 0)
             videoTexId = 0
         }
     }
 
-    // ======== EGL Setup ========
+    // ======== EGL: Context (once) + Surface (per recreation) ========
 
-    private fun setupEgl(): Boolean {
-        val surface = holder.surface
-        if (!surface.isValid) {
-            Log.e(TAG, "Surface not valid")
-            return false
-        }
-
+    /**
+     * Create EGL display, config, and context. Called ONCE.
+     * The context survives surface recreations.
+     */
+    private fun setupEglContext() {
         eglDisplay = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
-        if (eglDisplay == EGL14.EGL_NO_DISPLAY) return false
+        if (eglDisplay == EGL14.EGL_NO_DISPLAY) return
 
         val ver = IntArray(2)
-        if (!EGL14.eglInitialize(eglDisplay, ver, 0, ver, 1)) return false
+        if (!EGL14.eglInitialize(eglDisplay, ver, 0, ver, 1)) return
 
         val configAttribs = intArrayOf(
             EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
@@ -504,17 +540,49 @@ class WallpaperRenderer(
         val configs = arrayOfNulls<EGLConfig>(1)
         val num = IntArray(1)
         EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, num, 0)
-        val config = configs[0] ?: return false
+        eglConfig = configs[0] ?: return
 
         val ctxAttribs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
-        eglContext = EGL14.eglCreateContext(eglDisplay, config, EGL14.EGL_NO_CONTEXT, ctxAttribs, 0)
-        if (eglContext == EGL14.EGL_NO_CONTEXT) return false
+        eglContext = EGL14.eglCreateContext(eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT, ctxAttribs, 0)
+        if (eglContext == EGL14.EGL_NO_CONTEXT) return
+
+        contextReady = true
+
+        // Create initial surface if holder is already valid
+        if (holder.surface.isValid) {
+            createEglSurface()
+        }
+    }
+
+    /**
+     * Create EGL window surface from the current holder surface.
+     * Called on each surfaceCreated. Context must already exist.
+     */
+    private fun createEglSurface() {
+        val surface = holder.surface
+        if (!surface.isValid) {
+            Log.e(TAG, "createEglSurface: surface not valid")
+            return
+        }
+
+        // Destroy old surface if exists
+        if (eglSurface != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, eglContext)
+            EGL14.eglDestroySurface(eglDisplay, eglSurface)
+            eglSurface = EGL14.EGL_NO_SURFACE
+        }
 
         val surfaceAttribs = intArrayOf(EGL14.EGL_NONE)
-        eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, config, surface, surfaceAttribs, 0)
-        if (eglSurface == EGL14.EGL_NO_SURFACE) return false
+        eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, surfaceAttribs, 0)
+        if (eglSurface == EGL14.EGL_NO_SURFACE) {
+            Log.e(TAG, "createEglSurface: eglCreateWindowSurface failed")
+            return
+        }
 
-        if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) return false
+        if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
+            Log.e(TAG, "createEglSurface: eglMakeCurrent failed")
+            return
+        }
 
         val queryResult = IntArray(2)
         EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH, queryResult, 0)
@@ -522,11 +590,28 @@ class WallpaperRenderer(
         GLES20.glViewport(0, 0, queryResult[0], queryResult[1])
         GLES20.glClearColor(0f, 0f, 0f, 1f)
 
-        eglReady = true
-        return true
+        surfaceReady = true
+        screenW = queryResult[0].toFloat()
+        screenH = queryResult[1].toFloat()
+        Log.d(TAG, "EGL surface created: ${queryResult[0]}x${queryResult[1]}")
     }
 
-    private fun setupGl() {
+    /**
+     * Destroy EGL surface only. Context and GL resources survive.
+     */
+    private fun destroyEglSurface() {
+        surfaceReady = false
+        if (eglSurface != EGL14.EGL_NO_SURFACE) {
+            EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, eglContext)
+            EGL14.eglDestroySurface(eglDisplay, eglSurface)
+            eglSurface = EGL14.EGL_NO_SURFACE
+            Log.d(TAG, "EGL surface destroyed (context survives)")
+        }
+    }
+
+    // ======== GL Resources (created once with context) ========
+
+    private fun setupGlResources() {
         imageProgram = createProgram(VERTEX_SHADER, IMAGE_FRAGMENT_SHADER)
         videoProgram = createProgram(VERTEX_SHADER, VIDEO_FRAGMENT_SHADER)
 
@@ -545,9 +630,8 @@ class WallpaperRenderer(
         android.opengl.Matrix.setIdentityM(imageTexMatrix, 0)
     }
 
-    private fun cleanup() {
-        eglReady = false
-        cleanupVideo()
+    private fun cleanupAll() {
+        cleanupVideoCodec()
 
         if (imageProgram != 0) { GLES20.glDeleteProgram(imageProgram); imageProgram = 0 }
         if (videoProgram != 0) { GLES20.glDeleteProgram(videoProgram); videoProgram = 0 }
@@ -562,7 +646,11 @@ class WallpaperRenderer(
         eglDisplay = EGL14.EGL_NO_DISPLAY
         eglSurface = EGL14.EGL_NO_SURFACE
         eglContext = EGL14.EGL_NO_CONTEXT
+        eglConfig = null
+        contextReady = false
     }
+
+    // ======== Helpers ========
 
     private fun createProgram(vertexSrc: String, fragmentSrc: String): Int {
         val vs = compileShader(GLES20.GL_VERTEX_SHADER, vertexSrc)
