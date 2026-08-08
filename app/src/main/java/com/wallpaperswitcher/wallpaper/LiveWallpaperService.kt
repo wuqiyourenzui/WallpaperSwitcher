@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.*
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -148,24 +147,18 @@ class LiveWallpaperService : WallpaperService() {
             isVisible = visible
             if (visible) {
                 scope.launch {
-                    // Re-check surface state inside coroutine (may have changed)
                     if (!surfaceReady || renderer == null) return@launch
                     val dao = db.settingsDao()
                     val savedId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
                     if (savedId != lastDisplayedId || lastDisplayedId == 0L) {
-                        stopVideo()
-                        pauseGif()
                         videoMode = false
                         currentBitmap = null
                         drawCurrentImage()
-                    } else if (videoMode) {
-                        // Video auto-resumes via renderer
-                    } else if (gifDrawable != null) {
-                        // GIF auto-resumes via runnable
                     }
                 }
             } else {
-                if (videoMode) renderer?.stopVideo()
+                renderer?.stopVideo()
+                videoMode = false
                 pauseGif()
             }
         }
@@ -449,18 +442,12 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
-            if (!surfaceReady || !surfaceHolder.surface.isValid) {
+            if (!surfaceReady) {
                 Log.w(TAG, "startVideo: surface not ready")
                 return
             }
             videoMode = true
             Log.d(TAG, "startVideo: $uriStr")
-            val sw = cachedScreenW.takeIf { it > 0 }
-                ?: surfaceHolder.surfaceFrame.width().toFloat().takeIf { it > 0 }
-                ?: getMetrics().widthPixels.toFloat()
-            val sh = cachedScreenH.takeIf { it > 0 }
-                ?: surfaceHolder.surfaceFrame.height().toFloat().takeIf { it > 0 }
-                ?: getMetrics().heightPixels.toFloat()
             renderer?.startVideo(uriStr, scaleMode)
         }
 
