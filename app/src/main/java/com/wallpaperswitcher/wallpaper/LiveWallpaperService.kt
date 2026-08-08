@@ -159,9 +159,15 @@ class LiveWallpaperService : WallpaperService() {
                     }
                 }
             } else {
+                // Stop playback to save power, but reset lastDisplayedId so that
+                // returning to the desktop restarts the video/GIF. Without this
+                // the visibility handler thinks the current media is still shown
+                // and never redraws (video stays black after opening an app).
+                val wasVideo = videoMode || gifDrawable != null
                 renderer?.stopVideo()
                 videoMode = false
                 pauseGif()
+                if (wasVideo) lastDisplayedId = 0L
             }
         }
 
@@ -300,8 +306,9 @@ class LiveWallpaperService : WallpaperService() {
                             stopVideo()
                             delay(SWITCH_SETTLE_DELAY_MS)
                             currentBitmap = null
-                            startVideo(nextImage.uri, currentScaleMode)
-                            if (videoMode) lastDisplayedId = nextImage.id
+                            if (startVideo(nextImage.uri, currentScaleMode)) {
+                                lastDisplayedId = nextImage.id
+                            }
                         }
                         "GIF" -> {
                             // Any → GIF: stop video atomically (show nothing, GIF will overwrite)
@@ -445,17 +452,21 @@ class LiveWallpaperService : WallpaperService() {
                     videoMode = false
 
                     if (image != null) {
-                        lastDisplayedId = image.id
                         when (image.mediaType ?: "IMAGE") {
                             "VIDEO" -> {
                                 currentBitmap = null
-                                startVideo(image.uri, currentScaleMode)
+                                if (startVideo(image.uri, currentScaleMode)) {
+                                    lastDisplayedId = image.id
+                                } else {
+                                    lastDisplayedId = 0L
+                                }
                                 return@launch
                             }
                             "GIF" -> {
                                 currentBitmap = null
                                 videoMode = false
                                 mainHandler.post { playGif(image.uri, currentScaleMode) }
+                                lastDisplayedId = image.id
                                 return@launch
                             }
                             else -> {
@@ -470,9 +481,11 @@ class LiveWallpaperService : WallpaperService() {
                                         old.recycle()
                                     }
                                     r.stopVideoAndRender(bitmap, currentScaleMode)
+                                    lastDisplayedId = image.id
                                     return@launch
                                 } else {
                                     Log.e(TAG, "drawCurrentImage failed to load bitmap: ${image.uri}")
+                                    lastDisplayedId = 0L
                                 }
                             }
                         }
@@ -487,14 +500,20 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        private fun startVideo(uriStr: String, scaleMode: ScaleMode) {
+        private fun startVideo(uriStr: String, scaleMode: ScaleMode): Boolean {
             if (!surfaceReady) {
                 Log.w(TAG, "startVideo: surface not ready")
-                return
+                return false
+            }
+            val r = renderer
+            if (r == null) {
+                Log.w(TAG, "startVideo: renderer not ready")
+                return false
             }
             videoMode = true
             Log.d(TAG, "startVideo: $uriStr")
-            renderer?.startVideo(uriStr, scaleMode)
+            r.startVideo(uriStr, scaleMode)
+            return true
         }
 
         private fun playGif(uriStr: String, scaleMode: ScaleMode) {
@@ -514,6 +533,11 @@ class LiveWallpaperService : WallpaperService() {
                 decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
             }
             if (drawable is android.graphics.drawable.AnimatedImageDrawable) {
+                // Release the previous GIF (if any) before replacing it.
+                gifDrawable?.let { old ->
+                    try { old.stop() } catch (_: Exception) {}
+                    try { (old as java.lang.AutoCloseable).close() } catch (_: Exception) {}
+                }
                 gifDrawable = drawable
                 drawable.repeatCount = -1
                 drawable.start()

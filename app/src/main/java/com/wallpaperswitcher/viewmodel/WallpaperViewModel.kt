@@ -373,6 +373,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 Log.d(TAG, "engineRunning=$engineRunning")
                 if (engineRunning) {
                     sendTargetBroadcast(image.id)
+                } else if (image.mediaType == "VIDEO" || image.mediaType == "GIF") {
+                    // A static system wallpaper cannot play video/GIF animation.
+                    // Guide the user to the live wallpaper setup instead, where
+                    // the media is actually rendered.
+                    launchLiveWallpaperPicker()
                 } else {
                     val ok = withContext(Dispatchers.IO) {
                         WallpaperApplier.apply(getApplication(), image)

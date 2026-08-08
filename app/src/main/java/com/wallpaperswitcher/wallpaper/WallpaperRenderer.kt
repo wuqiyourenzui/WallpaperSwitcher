@@ -370,6 +370,14 @@ class WallpaperRenderer(
                 videoW = (videoW * scale).toInt().and(0xFFFFFFFE.toInt())
                 videoH = (videoH * scale).toInt().and(0xFFFFFFFE.toInt())
             }
+            // Videos with a 90/270 degree rotation (e.g. portrait phone
+            // recordings) display with swapped width/height. Use the rotated
+            // dimensions for the render quad so the video is not stretched;
+            // SurfaceTexture's transform matrix already handles the rotation.
+            val rotation = format.getInteger(MediaFormat.KEY_ROTATION)
+            val isRotated = rotation == 90 || rotation == 270
+            val quadW = if (isRotated) videoH else videoW
+            val quadH = if (isRotated) videoW else videoH
             val fps = try { format.getInteger(MediaFormat.KEY_FRAME_RATE) } catch (_: Exception) { 30 }
             val intervalNs = (1_000_000_000L / fps.coerceIn(15, 60)).coerceAtLeast(16_000_000L)
 
@@ -417,7 +425,7 @@ class WallpaperRenderer(
             // Cache render quad on render thread
             handler.post {
                 if (videoGeneration.get() != gen) return@post
-                val quad = computeVideoQuad(videoW.toFloat(), videoH.toFloat(), scaleMode)
+                val quad = computeVideoQuad(quadW.toFloat(), quadH.toFloat(), scaleMode)
                 vertexBuffer?.clear()
                 vertexBuffer?.put(quad)?.position(0)
             }

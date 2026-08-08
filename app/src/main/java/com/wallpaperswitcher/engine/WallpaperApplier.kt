@@ -106,6 +106,7 @@ object WallpaperApplier {
             retriever = MediaMetadataRetriever()
             retriever.setDataSource(context, Uri.parse(uriStr))
             retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 ?: retriever.getFrameAtTime()
         } catch (e: Exception) {
             Log.e(TAG, "videoFrame failed: $uriStr", e)
