@@ -137,6 +137,13 @@ class WallpaperRenderer(
         }
     }
 
+    /**
+     * True once the EGL surface is ready to be drawn on. surfaceCreated() is
+     * asynchronous (posted to the render thread), so drawing must wait for
+     * this flag before calling showImage/renderImage.
+     */
+    fun isSurfaceReady(): Boolean = surfaceReady
+
     fun surfaceChanged(width: Int, height: Int) {
         renderHandler?.post {
             screenW = width.toFloat()

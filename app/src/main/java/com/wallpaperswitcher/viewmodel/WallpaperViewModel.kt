@@ -117,20 +117,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * Master switch: enables or disables all three switch triggers
-     * (timer service, double tap and unlock) together.
-     */
-    fun setAllSwitches(enabled: Boolean) {
-        viewModelScope.launch {
-            settingsDao.setBool(SettingsKeys.DOUBLE_TAP_ENABLED, enabled)
-            settingsDao.setBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, enabled)
-            settingsDao.setBool(SettingsKeys.SERVICE_ENABLED, enabled)
-            if (enabled) WallpaperSwitchService.start(getApplication())
-            else WallpaperSwitchService.stop(getApplication())
-        }
-    }
-
     fun toggleDoubleTap(enabled: Boolean) {
         viewModelScope.launch { settingsDao.setBool(SettingsKeys.DOUBLE_TAP_ENABLED, enabled) }
     }

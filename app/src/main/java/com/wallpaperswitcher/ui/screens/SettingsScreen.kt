@@ -30,6 +30,8 @@ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 @Composable
 fun SettingsScreen(viewModel: WallpaperViewModel) {
     val serviceEnabled by viewModel.serviceEnabled.collectAsStateWithLifecycle()
+    val doubleTapEnabled by viewModel.doubleTapEnabled.collectAsStateWithLifecycle()
+    val unlockSwitchEnabled by viewModel.unlockSwitchEnabled.collectAsStateWithLifecycle()
     val globalIntervalMs by viewModel.globalIntervalMs.collectAsStateWithLifecycle()
     val globalSwitchMode by viewModel.globalSwitchMode.collectAsStateWithLifecycle()
     val globalScaleMode by viewModel.globalScaleMode.collectAsStateWithLifecycle()
@@ -97,19 +99,34 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // One master switch enables timer, double tap and unlock switching
-        // together - they are always kept in sync so no trigger can be left
-        // disabled by mistake.
+        // Timer, double tap and unlock switches. They are fully independent.
         SettingsSection(title = "切换方式") {
             SettingsSwitchItem(
                 icon = Icons.Outlined.PlayCircle,
-                title = "壁纸自动切换",
-                subtitle = if (serviceEnabled)
-                    "已启用：定时、双击、解锁切换"
-                else
-                    "开启后同时启用定时、双击、解锁切换",
+                title = "定时切换",
+                subtitle = "按设定间隔自动切换壁纸",
                 checked = serviceEnabled,
-                onCheckedChange = { viewModel.setAllSwitches(it) }
+                onCheckedChange = { viewModel.toggleService(it) }
+            )
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            SettingsSwitchItem(
+                icon = Icons.Outlined.LockOpen,
+                title = "解锁切换",
+                subtitle = "每次解锁屏幕时自动切换壁纸",
+                checked = unlockSwitchEnabled,
+                onCheckedChange = { viewModel.toggleUnlockSwitch(it) }
+            )
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            SettingsSwitchItem(
+                icon = Icons.Outlined.TouchApp,
+                title = "双击切换",
+                subtitle = "双击屏幕切换壁纸（需设置动态壁纸）",
+                checked = doubleTapEnabled,
+                onCheckedChange = { viewModel.toggleDoubleTap(it) }
             )
         }
 
@@ -123,7 +140,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 subtitle = buildString {
                     appendLine("1. 创建分组，添加图片或视频。")
                     appendLine("2. 长按图片/视频 → 设为壁纸。")
-                    appendLine("3. 在「切换方式」开启壁纸自动切换（定时、双击、解锁同时启用）。")
+                    appendLine("3. 在「切换方式」中开启定时、双击或解锁切换。")
                 }
             )
 

@@ -143,14 +143,30 @@ class LiveWallpaperService : WallpaperService() {
                 val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().heightPixels.toFloat()
                 renderer = WallpaperRenderer(applicationContext, holder).also { it.initialize(sw, sh) }
                 rendererInitialized = true
-            } else {
-                renderer?.surfaceCreated()
             }
-            // Trigger redraw: surface may have become ready after onVisibilityChanged(true)
-            // was called but skipped because surfaceReady was false.
+            // Ensure the EGL window surface exists for this SurfaceHolder. This
+            // is posted to the render thread, so drawing must wait until the
+            // renderer reports its EGL surface is ready.
+            renderer?.surfaceCreated()
             if (isVisible) {
-                drawCurrentImage()
+                redrawWhenSurfaceReady()
             }
+        }
+
+        /**
+         * Draw the current media once the renderer's EGL surface is actually
+         * ready. surfaceCreated() runs on the render thread asynchronously, so
+         * an immediate draw could hit a not-yet-created EGL surface and leave
+         * the wallpaper blank (which looks like switching stopped working).
+         */
+        private fun redrawWhenSurfaceReady() {
+            if (!isVisible) return
+            val r = renderer ?: return
+            if (r.isSurfaceReady()) {
+                drawCurrentImage()
+                return
+            }
+            mainHandler.postDelayed({ redrawWhenSurfaceReady() }, 50L)
         }
 
         override fun onSurfaceChanged(holder: SurfaceHolder?, format: Int, width: Int, height: Int) {

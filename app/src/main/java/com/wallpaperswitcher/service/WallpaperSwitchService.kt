@@ -70,10 +70,10 @@ class WallpaperSwitchService : Service() {
     private fun startSwitchLoop() {
         switchJob?.cancel()
         switchJob = scope.launch {
-            // First switch immediately on start
-            sendSwitch(LiveWallpaperService.SOURCE_TIMER)
             while (isActive) {
                 try {
+                    // First switch immediately, then every interval.
+                    sendSwitch(LiveWallpaperService.SOURCE_TIMER)
                     val db = AppDatabase.getInstance(applicationContext)
                     val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
                     if (groups.isEmpty()) {
@@ -88,7 +88,6 @@ class WallpaperSwitchService : Service() {
                     val interval = db.settingsDao().getLong(SettingsKeys.GLOBAL_INTERVAL_MS, 60_000L)
                         .coerceAtLeast(10_000L)
                     delay(interval)
-                    sendSwitch(LiveWallpaperService.SOURCE_TIMER)
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
                     Log.e(TAG, "Switch loop error", e)
