@@ -231,6 +231,18 @@ class LiveWallpaperService : WallpaperService() {
                     val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
                     if (groups.isEmpty()) return@launch
 
+                    // If target is already playing, skip restart (avoids video pause on "apply")
+                    if (targetId != null && targetId > 0 && targetId == lastDisplayedId) {
+                        if (videoMode && renderer?.isVideoPlaying == true) {
+                            Log.d(TAG, "Target $targetId already playing, skip")
+                            return@launch
+                        }
+                        if (!videoMode && currentBitmap != null && !currentBitmap!!.isRecycled) {
+                            Log.d(TAG, "Target $targetId already showing, skip")
+                            return@launch
+                        }
+                    }
+
                     currentScaleMode = try {
                         ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
                     } catch (_: Exception) { ScaleMode.FIT }
