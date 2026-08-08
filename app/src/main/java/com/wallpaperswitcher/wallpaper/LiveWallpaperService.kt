@@ -275,10 +275,6 @@ class LiveWallpaperService : WallpaperService() {
                             pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao, pickMediaType())
                         }
                     } else {
-                        // FIX: Reset videoMode BEFORE pickMediaType so alternation works.
-                        // If the previous image failed to load, videoMode might be stuck as true,
-                        // causing pickMediaType to always pick IMAGE. Reset ensures fair alternation.
-                        videoMode = false
                         val mediaType = pickMediaType()
                         val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
                         val switchMode = try {
