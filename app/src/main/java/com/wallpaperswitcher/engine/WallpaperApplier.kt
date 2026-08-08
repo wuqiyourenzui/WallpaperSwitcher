@@ -79,22 +79,26 @@ object WallpaperApplier {
             SwitchMode.RANDOM
         }
 
-        val image = when (mode) {
-            SwitchMode.RANDOM, SwitchMode.SHUFFLE -> {
-                imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
-                    ?: imageDao.getRandomImageFromEnabledGroups()
-            }
-            SwitchMode.SEQUENTIAL -> {
-                val count = imageDao.countByEnabledGroups()
-                if (count == 0) null else {
-                    val idx = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
-                    val next = idx % count
-                    imageDao.getSequentialImageFromEnabledGroups(next)?.also {
-                        dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, (next + 1).toLong())
+        // The static path can only show a still frame. Prefer IMAGE media:
+        // extracting a video frame from a slow (e.g. cloud-downloaded) URI can
+        // block for tens of seconds, which makes the timer look broken. Videos
+        // are used only as a fallback when no images are available.
+        val image = imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+            ?: imageDao.getRandomImageFromEnabledGroups()
+            ?: when (mode) {
+                SwitchMode.SEQUENTIAL -> {
+                    val count = imageDao.countByEnabledGroups()
+                    if (count == 0) null else {
+                        val idx = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
+                        val next = idx % count
+                        imageDao.getSequentialImageFromEnabledGroups(next)?.also {
+                            dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, (next + 1).toLong())
+                        }
                     }
                 }
+                else -> null
             }
-        } ?: imageDao.getFirstFromEnabledGroups() ?: return false
+            ?: imageDao.getFirstFromEnabledGroups() ?: return false
 
         dao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
         return apply(context, image)
