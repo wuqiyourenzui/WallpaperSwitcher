@@ -578,6 +578,11 @@ class WallpaperRenderer(
         if (eglSurface == EGL14.EGL_NO_SURFACE) return
 
         if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
+            // Destroy the old context before creating a new one to avoid leak
+            if (eglContext != EGL14.EGL_NO_CONTEXT) {
+                EGL14.eglDestroyContext(eglDisplay, eglContext)
+                eglContext = EGL14.EGL_NO_CONTEXT
+            }
             val ctxAttribs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
             eglContext = EGL14.eglCreateContext(eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT, ctxAttribs, 0)
             if (eglContext == EGL14.EGL_NO_CONTEXT) { contextReady = false; return }
@@ -654,16 +659,37 @@ class WallpaperRenderer(
     private fun createProgram(vSrc: String, fSrc: String): Int {
         val vs = compileShader(GLES20.GL_VERTEX_SHADER, vSrc)
         val fs = compileShader(GLES20.GL_FRAGMENT_SHADER, fSrc)
+        if (vs == 0 || fs == 0) {
+            if (vs != 0) GLES20.glDeleteShader(vs)
+            if (fs != 0) GLES20.glDeleteShader(fs)
+            return 0
+        }
         val p = GLES20.glCreateProgram()
         GLES20.glAttachShader(p, vs); GLES20.glAttachShader(p, fs)
         GLES20.glLinkProgram(p)
+        val linked = IntArray(1)
+        GLES20.glGetProgramiv(p, GLES20.GL_LINK_STATUS, linked, 0)
+        if (linked[0] == 0) {
+            Log.e(TAG, "Program link error: ${GLES20.glGetProgramInfoLog(p)}")
+            GLES20.glDeleteProgram(p)
+            GLES20.glDeleteShader(vs); GLES20.glDeleteShader(fs)
+            return 0
+        }
         GLES20.glDeleteShader(vs); GLES20.glDeleteShader(fs)
         return p
     }
 
     private fun compileShader(type: Int, src: String): Int {
         val s = GLES20.glCreateShader(type)
-        GLES20.glShaderSource(s, src); GLES20.glCompileShader(s)
+        GLES20.glShaderSource(s, src)
+        GLES20.glCompileShader(s)
+        val compiled = IntArray(1)
+        GLES20.glGetShaderiv(s, GLES20.GL_COMPILE_STATUS, compiled, 0)
+        if (compiled[0] == 0) {
+            Log.e(TAG, "Shader compile error: ${GLES20.glGetShaderInfoLog(s)}")
+            GLES20.glDeleteShader(s)
+            return 0
+        }
         return s
     }
 

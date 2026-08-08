@@ -51,13 +51,14 @@ class WallpaperSwitchService : Service() {
 
     override fun onDestroy() {
         switchJob?.cancel()
-        // Sync service_enabled to false so UI reflects stopped state
-        scope.launch {
-            try {
-                val db = AppDatabase.getInstance(applicationContext)
+        // Sync service_enabled to false so UI reflects stopped state.
+        // Use runBlocking to ensure the DB write completes before scope cancellation.
+        try {
+            val db = AppDatabase.getInstance(applicationContext)
+            kotlinx.coroutines.runBlocking(Dispatchers.IO) {
                 db.settingsDao().setBool(SettingsKeys.SERVICE_ENABLED, false)
-            } catch (_: Exception) {}
-        }
+            }
+        } catch (_: Exception) {}
         scope.cancel()
         super.onDestroy()
     }

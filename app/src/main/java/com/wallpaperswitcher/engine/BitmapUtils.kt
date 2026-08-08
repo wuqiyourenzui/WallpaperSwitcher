@@ -10,9 +10,6 @@ import android.view.WindowManager
 
 object BitmapUtils {
 
-    private var cachedScreenW = 0
-    private var cachedScreenH = 0
-
     /**
      * Load a bitmap from URI with quality-preserving downsample.
      * Only downsamples if image exceeds 4x screen dimensions.
@@ -26,20 +23,21 @@ object BitmapUtils {
             val screenW = metrics.widthPixels
             val screenH = metrics.heightPixels
 
-            // Use single file descriptor to avoid race between bounds and decode
-            val fd = context.contentResolver.openFileDescriptor(uri, "r") ?: return null
-            fd.use {
-                // First pass: read bounds only
-                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeFileDescriptor(fd.fileDescriptor, null, opts)
-                if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
+            // Open InputStream twice: once for bounds, once for decode.
+            // Using openInputStream avoids fd position issues with decodeFileDescriptor.
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, opts)
+            } ?: return null
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
 
-                // Only downsample if image is more than 4x screen size
-                var sample = 1
-                while (opts.outWidth / sample > screenW * 4 || opts.outHeight / sample > screenH * 4) sample *= 2
+            // Only downsample if image is more than 4x screen size
+            var sample = 1
+            while (opts.outWidth / sample > screenW * 4 || opts.outHeight / sample > screenH * 4) sample *= 2
 
-                // Second pass: decode actual bitmap (fd position resets via lseek)
-                BitmapFactory.decodeFileDescriptor(fd.fileDescriptor, null, BitmapFactory.Options().apply {
+            // Second pass: decode actual bitmap from a fresh stream
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, BitmapFactory.Options().apply {
                     inSampleSize = sample
                     inPreferredConfig = Bitmap.Config.ARGB_8888
                 })

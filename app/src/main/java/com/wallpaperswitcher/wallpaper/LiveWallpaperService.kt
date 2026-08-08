@@ -187,8 +187,10 @@ class LiveWallpaperService : WallpaperService() {
             kotlinx.coroutines.runBlocking(Dispatchers.IO) {
                 try {
                     val dao = db.settingsDao()
-                    dao.setString("shuffle_ids", shuffleShownIds.joinToString(","))
-                    dao.setLong("shuffle_count", shuffleAllCount.toLong())
+                    // Save shuffle state for both image and video types
+                    // (the shown IDs set is shared across types in this engine instance)
+                    dao.setString(SettingsKeys.SHUFFLE_SHOWN_IDS, shuffleShownIds.joinToString(","))
+                    dao.setLong(SettingsKeys.SHUFFLE_ALL_COUNT, shuffleAllCount.toLong())
                 } catch (_: Exception) {}
             }
         }
@@ -302,7 +304,12 @@ class LiveWallpaperService : WallpaperService() {
                             videoMode = false
                             val bitmap = loadBitmap(nextImage.uri)
                             if (bitmap != null) {
+                                // Recycle old bitmap to avoid memory leak
+                                val old = currentBitmap
                                 currentBitmap = bitmap
+                                if (old != null && old != bitmap && !old.isRecycled) {
+                                    old.recycle()
+                                }
                                 if (renderer?.isVideoPlaying == true) {
                                     // Video → Image: atomic stop + render (no flash, no stutter)
                                     renderer?.stopVideoAndRender(bitmap, currentScaleMode)
@@ -358,10 +365,8 @@ class LiveWallpaperService : WallpaperService() {
                     val totalCount = imageDao.countByEnabledGroupsOfType(groupType)
                     if (totalCount == 0) null else {
                         if (shuffleShownIds.isEmpty() && shuffleAllCount == 0) {
-                            val shuffleKey = if (groupType == "VIDEO") "video_shuffle" else "image_shuffle"
-                            val countKey = if (groupType == "VIDEO") "video_shuffle_count" else "image_shuffle_count"
-                            val savedIds = dao.getString(shuffleKey, "")
-                            val savedCount = dao.getLong(countKey, 0L).toInt()
+                            val savedIds = dao.getString(SettingsKeys.SHUFFLE_SHOWN_IDS, "")
+                            val savedCount = dao.getLong(SettingsKeys.SHUFFLE_ALL_COUNT, 0L).toInt()
                             if (savedIds.isNotEmpty()) {
                                 savedIds.split(",").mapNotNull { it.toLongOrNull() }.forEach { shuffleShownIds.add(it) }
                             }
@@ -443,7 +448,11 @@ class LiveWallpaperService : WallpaperService() {
                                 videoMode = false
                                 val bitmap = loadBitmap(image.uri)
                                 if (bitmap != null) {
+                                    val old = currentBitmap
                                     currentBitmap = bitmap
+                                    if (old != null && old != bitmap && !old.isRecycled) {
+                                        old.recycle()
+                                    }
                                     if (r.isVideoPlaying) {
                                         r.stopVideoAndRender(bitmap, currentScaleMode)
                                     } else {
