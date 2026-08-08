@@ -319,22 +319,23 @@ class LiveWallpaperService : WallpaperService() {
                         else -> {
                             // Any → Image: load bitmap FIRST, then stop video + render atomically
                             videoMode = false
+                            Log.d(TAG, "Loading image bitmap: ${nextImage.uri}")
                             val bitmap = loadBitmap(nextImage.uri)
                             if (bitmap != null) {
+                                Log.d(TAG, "Bitmap loaded: ${bitmap.width}x${bitmap.height}")
                                 // Recycle old bitmap to avoid memory leak
                                 val old = currentBitmap
                                 currentBitmap = bitmap
                                 if (old != null && old != bitmap && !old.isRecycled) {
                                     old.recycle()
                                 }
-                                if (renderer?.isVideoPlaying == true) {
-                                    // Video → Image: atomic stop + render (no flash, no stutter)
-                                    renderer?.stopVideoAndRender(bitmap, currentScaleMode)
-                                } else {
-                                    // Image → Image: just render
-                                    renderer?.showImage(bitmap, currentScaleMode)
-                                }
+                                // Always use stopVideoAndRender for clean transition.
+                                // Even if isVideoPlaying is false, the decode thread might
+                                // still be running and its cleanup could interfere.
+                                renderer?.stopVideoAndRender(bitmap, currentScaleMode)
                                 lastDisplayedId = nextImage.id
+                            } else {
+                                Log.e(TAG, "Failed to load bitmap for: ${nextImage.displayName} uri=${nextImage.uri}")
                             }
                         }
                     }
@@ -463,19 +464,19 @@ class LiveWallpaperService : WallpaperService() {
                             }
                             else -> {
                                 videoMode = false
+                                Log.d(TAG, "drawCurrentImage loading bitmap: ${image.uri}")
                                 val bitmap = loadBitmap(image.uri)
                                 if (bitmap != null) {
+                                    Log.d(TAG, "drawCurrentImage bitmap loaded: ${bitmap.width}x${bitmap.height}")
                                     val old = currentBitmap
                                     currentBitmap = bitmap
                                     if (old != null && old != bitmap && !old.isRecycled) {
                                         old.recycle()
                                     }
-                                    if (r.isVideoPlaying) {
-                                        r.stopVideoAndRender(bitmap, currentScaleMode)
-                                    } else {
-                                        r.showImage(bitmap, currentScaleMode)
-                                    }
+                                    r.stopVideoAndRender(bitmap, currentScaleMode)
                                     return@launch
+                                } else {
+                                    Log.e(TAG, "drawCurrentImage failed to load bitmap: ${image.uri}")
                                 }
                             }
                         }

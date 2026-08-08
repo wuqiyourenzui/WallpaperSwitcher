@@ -6,9 +6,12 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import android.util.DisplayMetrics
+import android.util.Log
 import android.view.WindowManager
 
 object BitmapUtils {
+
+    private const val TAG = "BitmapUtils"
 
     /**
      * Load a bitmap from URI with quality-preserving downsample.
@@ -26,23 +29,41 @@ object BitmapUtils {
             // Open InputStream twice: once for bounds, once for decode.
             // Using openInputStream avoids fd position issues with decodeFileDescriptor.
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            context.contentResolver.openInputStream(uri)?.use { stream ->
-                BitmapFactory.decodeStream(stream, null, opts)
-            } ?: return null
-            if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
+            val stream1 = context.contentResolver.openInputStream(uri)
+            if (stream1 == null) {
+                Log.e(TAG, "openInputStream returned null for: $uriStr")
+                return null
+            }
+            stream1.use { BitmapFactory.decodeStream(it, null, opts) }
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) {
+                Log.e(TAG, "decodeStream bounds invalid: ${opts.outWidth}x${opts.outHeight} for: $uriStr")
+                return null
+            }
 
             // Only downsample if image is more than 4x screen size
             var sample = 1
             while (opts.outWidth / sample > screenW * 4 || opts.outHeight / sample > screenH * 4) sample *= 2
 
             // Second pass: decode actual bitmap from a fresh stream
-            context.contentResolver.openInputStream(uri)?.use { stream ->
-                BitmapFactory.decodeStream(stream, null, BitmapFactory.Options().apply {
+            val stream2 = context.contentResolver.openInputStream(uri)
+            if (stream2 == null) {
+                Log.e(TAG, "openInputStream (2nd) returned null for: $uriStr")
+                return null
+            }
+            val bitmap = stream2.use {
+                BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply {
                     inSampleSize = sample
                     inPreferredConfig = Bitmap.Config.ARGB_8888
                 })
             }
-        } catch (_: Exception) { null }
+            if (bitmap == null) {
+                Log.e(TAG, "decodeStream returned null for: $uriStr")
+            }
+            bitmap
+        } catch (e: Exception) {
+            Log.e(TAG, "loadBitmap exception: ${e.message} for: $uriStr", e)
+            null
+        }
     }
 
     /**

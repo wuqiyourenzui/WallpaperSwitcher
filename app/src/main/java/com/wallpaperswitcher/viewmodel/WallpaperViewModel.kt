@@ -360,9 +360,12 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun setImageAsWallpaper(image: WallpaperImage) {
         viewModelScope.launch {
             try {
+                Log.d(TAG, "setImageAsWallpaper: id=${image.id} type=${image.mediaType} uri=${image.uri}")
+
                 // 1. Save target ID — MUST complete before launching picker.
                 //    The engine reads this from DB when it starts.
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
+                Log.d(TAG, "LAST_IMAGE_ID saved: ${image.id}")
 
                 // 2. Send broadcast to running live wallpaper engine
                 val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH).apply {
@@ -370,17 +373,21 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                     putExtra(com.wallpaperswitcher.wallpaper.LiveWallpaperService.EXTRA_TARGET_ID, image.id)
                 }
                 getApplication<Application>().sendBroadcast(switchIntent)
+                Log.d(TAG, "Switch broadcast sent with targetId=${image.id}")
 
                 // 3. Only launch picker if engine is NOT running (first time setup).
                 //    When engine is already running, the broadcast is sufficient.
                 //    Launching picker every time destroys/recreates the engine,
                 //    which can corrupt surface state (Canvas→EGL transition fails).
-                if (!com.wallpaperswitcher.wallpaper.LiveWallpaperService.engineRunning) {
+                val engineRunning = com.wallpaperswitcher.wallpaper.LiveWallpaperService.engineRunning
+                Log.d(TAG, "engineRunning=$engineRunning")
+                if (!engineRunning) {
                     launchLiveWallpaperPicker()
                 }
 
                 _toastMessage.emit("壁纸已设置！")
             } catch (e: Exception) {
+                Log.e(TAG, "setImageAsWallpaper failed", e)
                 _toastMessage.emit("设置失败: ${e.message}")
             }
         }
