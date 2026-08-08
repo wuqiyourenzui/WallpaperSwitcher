@@ -103,6 +103,7 @@ class WallpaperSwitchService : Service() {
      * - Otherwise -> apply a static wallpaper via WallpaperManager.
      */
     private fun sendSwitch(source: String) {
+        Log.d(TAG, "sendSwitch($source) engineRunning=${LiveWallpaperService.engineRunning}")
         if (LiveWallpaperService.engineRunning) {
             sendSwitchBroadcast(source)
         } else {

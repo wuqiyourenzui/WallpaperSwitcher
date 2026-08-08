@@ -418,7 +418,7 @@ class WallpaperRenderer(
                 setupOk = true
                 setupLatch.countDown()
             }
-            setupLatch.await(3, TimeUnit.SECONDS)
+            try { setupLatch.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
             if (!setupOk) {
                 Log.e(TAG, "Video GL setup failed"); isVideoPlaying = false
                 ext.release(); return
@@ -491,9 +491,15 @@ class WallpaperRenderer(
 
                     val elapsedNs = System.nanoTime() - startNs
                     val sleepNs = intervalNs - elapsedNs
-                    if (sleepNs > 0) Thread.sleep(sleepNs / 1_000_000, (sleepNs % 1_000_000).toInt())
+                    if (sleepNs > 0) {
+                        // InterruptedException is the normal "stop" signal; the
+                        // while condition will exit. Do not treat it as an error.
+                        try {
+                            Thread.sleep(sleepNs / 1_000_000, (sleepNs % 1_000_000).toInt())
+                        } catch (_: InterruptedException) {}
+                    }
                 } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                    Thread.sleep(1)
+                    try { Thread.sleep(1) } catch (_: InterruptedException) {}
                 }
             }
         } catch (t: Throwable) {

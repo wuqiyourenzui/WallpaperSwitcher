@@ -478,11 +478,21 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
-            if (switchInProgress) return
             val r = renderer ?: return
+            if (switchInProgress) {
+                // A switch is running right now; retry shortly instead of
+                // racing with it (concurrent startVideo + stopVideoAndRender on
+                // the GL renderer caused native crashes during timed switches).
+                mainHandler.postDelayed({ drawCurrentImage() }, 100L)
+                return
+            }
 
             scope.launch {
                 try {
+                    if (switchInProgress) {
+                        mainHandler.postDelayed({ drawCurrentImage() }, 100L)
+                        return@launch
+                    }
                     val dao = db.settingsDao()
                     val imageDao = db.wallpaperImageDao()
                     var imageId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
