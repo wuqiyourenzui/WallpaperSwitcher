@@ -47,19 +47,6 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        // Service control
-        SettingsSection(title = "服务") {
-            SettingsSwitchItem(
-                icon = Icons.Outlined.PlayCircle,
-                title = "自动切换服务",
-                subtitle = "后台定时切换壁纸",
-                checked = serviceEnabled,
-                onCheckedChange = { viewModel.toggleService(it) }
-            )
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
         // Global wallpaper settings
         SettingsSection(title = "壁纸设置") {
             // Interval
@@ -112,8 +99,19 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Trigger methods
-        SettingsSection(title = "触发方式") {
+        // Switch triggers: timer, double tap and unlock live in one section and
+        // are fully independent - enabling one never disables another.
+        SettingsSection(title = "切换方式") {
+            SettingsSwitchItem(
+                icon = Icons.Outlined.PlayCircle,
+                title = "定时切换",
+                subtitle = "按设定间隔自动切换壁纸",
+                checked = serviceEnabled,
+                onCheckedChange = { viewModel.toggleService(it) }
+            )
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
             SettingsSwitchItem(
                 icon = Icons.Outlined.LockOpen,
                 title = "解锁切换",
@@ -143,8 +141,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 subtitle = buildString {
                     appendLine("1. 创建分组，添加图片或视频。")
                     appendLine("2. 长按图片/视频 → 设为壁纸。")
-                    appendLine("3. 开启自动切换服务，壁纸会定时自动切换。")
-                    appendLine("4. 解锁切换和双击切换可在下方开启。")
+                    appendLine("3. 在「切换方式」中开启定时、双击或解锁切换。")
                 }
             )
 

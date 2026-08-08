@@ -53,6 +53,7 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile private var isVisible = true
         private val isSwitching = AtomicBoolean(false)
         @Volatile private var switchStartedAt = 0L
+        private val pendingAutoSwitch = AtomicBoolean(false)
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
 
@@ -85,15 +86,6 @@ class LiveWallpaperService : WallpaperService() {
                         } else {
                             doSwitch("broadcast", targetId)
                         }
-                        return
-                    }
-                    val source = intent.getStringExtra(EXTRA_SOURCE)
-                    // Timer switching is skipped while the wallpaper is invisible
-                    // (e.g. another app is open) so it cannot restart the video
-                    // behind the app. Unlock is an explicit user action and always
-                    // applies.
-                    if (!isVisible && source == SOURCE_TIMER) {
-                        Log.d(TAG, "Wallpaper not visible, skip automatic switch ($source)")
                         return
                     }
                     doSwitch("broadcast", null)
@@ -198,6 +190,7 @@ class LiveWallpaperService : WallpaperService() {
             lastDisplayedId = 0L
             isSwitching.set(false)
             switchStartedAt = 0L
+            pendingAutoSwitch.set(false)
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
             flushShuffleState()
             try { renderer?.release() } catch (_: Exception) {}
@@ -264,7 +257,13 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun doSwitch(source: String, targetId: Long? = null) {
             if (!tryBeginSwitch()) {
-                Log.d(TAG, "Already switching, skip ($source)")
+                if (targetId == null) {
+                    // Queue automatic triggers (timer / double-tap / unlock)
+                    // instead of dropping them: enabling the timer must never
+                    // make double-tap or unlock switching silently disappear.
+                    pendingAutoSwitch.set(true)
+                    Log.d(TAG, "Switch in progress, queuing ($source)")
+                }
                 return
             }
             Log.d(TAG, "doSwitch from $source, targetId=$targetId")
@@ -374,9 +373,12 @@ class LiveWallpaperService : WallpaperService() {
                     isSwitching.set(false)
                     switchStartedAt = 0L
                     val pending = pendingTargetId
+                    val autoQueued = pendingAutoSwitch.getAndSet(false)
                     if (pending != null) {
                         pendingTargetId = null
                         doSwitch("pending", pending)
+                    } else if (autoQueued) {
+                        doSwitch("queued", null)
                     }
                 }
             }
