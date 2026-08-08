@@ -375,7 +375,9 @@ class WallpaperRenderer(
             // Flushing and re-feeding an in-place codec can crash some hardware
             // decoders during repeat playback, which is how the engine died
             // while just playing (no switch involved) in the captured logs.
-            while (videoGeneration.get() == gen && !Thread.interrupted()) {
+            var errorPasses = 0
+            var giveUp = false
+            while (videoGeneration.get() == gen && !Thread.interrupted() && !giveUp) {
                 // --- Setup MediaExtractor ---
                 val ext = MediaExtractor()
                 localExtractor = ext
@@ -486,56 +488,71 @@ class WallpaperRenderer(
                 var inputDone = false
                 var eof = false
                 while (videoGeneration.get() == gen && !Thread.interrupted() && !eof) {
-                    val startNs = System.nanoTime()
+                    try {
+                        val startNs = System.nanoTime()
 
-                    if (!inputDone) {
-                        val inIdx = dec.dequeueInputBuffer(0)
-                        if (inIdx >= 0) {
-                            val buf = dec.getInputBuffer(inIdx) ?: continue
-                            val size = ext.readSampleData(buf, 0)
-                            if (size < 0) {
-                                dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                inputDone = true
-                            } else {
-                                dec.queueInputBuffer(inIdx, 0, size, ext.sampleTime, 0)
-                                ext.advance()
-                            }
-                        }
-                    }
-
-                    val outIdx = dec.dequeueOutputBuffer(bufferInfo, 10_000)
-                    if (outIdx >= 0) {
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            dec.releaseOutputBuffer(outIdx, false)
-                            eof = true
-                            continue
-                        }
-
-                        dec.releaseOutputBuffer(outIdx, true)
-
-                        handler.post {
-                            if (videoGeneration.get() != gen) return@post
-                            if (!surfaceReady || !contextReady) return@post
-                            try {
-                                st.updateTexImage()
-                                val texMatrix = FloatArray(16)
-                                st.getTransformMatrix(texMatrix)
-                                renderVideoFrame(texMatrix)
-                            } catch (t: Throwable) {
-                                Log.e(TAG, "renderVideoFrame failed", t)
+                        if (!inputDone) {
+                            val inIdx = dec.dequeueInputBuffer(0)
+                            if (inIdx >= 0) {
+                                val buf = dec.getInputBuffer(inIdx) ?: continue
+                                val size = ext.readSampleData(buf, 0)
+                                if (size < 0) {
+                                    dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                    inputDone = true
+                                } else {
+                                    dec.queueInputBuffer(inIdx, 0, size, ext.sampleTime, 0)
+                                    ext.advance()
+                                }
                             }
                         }
 
-                        val elapsedNs = System.nanoTime() - startNs
-                        val sleepNs = intervalNs - elapsedNs
-                        if (sleepNs > 0) {
-                            // InterruptedException is the normal "stop" signal.
-                            try {
-                                Thread.sleep(sleepNs / 1_000_000, (sleepNs % 1_000_000).toInt())
-                            } catch (_: InterruptedException) {}
+                        val outIdx = dec.dequeueOutputBuffer(bufferInfo, 10_000)
+                        if (outIdx >= 0) {
+                            if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                                dec.releaseOutputBuffer(outIdx, false)
+                                eof = true
+                                continue
+                            }
+
+                            dec.releaseOutputBuffer(outIdx, true)
+
+                            handler.post {
+                                if (videoGeneration.get() != gen) return@post
+                                if (!surfaceReady || !contextReady) return@post
+                                try {
+                                    st.updateTexImage()
+                                    val texMatrix = FloatArray(16)
+                                    st.getTransformMatrix(texMatrix)
+                                    renderVideoFrame(texMatrix)
+                                } catch (t: Throwable) {
+                                    Log.e(TAG, "renderVideoFrame failed", t)
+                                }
+                            }
+
+                            val elapsedNs = System.nanoTime() - startNs
+                            val sleepNs = intervalNs - elapsedNs
+                            if (sleepNs > 0) {
+                                // InterruptedException is the normal "stop" signal.
+                                try {
+                                    Thread.sleep(sleepNs / 1_000_000, (sleepNs % 1_000_000).toInt())
+                                } catch (_: InterruptedException) {}
+                            }
+                        } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                            try { Thread.sleep(1) } catch (_: InterruptedException) {}
                         }
-                    } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                        try { Thread.sleep(1) } catch (_: InterruptedException) {}
+                    } catch (t: Throwable) {
+                        // A codec can throw (e.g. IllegalStateException) when it
+                        // is being torn down concurrently with a switch. End this
+                        // pass cleanly: the round cleanup releases the codec and
+                        // the outer loop retries (same generation) or exits
+                        // (superseded). Never let this freeze the previous frame.
+                        errorPasses++
+                        if (errorPasses >= 3) {
+                            giveUp = true
+                            onVideoStartFailed?.invoke()
+                        }
+                        Log.e(TAG, "Decode pass interrupted", t)
+                        eof = true
                     }
                 }
 
