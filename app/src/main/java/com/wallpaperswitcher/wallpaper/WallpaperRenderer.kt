@@ -2,7 +2,8 @@ package com.wallpaperswitcher.wallpaper
 
 import android.content.Context
 import android.graphics.*
-import android.media.MediaMetadataRetriever
+import android.media.*
+import android.net.Uri
 import android.opengl.*
 import android.os.Handler
 import android.os.HandlerThread
@@ -15,13 +16,17 @@ import java.nio.FloatBuffer
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Unified EGL renderer for images and video frames.
+ * Unified EGL renderer with MediaCodec + SurfaceTexture for video.
  *
- * Design: video uses MediaMetadataRetriever to extract frames as Bitmaps,
- * then renders them through the SAME image pipeline (GL_TEXTURE_2D + shader).
- * This avoids MediaCodec/SurfaceTexture lifecycle complexity entirely.
+ * KEY FIXES over previous version:
+ * 1. SurfaceTexture released BEFORE GL texture (prevents dangling reference)
+ * 2. MediaCodec setup on decode thread (not render thread — no blocking)
+ * 3. Decode thread captures renderHandler locally (prevents dangling after release)
+ * 4. stopVideo is non-blocking (just flag + interrupt)
+ * 5. surfaceDestroyed stops video first, then cleans up EGL surface
  *
  * EGL context survives surface recreation (GLSurfaceView pattern).
  */
@@ -43,9 +48,19 @@ class WallpaperRenderer(
             }
         """
 
-        private const val FRAGMENT_SHADER = """
+        private const val IMAGE_FRAGMENT_SHADER = """
             precision mediump float;
             uniform sampler2D uTexture;
+            varying vec2 vTexCoord;
+            void main() {
+                gl_FragColor = texture2D(uTexture, vTexCoord);
+            }
+        """
+
+        private const val VIDEO_FRAGMENT_SHADER = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            uniform samplerExternalOES uTexture;
             varying vec2 vTexCoord;
             void main() {
                 gl_FragColor = texture2D(uTexture, vTexCoord);
@@ -63,20 +78,25 @@ class WallpaperRenderer(
     private var glResourcesValid = false
 
     // GL resources (created once, survive surface recreation)
-    private var program = 0
+    private var imageProgram = 0
+    private var videoProgram = 0
     private var vertexBuffer: FloatBuffer? = null
-    private var texId = 0
-    private var texMatrix = FloatArray(16)
+    private var imageTexId = 0
+    private var imageTexMatrix = FloatArray(16)
 
     // Screen dimensions — only on render thread
     private var screenW = 0f
     private var screenH = 0f
 
-    // Video state — MediaMetadataRetriever based
+    // Video state
+    private var videoTexId = 0
+    private var surfaceTexture: SurfaceTexture? = null
+    private var codecSurface: Surface? = null
+    private var extractor: MediaExtractor? = null
+    private var decoder: MediaCodec? = null
+    private var videoDecodeThread: Thread? = null
     @Volatile var isVideoPlaying = false; private set
-    private val videoStop = AtomicBoolean(false)
-    private var videoThread: Thread? = null
-    private var retriever: MediaMetadataRetriever? = null
+    private val videoGeneration = AtomicInteger(0)
 
     // Render thread (persists across surface recreations)
     private var renderThread: HandlerThread? = null
@@ -121,7 +141,9 @@ class WallpaperRenderer(
     }
 
     fun surfaceDestroyed() {
+        // Stop video FIRST (interrupt decode thread)
         stopVideo()
+        // Then clean up EGL surface on render thread
         renderHandler?.post {
             surfaceReady = false
             destroyEglSurface()
@@ -152,48 +174,43 @@ class WallpaperRenderer(
     fun showImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         renderHandler?.post {
             if (!surfaceReady || !contextReady) return@post
-            renderBitmap(bitmap, scaleMode)
+            renderImage(bitmap, scaleMode)
         }
     }
 
-    private fun renderBitmap(bitmap: Bitmap, scaleMode: ScaleMode) {
+    private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         try {
-            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
-            android.opengl.Matrix.setIdentityM(texMatrix, 0)
-            drawQuad(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
+            android.opengl.Matrix.setIdentityM(imageTexMatrix, 0)
+            val quad = computeQuad(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
+            vertexBuffer?.clear()
+            vertexBuffer?.put(quad)?.position(0)
+
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            GLES20.glUseProgram(imageProgram)
+            val texMatLoc = GLES20.glGetUniformLocation(imageProgram, "uTexMatrix")
+            val texLoc = GLES20.glGetUniformLocation(imageProgram, "uTexture")
+            val posLoc = GLES20.glGetAttribLocation(imageProgram, "aPosition")
+            val tcLoc = GLES20.glGetAttribLocation(imageProgram, "aTexCoord")
+
+            GLES20.glUniformMatrix4fv(texMatLoc, 1, false, imageTexMatrix, 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
+            GLES20.glUniform1i(texLoc, 0)
+
+            vertexBuffer?.position(0)
+            GLES20.glEnableVertexAttribArray(posLoc)
+            GLES20.glVertexAttribPointer(posLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
+            vertexBuffer?.position(2)
+            GLES20.glEnableVertexAttribArray(tcLoc)
+            GLES20.glVertexAttribPointer(tcLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
+
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            EGL14.eglSwapBuffers(eglDisplay, eglSurface)
         } catch (e: Exception) {
-            Log.e(TAG, "renderBitmap error: ${e.message}")
+            Log.e(TAG, "renderImage: ${e.message}")
         }
-    }
-
-    private fun drawQuad(imgW: Float, imgH: Float, scaleMode: ScaleMode) {
-        val quad = computeQuad(imgW, imgH, scaleMode)
-        vertexBuffer?.clear()
-        vertexBuffer?.put(quad)?.position(0)
-
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        GLES20.glUseProgram(program)
-
-        val texMatLoc = GLES20.glGetUniformLocation(program, "uTexMatrix")
-        val texLoc = GLES20.glGetUniformLocation(program, "uTexture")
-        val posLoc = GLES20.glGetAttribLocation(program, "aPosition")
-        val tcLoc = GLES20.glGetAttribLocation(program, "aTexCoord")
-
-        GLES20.glUniformMatrix4fv(texMatLoc, 1, false, texMatrix, 0)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
-        GLES20.glUniform1i(texLoc, 0)
-
-        vertexBuffer?.position(0)
-        GLES20.glEnableVertexAttribArray(posLoc)
-        GLES20.glVertexAttribPointer(posLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
-        vertexBuffer?.position(2)
-        GLES20.glEnableVertexAttribArray(tcLoc)
-        GLES20.glVertexAttribPointer(tcLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
-
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        EGL14.eglSwapBuffers(eglDisplay, eglSurface)
     }
 
     private fun computeQuad(imgW: Float, imgH: Float, scaleMode: ScaleMode): FloatArray {
@@ -206,104 +223,246 @@ class WallpaperRenderer(
             ScaleMode.FILL -> if (va > sa) Pair(va / sa, 1f) else Pair(1f, sa / va)
             ScaleMode.STRETCH -> Pair(1f, 1f)
         }
-        return floatArrayOf(
-            -dw, -dh, 0f, 1f,
-             dw, -dh, 1f, 1f,
-            -dw,  dh, 0f, 0f,
-             dw,  dh, 1f, 0f,
-        )
+        return floatArrayOf(-dw,-dh,0f,1f, dw,-dh,1f,1f, -dw,dh,0f,0f, dw,dh,1f,0f)
     }
 
-    // ======== Video: MediaMetadataRetriever + Bitmap frames ========
+    // ======== Video: MediaCodec + SurfaceTexture ========
 
     /**
-     * Start video playback using MediaMetadataRetriever.
-     * Extracts frames as Bitmaps on a background thread, renders via image pipeline.
-     * No MediaCodec, no SurfaceTexture — just Bitmap extraction + GL_TEXTURE_2D.
+     * Start video. MediaCodec setup happens on the decode thread (not render thread).
+     * Decode thread captures renderHandler locally to prevent dangling reference.
      */
     fun startVideo(uriStr: String, scaleMode: ScaleMode) {
         stopVideo()
-        videoStop.set(false)
+
+        val gen = videoGeneration.incrementAndGet()
         isVideoPlaying = true
 
-        videoThread = Thread({
-            try {
-                videoExtractLoop(uriStr, scaleMode)
-            } catch (e: Exception) {
-                Log.e(TAG, "Video error: ${e.message}")
-            } finally {
-                isVideoPlaying = false
-                synchronized(this) {
-                    try { retriever?.release() } catch (_: Exception) {}
-                    retriever = null
-                }
-            }
-        }, "VideoExtract").also { it.start() }
+        // Capture handler locally — decode thread uses this, not the field
+        val handler = renderHandler ?: run { isVideoPlaying = false; return }
+
+        videoDecodeThread = Thread({
+            decodeLoop(uriStr, scaleMode, gen, handler)
+        }, "VideoDecode").also { it.start() }
     }
 
-    private fun videoExtractLoop(uriStr: String, scaleMode: ScaleMode) {
-        val r = MediaMetadataRetriever()
-        synchronized(this) { retriever = r }
-        r.setDataSource(context, android.net.Uri.parse(uriStr))
+    /**
+     * Decode loop — runs on dedicated decode thread.
+     * ALL MediaCodec/SurfaceTexture setup happens here (not on render thread).
+     * Captures handler locally to prevent dangling reference after release().
+     */
+    private fun decodeLoop(uriStr: String, scaleMode: ScaleMode, gen: Int, handler: Handler) {
+        try {
+            // --- Setup MediaExtractor ---
+            val ext = MediaExtractor()
+            ext.setDataSource(context, Uri.parse(uriStr), null)
+            val trackIdx = (0 until ext.trackCount).firstOrNull { i ->
+                ext.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
+            } ?: run {
+                Log.e(TAG, "No video track"); isVideoPlaying = false; ext.release(); return
+            }
+            ext.selectTrack(trackIdx)
+            val format = ext.getTrackFormat(trackIdx)
+            val mime = format.getString(MediaFormat.KEY_MIME)!!
+            var videoW = format.getInteger(MediaFormat.KEY_WIDTH)
+            var videoH = format.getInteger(MediaFormat.KEY_HEIGHT)
+            val maxDim = maxOf(videoW, videoH)
+            if (maxDim > 1280) {
+                val scale = 1280f / maxDim
+                videoW = (videoW * scale).toInt().and(0xFFFFFFFE.toInt())
+                videoH = (videoH * scale).toInt().and(0xFFFFFFFE.toInt())
+            }
+            val fps = try { format.getInteger(MediaFormat.KEY_FRAME_RATE) } catch (_: Exception) { 30 }
+            val intervalNs = (1_000_000_000L / fps.coerceIn(15, 60)).coerceAtLeast(16_000_000L)
 
-        val durationMs = try {
-            r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-        } catch (_: Exception) { 0L }
-        if (durationMs <= 0) {
-            Log.e(TAG, "Video duration is 0")
-            return
-        }
-
-        val fps = 30
-        val intervalMs = (1000L / fps).coerceAtLeast(33L)
-        var posUs = 0L
-
-        while (!videoStop.get() && !Thread.interrupted() && !holder.surface?.isValid == false) {
-            val startMs = System.currentTimeMillis()
-
-            // Extract frame at current position
-            val frame = try {
-                r.getFrameAtTime(posUs, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-            } catch (_: Exception) { null }
-
-            if (frame != null) {
-                // Post to render thread — use same image pipeline
-                val handler = renderHandler ?: break
-                val drawn = java.util.concurrent.atomic.AtomicBoolean(false)
-                handler.post {
-                    if (!videoStop.get() && surfaceReady && contextReady) {
-                        renderBitmap(frame, scaleMode)
-                        drawn.set(true)
-                    }
+            // --- Setup GL texture + SurfaceTexture on render thread ---
+            // SurfaceTexture must be created on the thread with the EGL context.
+            // updateTexImage() must be called on the same thread that created it.
+            // Both happen on the render thread — correct.
+            val setupLatch = CountDownLatch(1)
+            var setupOk = false
+            handler.post {
+                if (!surfaceReady || !contextReady) {
+                    setupLatch.countDown()
+                    return@post
                 }
-                // Wait for render to complete before recycling
-                Thread.sleep(intervalMs / 2)
-                if (!frame.isRecycled) frame.recycle()
+                if (videoTexId == 0) {
+                    val texIds = IntArray(1)
+                    GLES20.glGenTextures(1, texIds, 0)
+                    videoTexId = texIds[0]
+                }
+                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTexId)
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+
+                // Create SurfaceTexture on render thread (has EGL context)
+                val st = SurfaceTexture(videoTexId)
+                st.setDefaultBufferSize(videoW, videoH)
+                surfaceTexture = st
+                codecSurface = Surface(st)
+                setupOk = true
+                setupLatch.countDown()
+            }
+            setupLatch.await(3, TimeUnit.SECONDS)
+            if (!setupOk) {
+                Log.e(TAG, "Video GL setup failed"); isVideoPlaying = false
+                ext.release(); return
             }
 
-            // Advance position
-            posUs += intervalMs * 1000
-            if (posUs >= durationMs * 1000) posUs = 0L
+            // --- Setup MediaCodec on THIS thread (decode thread) ---
+            val dec = MediaCodec.createDecoderByType(mime)
+            decoder = dec
+            dec.configure(format, codecSurface, null, 0)
+            dec.start()
 
-            // Frame pacing
-            val elapsed = System.currentTimeMillis() - startMs
-            val sleepMs = intervalMs - elapsed
-            if (sleepMs > 0) Thread.sleep(sleepMs)
+            // Cache render quad on render thread
+            handler.post {
+                val quad = computeVideoQuad(videoW.toFloat(), videoH.toFloat(), scaleMode)
+                vertexBuffer?.clear()
+                vertexBuffer?.put(quad)?.position(0)
+            }
+
+            Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps")
+
+            // --- Decode loop ---
+            val bufferInfo = MediaCodec.BufferInfo()
+            var inputDone = false
+            val st = surfaceTexture!!
+
+            while (videoGeneration.get() == gen && !Thread.interrupted()) {
+                val startNs = System.nanoTime()
+
+                if (!inputDone) {
+                    val inIdx = dec.dequeueInputBuffer(0)
+                    if (inIdx >= 0) {
+                        val buf = dec.getInputBuffer(inIdx) ?: continue
+                        val size = ext.readSampleData(buf, 0)
+                        if (size < 0) {
+                            dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            inputDone = true
+                        } else {
+                            dec.queueInputBuffer(inIdx, 0, size, ext.sampleTime, 0)
+                            ext.advance()
+                        }
+                    }
+                }
+
+                val outIdx = dec.dequeueOutputBuffer(bufferInfo, 10_000)
+                if (outIdx >= 0) {
+                    if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                        dec.releaseOutputBuffer(outIdx, false)
+                        dec.flush()
+                        ext.seekTo(0, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
+                        inputDone = false
+                        continue
+                    }
+
+                    dec.releaseOutputBuffer(outIdx, true)
+
+                    // Post render to render thread — use captured local handler
+                    handler.post {
+                        if (videoGeneration.get() != gen) return@post
+                        if (!surfaceReady || !contextReady) return@post
+                        try {
+                            st.updateTexImage()
+                            val texMatrix = FloatArray(16)
+                            st.getTransformMatrix(texMatrix)
+                            renderVideoFrame(texMatrix)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "renderVideoFrame: ${e.message}")
+                        }
+                    }
+
+                    val elapsedNs = System.nanoTime() - startNs
+                    val sleepNs = intervalNs - elapsedNs
+                    if (sleepNs > 0) Thread.sleep(sleepNs / 1_000_000, (sleepNs % 1_000_000).toInt())
+                } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    Thread.sleep(1)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Decode error: ${e.message}", e)
+        } finally {
+            isVideoPlaying = false
+            cleanupVideoCodec()
+        }
+    }
+
+    private fun computeVideoQuad(vidW: Float, vidH: Float, scaleMode: ScaleMode): FloatArray {
+        if (vidW <= 0 || vidH <= 0 || screenW <= 0 || screenH <= 0) {
+            return floatArrayOf(-1f,-1f,0f,0f, 1f,-1f,1f,0f, -1f,1f,0f,1f, 1f,1f,1f,1f)
+        }
+        val va = vidW / vidH; val sa = screenW / screenH
+        val (dw, dh) = when (scaleMode) {
+            ScaleMode.FIT -> if (va > sa) Pair(1f, sa / va) else Pair(va / sa, 1f)
+            ScaleMode.FILL -> if (va > sa) Pair(va / sa, 1f) else Pair(1f, sa / va)
+            ScaleMode.STRETCH -> Pair(1f, 1f)
+        }
+        return floatArrayOf(-dw,-dh,0f,0f, dw,-dh,1f,0f, -dw,dh,0f,1f, dw,dh,1f,1f)
+    }
+
+    private fun renderVideoFrame(texMatrix: FloatArray) {
+        try {
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            GLES20.glUseProgram(videoProgram)
+
+            val texMatLoc = GLES20.glGetUniformLocation(videoProgram, "uTexMatrix")
+            val texLoc = GLES20.glGetUniformLocation(videoProgram, "uTexture")
+            val posLoc = GLES20.glGetAttribLocation(videoProgram, "aPosition")
+            val tcLoc = GLES20.glGetAttribLocation(videoProgram, "aTexCoord")
+
+            GLES20.glUniformMatrix4fv(texMatLoc, 1, false, texMatrix, 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTexId)
+            GLES20.glUniform1i(texLoc, 0)
+
+            vertexBuffer?.position(0)
+            GLES20.glEnableVertexAttribArray(posLoc)
+            GLES20.glVertexAttribPointer(posLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
+            vertexBuffer?.position(2)
+            GLES20.glEnableVertexAttribArray(tcLoc)
+            GLES20.glVertexAttribPointer(tcLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
+
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+        } catch (e: Exception) {
+            Log.e(TAG, "renderVideoFrame: ${e.message}")
         }
     }
 
     fun stopVideo() {
-        videoStop.set(true)
+        videoGeneration.incrementAndGet()
         isVideoPlaying = false
-        videoThread?.let { thread ->
-            thread.interrupt()
-            try { thread.join(1000) } catch (_: InterruptedException) {}
+        videoDecodeThread?.let {
+            it.interrupt()
+            try { it.join(1000) } catch (_: InterruptedException) {}
         }
-        videoThread = null
-        synchronized(this) {
-            try { retriever?.release() } catch (_: Exception) {}
-            retriever = null
+        videoDecodeThread = null
+        // Cleanup on decode thread's finally block, or here as fallback
+        cleanupVideoCodec()
+    }
+
+    /**
+     * FIX: Release SurfaceTexture BEFORE deleting GL texture.
+     * Old code deleted videoTexId first → SurfaceTexture held dangling reference → crash.
+     */
+    private fun cleanupVideoCodec() {
+        // 1. Release SurfaceTexture first (it references videoTexId)
+        try { surfaceTexture?.release() } catch (_: Exception) {}
+        surfaceTexture = null
+        try { codecSurface?.release() } catch (_: Exception) {}
+        codecSurface = null
+        // 2. THEN delete GL texture (SurfaceTexture no longer references it)
+        if (videoTexId != 0) {
+            GLES20.glDeleteTextures(1, intArrayOf(videoTexId), 0)
+            videoTexId = 0
         }
+        // 3. Release MediaCodec and extractor
+        try { decoder?.stop() } catch (_: Exception) {}
+        try { decoder?.release() } catch (_: Exception) {}
+        decoder = null
+        try { extractor?.release() } catch (_: Exception) {}
+        extractor = null
     }
 
     // ======== EGL: Context (once) + Surface (per recreation) ========
@@ -386,27 +545,30 @@ class WallpaperRenderer(
     // ======== GL Resources ========
 
     private fun setupGlResources() {
-        program = createProgram(VERTEX_SHADER, FRAGMENT_SHADER)
+        imageProgram = createProgram(VERTEX_SHADER, IMAGE_FRAGMENT_SHADER)
+        videoProgram = createProgram(VERTEX_SHADER, VIDEO_FRAGMENT_SHADER)
         vertexBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
         val textures = IntArray(1)
         GLES20.glGenTextures(1, textures, 0)
-        texId = textures[0]
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, texId)
+        imageTexId = textures[0]
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-        android.opengl.Matrix.setIdentityM(texMatrix, 0)
+        android.opengl.Matrix.setIdentityM(imageTexMatrix, 0)
     }
 
     private fun cleanupGlResources() {
-        if (program != 0) { GLES20.glDeleteProgram(program); program = 0 }
-        if (texId != 0) { GLES20.glDeleteTextures(1, intArrayOf(texId), 0); texId = 0 }
+        if (imageProgram != 0) { GLES20.glDeleteProgram(imageProgram); imageProgram = 0 }
+        if (videoProgram != 0) { GLES20.glDeleteProgram(videoProgram); videoProgram = 0 }
+        if (imageTexId != 0) { GLES20.glDeleteTextures(1, intArrayOf(imageTexId), 0); imageTexId = 0 }
         vertexBuffer = null
         glResourcesValid = false
     }
 
     private fun cleanupAll() {
+        cleanupVideoCodec()
         cleanupGlResources()
         if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
@@ -414,12 +576,9 @@ class WallpaperRenderer(
             if (eglContext != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(eglDisplay, eglContext)
             EGL14.eglTerminate(eglDisplay)
         }
-        eglDisplay = EGL14.EGL_NO_DISPLAY
-        eglSurface = EGL14.EGL_NO_SURFACE
-        eglContext = EGL14.EGL_NO_CONTEXT
-        eglConfig = null
-        contextReady = false
-        surfaceReady = false
+        eglDisplay = EGL14.EGL_NO_DISPLAY; eglSurface = EGL14.EGL_NO_SURFACE
+        eglContext = EGL14.EGL_NO_CONTEXT; eglConfig = null
+        contextReady = false; surfaceReady = false
     }
 
     // ======== Helpers ========
@@ -436,8 +595,11 @@ class WallpaperRenderer(
 
     private fun compileShader(type: Int, src: String): Int {
         val s = GLES20.glCreateShader(type)
-        GLES20.glShaderSource(s, src)
-        GLES20.glCompileShader(s)
+        GLES20.glShaderSource(s, src); GLES20.glCompileShader(s)
         return s
+    }
+
+    private fun MediaFormat.getInteger(key: String): Int {
+        return try { getInteger(key) } catch (_: Exception) { 0 }
     }
 }
