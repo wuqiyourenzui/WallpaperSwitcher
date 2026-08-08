@@ -46,7 +46,10 @@ class LiveWallpaperService : WallpaperService() {
         private val mainHandler = Handler(Looper.getMainLooper())
         private lateinit var db: AppDatabase
         @Volatile private var surfaceReady = false
-        @Volatile private var isVisible = false
+        // Assume visible until the system tells us otherwise. Some devices do
+        // not deliver onVisibilityChanged reliably right after unlock, which
+        // would otherwise make double-tap / unlock switching appear dead.
+        @Volatile private var isVisible = true
         private val isSwitching = AtomicBoolean(false)
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
@@ -101,8 +104,14 @@ class LiveWallpaperService : WallpaperService() {
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onDoubleTap(e: MotionEvent): Boolean {
                     scope.launch {
-                        val enabled = db.settingsDao().getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
-                        if (enabled && isVisible) {
+                        try {
+                            val enabled = db.settingsDao().getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
+                            if (enabled) {
+                                doSwitch("double-tap")
+                            }
+                        } catch (_: Exception) {
+                            // A double tap is an explicit user action: switch even
+                            // if reading the setting fails.
                             doSwitch("double-tap")
                         }
                     }

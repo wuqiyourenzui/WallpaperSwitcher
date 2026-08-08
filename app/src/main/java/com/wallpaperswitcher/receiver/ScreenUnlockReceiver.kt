@@ -10,6 +10,7 @@ import com.wallpaperswitcher.data.getBool
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 
@@ -44,6 +45,10 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
                     val enabled = db.settingsDao().getBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, false)
                     Log.d(TAG, "unlockEnabled=$enabled")
                     if (enabled) {
+                        // USER_PRESENT fires while the keyguard is still clearing.
+                        // Wait a moment so the wallpaper becomes visible again;
+                        // otherwise the engine skips the switch as "not visible".
+                        delay(800L)
                         val switchIntent = Intent(LiveWallpaperService.ACTION_SWITCH).apply {
                             putExtra(LiveWallpaperService.EXTRA_SOURCE, LiveWallpaperService.SOURCE_UNLOCK)
                         }
