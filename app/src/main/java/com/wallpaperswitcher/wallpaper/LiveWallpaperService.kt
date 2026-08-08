@@ -25,7 +25,7 @@ class LiveWallpaperService : WallpaperService() {
         private const val TAG = "LiveWallpaperService"
         const val ACTION_SWITCH = "com.wallpaperswitcher.ACTION_SWITCH"
         const val EXTRA_TARGET_ID = "target_id"
-        private const val SWITCH_SETTLE_DELAY_MS = 100L
+        private const val SWITCH_SETTLE_DELAY_MS = 80L
         private const val GIF_FRAME_INTERVAL_MS = 33L
         private const val SHUFFLE_MAX_ATTEMPTS = 10
 
@@ -265,32 +265,39 @@ class LiveWallpaperService : WallpaperService() {
                     val mediaType = nextImage.mediaType ?: "IMAGE"
                     Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
 
-                    // Stop current video (non-blocking, cleanup posted to render thread)
-                    stopVideo()
                     pauseGif()
-                    delay(SWITCH_SETTLE_DELAY_MS)
 
                     when (mediaType) {
                         "VIDEO" -> {
+                            // Image/GIF → Video: stop old, delay for settle, start new
+                            stopVideo()
+                            delay(SWITCH_SETTLE_DELAY_MS)
                             currentBitmap = null
                             startVideo(nextImage.uri, currentScaleMode)
                             if (videoMode) lastDisplayedId = nextImage.id
                         }
                         "GIF" -> {
+                            // Any → GIF: stop video atomically (show nothing, GIF will overwrite)
+                            stopVideo()
+                            delay(SWITCH_SETTLE_DELAY_MS)
                             currentBitmap = null
                             videoMode = false
                             mainHandler.post { playGif(nextImage.uri, currentScaleMode) }
                             lastDisplayedId = nextImage.id
                         }
                         else -> {
+                            // Any → Image: load bitmap FIRST, then stop video + render atomically
                             videoMode = false
                             val bitmap = loadBitmap(nextImage.uri)
                             if (bitmap != null) {
                                 currentBitmap = bitmap
-                                // Use showImageAfterVideoStop to handle the case where
-                                // video cleanup hasn't completed yet on the render thread.
-                                // This queues the image and shows it once cleanup finishes.
-                                renderer?.showImageAfterVideoStop(bitmap, currentScaleMode)
+                                if (renderer?.isVideoPlaying == true) {
+                                    // Video → Image: atomic stop + render (no flash, no stutter)
+                                    renderer?.stopVideoAndRender(bitmap, currentScaleMode)
+                                } else {
+                                    // Image → Image: just render
+                                    renderer?.showImage(bitmap, currentScaleMode)
+                                }
                                 lastDisplayedId = nextImage.id
                             }
                         }
@@ -403,8 +410,6 @@ class LiveWallpaperService : WallpaperService() {
                         }
                     }
 
-                    // Stop video (non-blocking)
-                    stopVideo()
                     pauseGif()
                     videoMode = false
 
@@ -427,7 +432,11 @@ class LiveWallpaperService : WallpaperService() {
                                 val bitmap = loadBitmap(image.uri)
                                 if (bitmap != null) {
                                     currentBitmap = bitmap
-                                    r.showImageAfterVideoStop(bitmap, currentScaleMode)
+                                    if (r.isVideoPlaying) {
+                                        r.stopVideoAndRender(bitmap, currentScaleMode)
+                                    } else {
+                                        r.showImage(bitmap, currentScaleMode)
+                                    }
                                     return@launch
                                 }
                             }
