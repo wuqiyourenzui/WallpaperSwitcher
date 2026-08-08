@@ -9,7 +9,9 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.wallpaperswitcher.WallpaperSwitcherApp
 import com.wallpaperswitcher.data.*
+import com.wallpaperswitcher.engine.WallpaperApplier
 import com.wallpaperswitcher.service.WallpaperSwitchService
+import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.withContext
@@ -362,27 +364,23 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 Log.d(TAG, "setImageAsWallpaper: id=${image.id} type=${image.mediaType} uri=${image.uri}")
 
-                // 1. Save target ID — MUST complete before launching picker.
-                //    The engine reads this from DB when it starts.
+                // 1. Save target ID. The engine reads this from DB when it starts.
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
                 Log.d(TAG, "LAST_IMAGE_ID saved: ${image.id}")
 
-                // 2. Send broadcast to running live wallpaper engine
-                val switchIntent = android.content.Intent(com.wallpaperswitcher.wallpaper.LiveWallpaperService.ACTION_SWITCH).apply {
-                    setPackage(getApplication<Application>().packageName)
-                    putExtra(com.wallpaperswitcher.wallpaper.LiveWallpaperService.EXTRA_TARGET_ID, image.id)
-                }
-                getApplication<Application>().sendBroadcast(switchIntent)
-                Log.d(TAG, "Switch broadcast sent with targetId=${image.id}")
-
-                // 3. Only launch picker if engine is NOT running (first time setup).
-                //    When engine is already running, the broadcast is sufficient.
-                //    Launching picker every time destroys/recreates the engine,
-                //    which can corrupt surface state (Canvas→EGL transition fails).
-                val engineRunning = com.wallpaperswitcher.wallpaper.LiveWallpaperService.engineRunning
+                // 2. Engine running -> broadcast; otherwise set the static wallpaper.
+                val engineRunning = LiveWallpaperService.engineRunning
                 Log.d(TAG, "engineRunning=$engineRunning")
-                if (!engineRunning) {
-                    launchLiveWallpaperPicker()
+                if (engineRunning) {
+                    sendTargetBroadcast(image.id)
+                } else {
+                    val ok = withContext(Dispatchers.IO) {
+                        WallpaperApplier.apply(getApplication(), image)
+                    }
+                    if (!ok) {
+                        _toastMessage.emit("设置失败，无法读取该媒体文件")
+                        return@launch
+                    }
                 }
 
                 _toastMessage.emit("壁纸已设置！")
@@ -394,7 +392,33 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun setAsLiveWallpaper(image: WallpaperImage) {
-        setImageAsWallpaper(image) // Same logic
+        viewModelScope.launch {
+            try {
+                Log.d(TAG, "setAsLiveWallpaper: id=${image.id}")
+                settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
+
+                val engineRunning = LiveWallpaperService.engineRunning
+                if (engineRunning) {
+                    sendTargetBroadcast(image.id)
+                    _toastMessage.emit("壁纸已设置！")
+                } else {
+                    // First-time setup: launch the live wallpaper picker.
+                    launchLiveWallpaperPicker()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "setAsLiveWallpaper failed", e)
+                _toastMessage.emit("设置失败: ${e.message}")
+            }
+        }
+    }
+
+    private fun sendTargetBroadcast(targetId: Long) {
+        val switchIntent = android.content.Intent(LiveWallpaperService.ACTION_SWITCH).apply {
+            setPackage(getApplication<Application>().packageName)
+            putExtra(LiveWallpaperService.EXTRA_TARGET_ID, targetId)
+        }
+        getApplication<Application>().sendBroadcast(switchIntent)
+        Log.d(TAG, "Switch broadcast sent with targetId=$targetId")
     }
 
     private fun launchLiveWallpaperPicker() {

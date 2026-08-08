@@ -15,13 +15,15 @@ import com.wallpaperswitcher.data.getBool
 import com.wallpaperswitcher.data.getLong
 import com.wallpaperswitcher.data.setBool
 import com.wallpaperswitcher.data.setLong
+import com.wallpaperswitcher.engine.WallpaperApplier
 import com.wallpaperswitcher.ui.MainActivity
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import kotlinx.coroutines.*
 
 /**
  * Timed wallpaper switch foreground service.
- * Sends ACTION_SWITCH broadcast to LiveWallpaperService.
+ * Switches wallpapers: broadcasts ACTION_SWITCH to the live wallpaper engine
+ * when it is running, otherwise applies a static wallpaper directly.
  */
 class WallpaperSwitchService : Service() {
 
@@ -34,9 +36,19 @@ class WallpaperSwitchService : Service() {
 
         when (intent?.action) {
             ACTION_SWITCH_NOW -> {
-                sendSwitchBroadcast()
+                sendSwitch()
             }
             ACTION_STOP -> {
+                // Persist the disabled state BEFORE stopping. onDestroy() is not a
+                // reliable place for this: it also runs when the system kills the
+                // service (START_STICKY restart), which would corrupt the setting.
+                try {
+                    kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+                        AppDatabase.getInstance(applicationContext)
+                            .settingsDao()
+                            .setBool(SettingsKeys.SERVICE_ENABLED, false)
+                    }
+                } catch (_: Exception) {}
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -51,14 +63,6 @@ class WallpaperSwitchService : Service() {
 
     override fun onDestroy() {
         switchJob?.cancel()
-        // Sync service_enabled to false so UI reflects stopped state.
-        // Use runBlocking to ensure the DB write completes before scope cancellation.
-        try {
-            val db = AppDatabase.getInstance(applicationContext)
-            kotlinx.coroutines.runBlocking(Dispatchers.IO) {
-                db.settingsDao().setBool(SettingsKeys.SERVICE_ENABLED, false)
-            }
-        } catch (_: Exception) {}
         scope.cancel()
         super.onDestroy()
     }
@@ -67,27 +71,48 @@ class WallpaperSwitchService : Service() {
         switchJob?.cancel()
         switchJob = scope.launch {
             // First switch immediately on start
-            sendSwitchBroadcast()
+            sendSwitch()
             while (isActive) {
                 try {
                     val db = AppDatabase.getInstance(applicationContext)
                     val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
                     if (groups.isEmpty()) {
-                        // No enabled groups — stop service to save power.
                         // User can re-enable via toggle, which calls start() again.
                         Log.d(TAG, "No enabled groups, stopping service")
-                        withContext(Dispatchers.Main) { stopSelf() }
+                        // Sync the toggle so the UI reflects the stopped state.
+                        db.settingsDao().setBool(SettingsKeys.SERVICE_ENABLED, false)
+                        stopSelf()
                         return@launch
                     }
                     // Get global interval
                     val interval = db.settingsDao().getLong(SettingsKeys.GLOBAL_INTERVAL_MS, 60_000L)
                         .coerceAtLeast(10_000L)
                     delay(interval)
-                    sendSwitchBroadcast()
+                    sendSwitch()
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
                     Log.e(TAG, "Switch loop error", e)
                     delay(10_000L)
+                }
+            }
+        }
+    }
+
+    /**
+     * Route a switch to wherever it can be rendered:
+     * - Live wallpaper engine running -> broadcast to the engine.
+     * - Otherwise -> apply a static wallpaper via WallpaperManager.
+     */
+    private fun sendSwitch() {
+        if (LiveWallpaperService.engineRunning) {
+            sendSwitchBroadcast()
+        } else {
+            scope.launch {
+                val ok = WallpaperApplier.applyNext(applicationContext)
+                if (ok) {
+                    Log.d(TAG, "Static wallpaper switched")
+                } else {
+                    Log.e(TAG, "Static wallpaper switch failed (no media?)")
                 }
             }
         }
@@ -106,8 +131,8 @@ class WallpaperSwitchService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         return NotificationCompat.Builder(this, WallpaperSwitcherApp.CHANNEL_ID)
-            .setContentTitle("壁纸切换")
-            .setContentText("壁纸自动切换中")
+            .setContentTitle(getString(R.string.notification_title))
+            .setContentText(getString(R.string.notification_text))
             .setSmallIcon(R.drawable.ic_wallpaper_thumb)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -136,17 +161,32 @@ class WallpaperSwitchService : Service() {
         }
 
         fun switchNow(context: Context) {
-            val intent = Intent(LiveWallpaperService.ACTION_SWITCH)
-            intent.setPackage(context.packageName)
-            context.sendBroadcast(intent)
+            if (LiveWallpaperService.engineRunning) {
+                val intent = Intent(LiveWallpaperService.ACTION_SWITCH)
+                intent.setPackage(context.packageName)
+                context.sendBroadcast(intent)
+            } else {
+                CoroutineScope(Dispatchers.IO).launch {
+                    WallpaperApplier.applyNext(context)
+                }
+            }
         }
 
         fun switchToTarget(context: Context, targetId: Long) {
-            val intent = Intent(LiveWallpaperService.ACTION_SWITCH).apply {
-                setPackage(context.packageName)
-                putExtra(LiveWallpaperService.EXTRA_TARGET_ID, targetId)
+            if (LiveWallpaperService.engineRunning) {
+                val intent = Intent(LiveWallpaperService.ACTION_SWITCH).apply {
+                    setPackage(context.packageName)
+                    putExtra(LiveWallpaperService.EXTRA_TARGET_ID, targetId)
+                }
+                context.sendBroadcast(intent)
+            } else {
+                CoroutineScope(Dispatchers.IO).launch {
+                    val image = AppDatabase.getInstance(context)
+                        .wallpaperImageDao()
+                        .getImageById(targetId) ?: return@launch
+                    WallpaperApplier.apply(context, image)
+                }
             }
-            context.sendBroadcast(intent)
         }
     }
 }

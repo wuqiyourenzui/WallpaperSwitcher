@@ -44,30 +44,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestStoragePermission() {
-        val permissions = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arrayOf(
-                Manifest.permission.READ_MEDIA_IMAGES,
-                Manifest.permission.READ_MEDIA_VIDEO
-            )
-        } else {
-            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-        }
-
-        val allGranted = permissions.all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
-        }
-
-        if (!allGranted) {
-            requestPermissionLauncher.launch(permissions)
-        }
-
-        // 通知权限 (Android 13+)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                requestPermissionLauncher.launch(arrayOf(Manifest.permission.POST_NOTIFICATIONS))
+        // Combine every missing permission into ONE request.
+        // Launching the same launcher twice in a row (as the old code did on
+        // Android 13+) throws "Only one request can be launched at a time".
+        val needed = buildList {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                add(Manifest.permission.READ_MEDIA_IMAGES)
+                add(Manifest.permission.READ_MEDIA_VIDEO)
+                add(Manifest.permission.POST_NOTIFICATIONS)
+            } else {
+                add(Manifest.permission.READ_EXTERNAL_STORAGE)
             }
+        }.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+
+        if (needed.isNotEmpty()) {
+            requestPermissionLauncher.launch(needed.toTypedArray())
         }
     }
 }

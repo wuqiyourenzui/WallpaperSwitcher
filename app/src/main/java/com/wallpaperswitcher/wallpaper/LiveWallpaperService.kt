@@ -179,7 +179,7 @@ class LiveWallpaperService : WallpaperService() {
             gifDrawable?.let {
                 try { it.stop() } catch (_: Exception) {}
                 if (Build.VERSION.SDK_INT >= 28) {
-                    try { (it as java.io.Closeable).close() } catch (_: Exception) {}
+                    try { (it as java.lang.AutoCloseable).close() } catch (_: Exception) {}
                 }
             }
             gifDrawable = null
@@ -539,6 +539,17 @@ class LiveWallpaperService : WallpaperService() {
                 }
                 gifFrameRunnable = runnable
                 mainHandler.post(runnable)
+            } else {
+                // Decoder returned a non-animated drawable (e.g. single-frame GIF):
+                // render its first frame so the screen is never left blank.
+                try {
+                    val frameW = drawable.intrinsicWidth.coerceAtLeast(1)
+                    val frameH = drawable.intrinsicHeight.coerceAtLeast(1)
+                    val bmp = Bitmap.createBitmap(frameW, frameH, Bitmap.Config.ARGB_8888)
+                    drawable.draw(Canvas(bmp))
+                    renderer?.showImage(bmp, scaleMode)
+                } catch (_: Exception) {}
+                try { (drawable as java.lang.AutoCloseable).close() } catch (_: Exception) {}
             }
         }
 

@@ -1,6 +1,6 @@
 # 壁纸切换 (WallpaperSwitcher) — 功能技术文档
 
-> 版本：v1.0 | 最后更新：2026-08-05
+> 版本：v1.0 | 最后更新：2026-08-08
 
 ---
 
@@ -54,7 +54,7 @@ com.wallpaperswitcher/
 │   └── SettingsKeys.kt              # 设置键常量
 ├── engine/                           # 壁纸引擎
 │   ├── BitmapUtils.kt               # 位图工具类
-│   └── WallpaperEngine.kt           # 系统壁纸设置引擎
+│   └── WallpaperApplier.kt          # 静态壁纸应用 (WallpaperManager)
 ├── receiver/                         # 广播接收器
 │   ├── BootReceiver.kt              # 开机自启动
 │   └── ScreenUnlockReceiver.kt      # 解锁切换触发
@@ -196,11 +196,11 @@ com.wallpaperswitcher/
 ```
 触发源 (定时/双击/解锁/手动)
     ↓
-发送 ACTION_SWITCH 广播 (可携带 EXTRA_TARGET_ID)
-    ↓
-LiveWallpaperService.switchReceiver 接收
-    ↓
-doSwitch(targetId)
+引擎是否运行？
+├─ 是 → 发送 ACTION_SWITCH 广播 (可携带 EXTRA_TARGET_ID)
+│        LiveWallpaperService.switchReceiver 接收
+│        doSwitch(targetId)
+└─ 否 → WallpaperApplier.applyNext() → WallpaperManager.setBitmap (静态壁纸)
     ↓
 从数据库获取下一个图片 (pickNextImage)
     ↓
@@ -293,9 +293,12 @@ MediaMetadataRetriever               → 负责逐帧提取 (OPTION_CLOSEST)
 
 **流程** (`setImageAsWallpaper`)：
 1. 保存目标图片 ID 到数据库 (`LAST_IMAGE_ID`)
-2. 发送 `ACTION_SWITCH` 广播 (携带 `EXTRA_TARGET_ID`)
-3. 如果壁纸引擎未运行 (`!engineRunning`)，启动系统壁纸选择器
-4. 如果壁纸引擎已运行，仅靠广播切换
+2. 如果壁纸引擎已运行，发送 `ACTION_SWITCH` 广播 (携带 `EXTRA_TARGET_ID`)
+3. 如果壁纸引擎未运行 (`!engineRunning`)，通过 `WallpaperApplier.apply()` 直接设置静态壁纸 (视频/GIF 取首帧)
+
+**设置动态壁纸** (`setAsLiveWallpaper`)：
+1. 保存目标图片 ID 到数据库 (`LAST_IMAGE_ID`)
+2. 引擎已运行时发送广播切换；未运行时启动系统动态壁纸选择器
 
 **引擎运行状态检测**：
 - `LiveWallpaperService.engineRunning` 静态标志
@@ -317,10 +320,11 @@ MediaMetadataRetriever               → 负责逐帧提取 (OPTION_CLOSEST)
 - 点击通知打开 MainActivity
 
 **工作流程**：
-1. 启动后立即发送一次切换广播
-2. 进入循环：等待 `global_interval_ms` 时间后发送切换广播
-3. 如果没有启用的分组，自动停止服务以节省电量
-4. 异常时 10 秒后重试
+1. 启动后立即执行一次切换
+2. 进入循环：等待 `global_interval_ms` 时间后切换
+3. 引擎运行时通过广播切换动态壁纸；引擎未运行时通过 `WallpaperApplier` 切换静态壁纸
+4. 如果没有启用的分组，自动停止服务以节省电量
+5. 异常时 10 秒后重试
 
 **Intent Actions**：
 | Action | 说明 |
