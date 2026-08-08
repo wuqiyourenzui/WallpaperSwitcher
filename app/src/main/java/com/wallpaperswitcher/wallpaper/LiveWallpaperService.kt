@@ -132,6 +132,7 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
+            // Set flags FIRST to prevent any new rendering
             surfaceReady = false
             lastDisplayedId = 0L
             // release() is NON-BLOCKING — posts cleanup to render thread asynchronously.
@@ -151,6 +152,9 @@ class LiveWallpaperService : WallpaperService() {
             isVisible = visible
             if (visible) {
                 scope.launch {
+                    // Check if surface is still valid
+                    if (!surfaceReady || renderer == null) return@launch
+
                     val dao = db.settingsDao()
                     val savedId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
                     if (savedId != lastDisplayedId || lastDisplayedId == 0L) {
@@ -177,19 +181,38 @@ class LiveWallpaperService : WallpaperService() {
             engineRunning = false
             lastDisplayedId = 0L
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
-            // Flush shuffle state to DB on destroy
+
+            // 1. Flush shuffle state FIRST (needs scope to be active)
             flushShuffleState()
-            releaseAll()
+
+            // 2. Release renderer (non-blocking, posts cleanup to render thread)
+            try { renderer?.release() } catch (_: Exception) {}
+            renderer = null
+
+            // 3. Clean up local resources
+            pauseGif()
+            gifBitmapBuffer?.recycle(); gifBitmapBuffer = null
+            currentBitmap?.recycle(); currentBitmap = null
+            gifDrawable?.let {
+                try { it.stop() } catch (_: Exception) {}
+                if (Build.VERSION.SDK_INT >= 28) {
+                    try { (it as java.io.Closeable).close() } catch (_: Exception) {}
+                }
+            }
+            gifDrawable = null
+
+            // 4. Cancel scope AFTER flush completes
             scope.cancel()
             super.onDestroy()
         }
 
         private fun flushShuffleState() {
             if (!shuffleDirty) return
-            scope.launch {
+            // Use runBlocking to ensure state is saved before scope.cancel()
+            kotlinx.coroutines.runBlocking(Dispatchers.IO) {
                 try {
                     val dao = db.settingsDao()
-                    val shuffleKey = "shuffle_ids" // simplified key
+                    val shuffleKey = "shuffle_ids"
                     val countKey = "shuffle_count"
                     dao.setString(shuffleKey, shuffleShownIds.joinToString(","))
                     dao.setLong(countKey, shuffleAllCount.toLong())
@@ -200,7 +223,9 @@ class LiveWallpaperService : WallpaperService() {
         // ======== Resource lifecycle ========
 
         private fun releaseAll() {
-            renderer?.stopVideo()
+            // NOTE: Do NOT call renderer?.stopVideo() here — release() already handles
+            // video cleanup. Calling stopVideo() after release() causes cleanupVideo()
+            // to run on the wrong thread (renderHandler is already null).
             pauseGif()
             gifBitmapBuffer?.recycle(); gifBitmapBuffer = null
             currentBitmap?.recycle(); currentBitmap = null
@@ -404,7 +429,7 @@ class LiveWallpaperService : WallpaperService() {
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
             if (isSwitching.get()) return
-            // Always reload from DB — use lastDisplayedId to skip if unchanged
+            val r = renderer ?: return
 
             scope.launch {
                 try {
@@ -465,14 +490,14 @@ class LiveWallpaperService : WallpaperService() {
                                 val bitmap = loadBitmap(image.uri)
                                 if (bitmap != null) {
                                     currentBitmap = bitmap
-                                    renderer?.showImage(bitmap, currentScaleMode)
+                                    r.showImage(bitmap, currentScaleMode)
                                     return@launch
                                 }
                             }
                         }
                     }
                     videoMode = false
-                    renderer?.showImage(createDefaultBitmap(), currentScaleMode)
+                    r.showImage(createDefaultBitmap(), currentScaleMode)
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (e: Exception) {
