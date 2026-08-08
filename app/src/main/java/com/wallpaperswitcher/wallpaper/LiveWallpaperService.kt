@@ -112,14 +112,13 @@ class LiveWallpaperService : WallpaperService() {
 
         override fun onSurfaceCreated(holder: SurfaceHolder?) {
             surfaceReady = true
+            if (holder == null) return
             if (!rendererInitialized) {
-                // First time: create renderer (EGL context + GL resources)
                 val sw = cachedScreenW.takeIf { it > 0 } ?: getMetrics().widthPixels.toFloat()
                 val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().heightPixels.toFloat()
                 renderer = WallpaperRenderer(applicationContext, holder).also { it.initialize(sw, sh) }
                 rendererInitialized = true
             } else {
-                // Surface recreation: just create new EGL surface (context survives)
                 renderer?.surfaceCreated()
             }
         }
