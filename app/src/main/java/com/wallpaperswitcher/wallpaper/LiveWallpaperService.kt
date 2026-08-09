@@ -698,12 +698,26 @@ class LiveWallpaperService : WallpaperService() {
                 drawable.repeatCount = -1
                 drawable.start()
 
-                val frameW = drawable.intrinsicWidth.coerceAtLeast(1)
-                val frameH = drawable.intrinsicHeight.coerceAtLeast(1)
+                // Render into a buffer at most the screen size: a large GIF
+                // would otherwise upload its full intrinsic resolution to the
+                // GPU ~30 times per second, a major power drain. The wallpaper
+                // displays at screen resolution anyway, so the visible quality
+                // is identical to the original file.
+                val intrinsicW = drawable.intrinsicWidth.coerceAtLeast(1)
+                val intrinsicH = drawable.intrinsicHeight.coerceAtLeast(1)
+                val screenMax = maxOf(getMetrics().widthPixels, getMetrics().heightPixels)
+                val gifScale = if (maxOf(intrinsicW, intrinsicH) > screenMax) {
+                    screenMax.toFloat() / maxOf(intrinsicW, intrinsicH)
+                } else {
+                    1f
+                }
+                val frameW = (intrinsicW * gifScale).toInt().coerceAtLeast(1)
+                val frameH = (intrinsicH * gifScale).toInt().coerceAtLeast(1)
                 gifBitmapBuffer?.recycle()
                 gifBitmapBuffer = Bitmap.createBitmap(frameW, frameH, Bitmap.Config.ARGB_8888)
 
                 val r = renderer
+                val drawScale = gifScale
                 val runnable = object : Runnable {
                     override fun run() {
                         // Stopped/closed (engine destroyed or replaced):
@@ -718,6 +732,9 @@ class LiveWallpaperService : WallpaperService() {
                                 val bmp = gifBitmapBuffer ?: return
                                 bmp.eraseColor(Color.TRANSPARENT)
                                 val cv = Canvas(bmp)
+                                if (drawScale < 1f) {
+                                    cv.scale(drawScale, drawScale)
+                                }
                                 drawable.draw(cv)
                                 r?.showImage(bmp, scaleMode)
                             } catch (t: Throwable) {

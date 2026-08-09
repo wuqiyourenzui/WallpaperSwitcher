@@ -85,6 +85,16 @@ class WallpaperRenderer(
     // GL resources (created once, survive surface recreation)
     private var imageProgram = 0
     private var videoProgram = 0
+    // Cached shader locations: queried once per program creation instead of
+    // 6 times per rendered frame (at 30fps that is ~180 driver queries/sec).
+    private var imageTexMatLoc = -1
+    private var imageTexLoc = -1
+    private var imagePosLoc = -1
+    private var imageTcLoc = -1
+    private var videoTexMatLoc = -1
+    private var videoTexLoc = -1
+    private var videoPosLoc = -1
+    private var videoTcLoc = -1
     private var vertexBuffer: FloatBuffer? = null
     private var imageTexId = 0
     private var imageTexMatrix = FloatArray(16)
@@ -270,10 +280,10 @@ class WallpaperRenderer(
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             drawBlackBackground()
             GLES20.glUseProgram(imageProgram)
-            val texMatLoc = GLES20.glGetUniformLocation(imageProgram, "uTexMatrix")
-            val texLoc = GLES20.glGetUniformLocation(imageProgram, "uTexture")
-            val posLoc = GLES20.glGetAttribLocation(imageProgram, "aPosition")
-            val tcLoc = GLES20.glGetAttribLocation(imageProgram, "aTexCoord")
+            val texMatLoc = imageTexMatLoc
+            val texLoc = imageTexLoc
+            val posLoc = imagePosLoc
+            val tcLoc = imageTcLoc
 
             GLES20.glUniformMatrix4fv(texMatLoc, 1, false, imageTexMatrix, 0)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -770,10 +780,10 @@ class WallpaperRenderer(
             if (imageProgram == 0 || blackTexId == 0) return
             if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
             GLES20.glUseProgram(imageProgram)
-            val texMatLoc = GLES20.glGetUniformLocation(imageProgram, "uTexMatrix")
-            val texLoc = GLES20.glGetUniformLocation(imageProgram, "uTexture")
-            val posLoc = GLES20.glGetAttribLocation(imageProgram, "aPosition")
-            val tcLoc = GLES20.glGetAttribLocation(imageProgram, "aTexCoord")
+            val texMatLoc = imageTexMatLoc
+            val texLoc = imageTexLoc
+            val posLoc = imagePosLoc
+            val tcLoc = imageTcLoc
             android.opengl.Matrix.setIdentityM(imageTexMatrix, 0)
             GLES20.glUniformMatrix4fv(texMatLoc, 1, false, imageTexMatrix, 0)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -825,10 +835,10 @@ class WallpaperRenderer(
             drawBlackBackground()
             GLES20.glUseProgram(videoProgram)
 
-            val texMatLoc = GLES20.glGetUniformLocation(videoProgram, "uTexMatrix")
-            val texLoc = GLES20.glGetUniformLocation(videoProgram, "uTexture")
-            val posLoc = GLES20.glGetAttribLocation(videoProgram, "aPosition")
-            val tcLoc = GLES20.glGetAttribLocation(videoProgram, "aTexCoord")
+            val texMatLoc = videoTexMatLoc
+            val texLoc = videoTexLoc
+            val posLoc = videoPosLoc
+            val tcLoc = videoTcLoc
 
             GLES20.glUniformMatrix4fv(texMatLoc, 1, false, texMatrix, 0)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -960,6 +970,14 @@ class WallpaperRenderer(
     private fun setupGlResources() {
         imageProgram = createProgram(VERTEX_SHADER, IMAGE_FRAGMENT_SHADER)
         videoProgram = createProgram(VERTEX_SHADER, VIDEO_FRAGMENT_SHADER)
+        imageTexMatLoc = GLES20.glGetUniformLocation(imageProgram, "uTexMatrix")
+        imageTexLoc = GLES20.glGetUniformLocation(imageProgram, "uTexture")
+        imagePosLoc = GLES20.glGetAttribLocation(imageProgram, "aPosition")
+        imageTcLoc = GLES20.glGetAttribLocation(imageProgram, "aTexCoord")
+        videoTexMatLoc = GLES20.glGetUniformLocation(videoProgram, "uTexMatrix")
+        videoTexLoc = GLES20.glGetUniformLocation(videoProgram, "uTexture")
+        videoPosLoc = GLES20.glGetAttribLocation(videoProgram, "aPosition")
+        videoTcLoc = GLES20.glGetAttribLocation(videoProgram, "aTexCoord")
         vertexBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
         backgroundBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
             put(floatArrayOf(-1f,-1f,0f,1f, 1f,-1f,1f,1f, -1f,1f,0f,0f, 1f,1f,1f,0f))
