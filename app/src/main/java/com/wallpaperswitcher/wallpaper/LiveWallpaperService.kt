@@ -396,7 +396,6 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private suspend fun executeSwitch(source: String, targetId: Long?) {
-            Log.d(TAG, "doSwitch from $source, targetId=$targetId")
             val dao = db.settingsDao()
             val imageDao = db.wallpaperImageDao()
 

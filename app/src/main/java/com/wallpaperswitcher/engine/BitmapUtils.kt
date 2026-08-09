@@ -44,9 +44,13 @@ object BitmapUtils {
             }
 
             // Decode to at most the screen resolution: the rendered wallpaper
-            // is displayed at screen size, so this keeps the picture identical
-            // to the source on 2K/4K displays while avoiding full-size decode
-            // of far larger photos (memory + power savings).
+            // is displayed at screen size, so anything above the screen is
+            // pure memory + decode-time waste (logs showed 12MP photos being
+            // decoded at 4032px = ~46MB per bitmap during rapid switching).
+            // FILL/STRETCH keep a slightly higher floor so small sources stay
+            // sharp when magnified; sources larger than the screen are always
+            // downscaled by the GPU anyway, so the old 4096px ceiling bought
+            // nothing but memory.
             var sample = 1
             val maxDim = maxOf(opts.outWidth, opts.outHeight)
             val screenMax = maxOf(
@@ -55,7 +59,7 @@ object BitmapUtils {
             )
             val decodeCap = when (scaleMode) {
                 ScaleMode.FILL, ScaleMode.STRETCH ->
-                    minOf(screenMax * 2, 4096).coerceAtLeast(2560)
+                    minOf(screenMax, 3200).coerceAtLeast(2560)
                 else -> minOf(screenMax, 3200).coerceAtLeast(1920)
             }
             while (maxDim / sample > decodeCap) sample *= 2
