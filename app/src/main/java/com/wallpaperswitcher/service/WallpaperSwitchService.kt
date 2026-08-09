@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.wallpaperswitcher.R
@@ -31,6 +32,9 @@ class WallpaperSwitchService : Service() {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var switchJob: Job? = null
+    // Throttle the screen-off skip log to once per minute: at a 10s interval
+    // the old code logged ~720 lines/hour while the screen was dark.
+    private var lastScreenOffLogAt = 0L
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Always ensure foreground state first (required when started via startForegroundService)
@@ -105,7 +109,6 @@ class WallpaperSwitchService : Service() {
      * - Otherwise -> apply a static wallpaper via WallpaperManager.
      */
     private fun sendSwitch(source: String) {
-        Log.d(TAG, "sendSwitch($source) engineRunning=${LiveWallpaperService.engineRunning}")
         // Screen off: nobody can see the result, and the live engine is in
         // power-save anyway. Skip the work so the timer never starts an
         // invisible decode (live engine) or a wasteful setBitmap (static
@@ -113,9 +116,14 @@ class WallpaperSwitchService : Service() {
         // comes back on switches normally.
         val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
         if (!pm.isInteractive) {
-            Log.d(TAG, "Screen off, skipping $source switch (power save)")
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastScreenOffLogAt > 60_000L) {
+                lastScreenOffLogAt = now
+                Log.d(TAG, "Screen off, skipping $source switch (power save)")
+            }
             return
         }
+        Log.d(TAG, "sendSwitch($source) engineRunning=${LiveWallpaperService.engineRunning}")
         if (LiveWallpaperService.engineRunning) {
             sendSwitchBroadcast(source)
         } else {
