@@ -312,6 +312,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             imageDao.delete(image)
             _selectedGroupId.value?.let { refreshCount(it) }
+            refreshImages()
         }
     }
 
@@ -319,6 +320,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             imageDao.deleteByIds(images.map { it.id })
             _selectedGroupId.value?.let { refreshCount(it) }
+            refreshImages()
         }
     }
 

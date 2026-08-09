@@ -14,6 +14,7 @@ import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.data.WallpaperImage
 import com.wallpaperswitcher.data.getLong
 import com.wallpaperswitcher.data.getString
+import com.wallpaperswitcher.data.setString
 import com.wallpaperswitcher.data.setLong
 
 /**
@@ -79,26 +80,54 @@ object WallpaperApplier {
             SwitchMode.RANDOM
         }
 
-        // The static path can only show a still frame. Prefer IMAGE media:
-        // extracting a video frame from a slow (e.g. cloud-downloaded) URI can
-        // block for tens of seconds, which makes the timer look broken. Videos
-        // are used only as a fallback when no images are available.
-        val image = imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
-            ?: imageDao.getRandomImageFromEnabledGroups()
-            ?: when (mode) {
-                SwitchMode.SEQUENTIAL -> {
-                    val count = imageDao.countByEnabledGroups()
-                    if (count == 0) null else {
-                        val idx = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
-                        val next = idx % count
-                        imageDao.getSequentialImageFromEnabledGroups(next)?.also {
-                            dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, (next + 1).toLong())
-                        }
+        // Honor the global switch mode the same way the live engine does.
+        val image = when (mode) {
+            SwitchMode.RANDOM -> {
+                imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                    ?: imageDao.getRandomImageFromEnabledGroups()
+            }
+            SwitchMode.SEQUENTIAL -> {
+                val count = imageDao.countByEnabledGroups()
+                if (count == 0) null else {
+                    val idx = dao.getLong(SettingsKeys.SEQUENTIAL_INDEX).toInt()
+                    val next = idx % count
+                    val img = imageDao.getSequentialImageFromEnabledGroups(next)
+                    if (img != null) {
+                        dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, (next + 1).toLong())
+                        img
+                    } else {
+                        dao.setLong(SettingsKeys.SEQUENTIAL_INDEX, 0L)
+                        imageDao.getSequentialImageFromEnabledGroups(0)
+                            ?: imageDao.getRandomImageFromEnabledGroups()
                     }
                 }
-                else -> null
             }
-            ?: imageDao.getFirstFromEnabledGroups() ?: return false
+            SwitchMode.SHUFFLE -> {
+                val total = imageDao.countByEnabledGroups()
+                if (total == 0) {
+                    null
+                } else {
+                    val shown = dao.getString(SettingsKeys.SHUFFLE_SHOWN_IDS, "")
+                        .split(",").mapNotNull { it.toLongOrNull() }.toMutableSet()
+                    if (shown.size >= total) shown.clear()
+                    var candidate: WallpaperImage? = null
+                    var attempts = 0
+                    while (attempts < 10 && candidate == null) {
+                        val img = imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                            ?: imageDao.getRandomImageFromEnabledGroups()
+                        if (img != null && img.id !in shown) candidate = img
+                        attempts++
+                    }
+                    val picked = candidate ?: imageDao.getRandomImageFromEnabledGroups()
+                    if (picked != null) {
+                        shown.add(picked.id)
+                        dao.setString(SettingsKeys.SHUFFLE_SHOWN_IDS, shown.joinToString(","))
+                        dao.setLong(SettingsKeys.SHUFFLE_ALL_COUNT, total.toLong())
+                    }
+                    picked
+                }
+            }
+        } ?: imageDao.getFirstFromEnabledGroups() ?: return false
 
         dao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
         return apply(context, image)

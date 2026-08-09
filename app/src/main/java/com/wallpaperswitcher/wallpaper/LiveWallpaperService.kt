@@ -699,15 +699,23 @@ class LiveWallpaperService : WallpaperService() {
                 val r = renderer
                 val runnable = object : Runnable {
                     override fun run() {
-                        if (!surfaceReady || gifDrawable == null) return
-                        try {
-                            val bmp = gifBitmapBuffer ?: return
-                            bmp.eraseColor(Color.TRANSPARENT)
-                            val cv = Canvas(bmp)
-                            drawable.draw(cv)
-                            r?.showImage(bmp, scaleMode)
-                        } catch (t: Throwable) {
-                            Log.e(TAG, "GIF frame draw failed", t)
+                        // Stopped/closed (engine destroyed or replaced):
+                        // stop ticking forever.
+                        if (gifDrawable == null) return
+                        // Keep ticking even when the surface is temporarily
+                        // unavailable, so the animation resumes automatically
+                        // once the surface comes back (previously the runnable
+                        // returned without rescheduling and the GIF froze).
+                        if (surfaceReady) {
+                            try {
+                                val bmp = gifBitmapBuffer ?: return
+                                bmp.eraseColor(Color.TRANSPARENT)
+                                val cv = Canvas(bmp)
+                                drawable.draw(cv)
+                                r?.showImage(bmp, scaleMode)
+                            } catch (t: Throwable) {
+                                Log.e(TAG, "GIF frame draw failed", t)
+                            }
                         }
                         mainHandler.postDelayed(this, GIF_FRAME_INTERVAL_MS)
                     }

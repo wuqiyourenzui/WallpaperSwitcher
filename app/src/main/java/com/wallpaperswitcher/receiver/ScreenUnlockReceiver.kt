@@ -49,6 +49,10 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
                         // Wait a moment so the wallpaper becomes visible again;
                         // otherwise the engine skips the switch as "not visible".
                         delay(800L)
+                        if (!LiveWallpaperService.engineRunning) {
+                            Log.d(TAG, "Engine not running, skip unlock switch")
+                            return@withTimeout
+                        }
                         val switchIntent = Intent(LiveWallpaperService.ACTION_SWITCH).apply {
                             putExtra(LiveWallpaperService.EXTRA_SOURCE, LiveWallpaperService.SOURCE_UNLOCK)
                         }

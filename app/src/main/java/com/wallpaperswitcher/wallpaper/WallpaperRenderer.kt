@@ -111,6 +111,10 @@ class WallpaperRenderer(
     private val videoGeneration = AtomicInteger(0)
     // Flag to prevent double-cleanup: stopVideoInternal sets this, decodeLoop checks it.
     private val videoCleanupDone = AtomicBoolean(false)
+    // Coalescing flag: at most one render post is queued at a time, so a decode
+    // thread that outruns the render thread (rapid switching, heavy load) can
+    // never grow the handler queue without bound.
+    private val renderPostQueued = AtomicBoolean(false)
 
     // Render thread (persists across surface recreations)
     private var renderThread: HandlerThread? = null
@@ -559,16 +563,23 @@ class WallpaperRenderer(
 
                             dec.releaseOutputBuffer(outIdx, true)
 
-                            handler.post {
-                                if (videoGeneration.get() != gen) return@post
-                                if (!surfaceReady || !contextReady) return@post
-                                try {
-                                    st.updateTexImage()
-                                    val texMatrix = FloatArray(16)
-                                    st.getTransformMatrix(texMatrix)
-                                    renderVideoFrame(texMatrix)
-                                } catch (t: Throwable) {
-                                    Log.e(TAG, "renderVideoFrame failed", t)
+                            // Only one pending render post at a time; if the
+                            // render thread is busy, the newest frame simply
+                            // supersedes the previous one (updateTexImage
+                            // always picks up the latest buffer).
+                            if (renderPostQueued.compareAndSet(false, true)) {
+                                handler.post {
+                                    renderPostQueued.set(false)
+                                    if (videoGeneration.get() != gen) return@post
+                                    if (!surfaceReady || !contextReady) return@post
+                                    try {
+                                        st.updateTexImage()
+                                        val texMatrix = FloatArray(16)
+                                        st.getTransformMatrix(texMatrix)
+                                        renderVideoFrame(texMatrix)
+                                    } catch (t: Throwable) {
+                                        Log.e(TAG, "renderVideoFrame failed", t)
+                                    }
                                 }
                             }
 
