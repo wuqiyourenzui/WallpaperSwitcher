@@ -179,10 +179,27 @@ object WallpaperApplier {
                     decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
                 }
                 try {
-                    val w = drawable.intrinsicWidth.coerceAtLeast(1)
-                    val h = drawable.intrinsicHeight.coerceAtLeast(1)
+                    // Render into a buffer at most the screen resolution so a
+                    // very large GIF frame cannot OOM WallpaperManager.setBitmap
+                    // (displayed quality is identical at screen size).
+                    val intrinsicW = drawable.intrinsicWidth.coerceAtLeast(1)
+                    val intrinsicH = drawable.intrinsicHeight.coerceAtLeast(1)
+                    val screenMax = maxOf(
+                        BitmapUtils.getScreenMetrics(context).widthPixels,
+                        BitmapUtils.getScreenMetrics(context).heightPixels
+                    )
+                    val cap = minOf(screenMax, 3200).coerceAtLeast(1920)
+                    val scale = if (maxOf(intrinsicW, intrinsicH) > cap) {
+                        cap.toFloat() / maxOf(intrinsicW, intrinsicH)
+                    } else {
+                        1f
+                    }
+                    val w = (intrinsicW * scale).toInt().coerceAtLeast(1)
+                    val h = (intrinsicH * scale).toInt().coerceAtLeast(1)
                     val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-                    drawable.draw(Canvas(bmp))
+                    val cv = Canvas(bmp)
+                    if (scale < 1f) cv.scale(scale, scale)
+                    drawable.draw(cv)
                     bmp
                 } finally {
                     try { (drawable as java.lang.AutoCloseable).close() } catch (_: Exception) {}
