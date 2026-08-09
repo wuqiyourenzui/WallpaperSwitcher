@@ -169,6 +169,9 @@ class WallpaperRenderer(
     // picture quality are unchanged; 50/60fps sources simply skip every other
     // present, which roughly halves rendering/composition power for them.
     private var lastVideoFrameSwappedAt = 0L
+    // Rolling render-rate statistics (diagnostics only, ~1 log line/minute).
+    private var renderFpsWindowStart = 0L
+    private var renderFpsCount = 0
 
     // ======== Lifecycle ========
 
@@ -867,6 +870,15 @@ class WallpaperRenderer(
             val now = SystemClock.elapsedRealtime()
             if (now - lastVideoFrameSwappedAt < 33L) return
             lastVideoFrameSwappedAt = now
+            if (renderFpsWindowStart == 0L) renderFpsWindowStart = now
+            renderFpsCount++
+            if (now - renderFpsWindowStart >= 60_000L) {
+                val elapsed = (now - renderFpsWindowStart).coerceAtLeast(1L)
+                val fps = renderFpsCount * 1000f / elapsed
+                Log.d(TAG, "Video render rate: %.1f fps over %ds".format(fps, elapsed / 1000))
+                renderFpsWindowStart = now
+                renderFpsCount = 0
+            }
             if (now - lastRenderLogAt > 5000L) {
                 lastRenderLogAt = now
                 Log.d(TAG, "Video frame rendered: tex=$videoTexId screen=${screenW.toInt()}x${screenH.toInt()}")
