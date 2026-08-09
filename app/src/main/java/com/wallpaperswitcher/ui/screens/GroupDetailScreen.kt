@@ -712,12 +712,25 @@ fun FolderPickerDialog(
                     onValueChange = { searchQuery = it },
                     label = { Text("搜索文件夹名称或路径") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        if (searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { searchQuery = "" }) {
+                                Icon(Icons.Filled.Close, contentDescription = "清空")
+                            }
+                        }
+                    }
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Text(
+                        "共 ${displayFolders.size} 个文件夹",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f)
+                    )
                     FilterChip(
                         selected = !sortByName,
                         onClick = { sortByName = false },
