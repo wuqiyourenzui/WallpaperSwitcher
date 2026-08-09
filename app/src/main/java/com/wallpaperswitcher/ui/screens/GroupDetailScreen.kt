@@ -2,6 +2,7 @@ package com.wallpaperswitcher.ui.screens
 
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
@@ -60,6 +61,9 @@ fun GroupDetailScreen(
     var previewImage by remember { mutableStateOf<WallpaperImage?>(null) }
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     var isSelectionMode by remember { mutableStateOf(false) }
+    // 失效媒体清理：非空时显示确认对话框；cleaningBroken 防止重复扫描。
+    var brokenMedia by remember { mutableStateOf<List<WallpaperImage>?>(null) }
+    var cleaningBroken by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
     // Derive load-more state to avoid recomposition on every scroll
@@ -182,6 +186,28 @@ fun GroupDetailScreen(
                     )
                     Spacer(modifier = Modifier.width(4.dp))
                     Text(if (isSelectionMode) "取消选择" else "批量操作")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        if (!cleaningBroken) {
+                            cleaningBroken = true
+                            coroutineScope.launch {
+                                val broken = viewModel.scanBrokenMedia(groupId)
+                                cleaningBroken = false
+                                if (broken.isEmpty()) {
+                                    Toast.makeText(context, "没有失效媒体", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    brokenMedia = broken
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Outlined.BrokenImage, "清理", modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("清理失效")
                 }
             }
         }
@@ -376,6 +402,31 @@ fun GroupDetailScreen(
             onConfirm = {
                 viewModel.setImageAsWallpaper(image)
                 previewImage = null
+            }
+        )
+    }
+
+    // 失效媒体清理确认
+    brokenMedia?.let { broken ->
+        AlertDialog(
+            onDismissRequest = { brokenMedia = null },
+            title = { Text("清理失效媒体") },
+            text = {
+                Text("发现 ${broken.size} 个无法读取的媒体（文件可能已被删除或移动）。确定从分组中删除吗？")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteImages(broken)
+                        Toast.makeText(context, "已删除 ${broken.size} 个失效媒体", Toast.LENGTH_SHORT).show()
+                        brokenMedia = null
+                    }
+                ) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { brokenMedia = null }) { Text("取消") }
             }
         )
     }

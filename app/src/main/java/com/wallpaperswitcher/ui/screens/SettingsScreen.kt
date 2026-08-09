@@ -36,6 +36,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
     val globalSwitchMode by viewModel.globalSwitchMode.collectAsStateWithLifecycle()
     val globalScaleMode by viewModel.globalScaleMode.collectAsStateWithLifecycle()
     val clarityMode by viewModel.clarityMode.collectAsStateWithLifecycle()
+    val switchFadeEnabled by viewModel.switchFadeEnabled.collectAsStateWithLifecycle()
     val themeColor by viewModel.themeColor.collectAsStateWithLifecycle()
     val autoScanEnabled by viewModel.autoScanEnabled.collectAsStateWithLifecycle()
     val autoScanIntervalMs by viewModel.autoScanIntervalMs.collectAsStateWithLifecycle()
@@ -176,6 +177,16 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 subtitle = "双击屏幕切换壁纸（需设置动态壁纸）",
                 checked = doubleTapEnabled,
                 onCheckedChange = { viewModel.toggleDoubleTap(it) }
+            )
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            SettingsSwitchItem(
+                icon = Icons.Outlined.AutoAwesome,
+                title = "切换过渡动画",
+                subtitle = "切换壁纸时淡入显示",
+                checked = switchFadeEnabled,
+                onCheckedChange = { viewModel.setSwitchFadeEnabled(it) }
             )
         }
 

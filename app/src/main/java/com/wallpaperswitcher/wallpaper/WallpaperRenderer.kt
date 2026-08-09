@@ -58,6 +58,7 @@ class WallpaperRenderer(
             uniform sampler2D uTexture;
             uniform vec2 uTexelSize;
             uniform float uSharp;
+            uniform float uAlpha;
             varying vec2 vTexCoord;
             void main() {
                 // Mild unsharp mask. uSharp == 0.0 keeps the original pixel
@@ -67,7 +68,7 @@ class WallpaperRenderer(
                 // same GPU bandwidth as before sharpening was added.
                 vec4 c = texture2D(uTexture, vTexCoord);
                 if (uSharp <= 0.001) {
-                    gl_FragColor = c;
+                    gl_FragColor = vec4(c.rgb, uAlpha);
                     return;
                 }
                 vec4 s = c * (1.0 + 4.0 * uSharp)
@@ -75,7 +76,7 @@ class WallpaperRenderer(
                         + texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0))
                         + texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y))
                         + texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y))) * uSharp;
-                gl_FragColor = clamp(s, 0.0, 1.0);
+                gl_FragColor = clamp(vec4(s.rgb, uAlpha), 0.0, 1.0);
             }
         """
 
@@ -128,6 +129,7 @@ class WallpaperRenderer(
     // Sharpening uniforms (queried once per program creation).
     private var imageTexelLoc = -1
     private var imageSharpLoc = -1
+    private var imageAlphaLoc = -1
     private var videoTexelLoc = -1
     private var videoSharpLoc = -1
     // Engine-controlled clarity strength multiplier: 0 = off, 1 = default
@@ -139,6 +141,13 @@ class WallpaperRenderer(
     // the position simply advances slowly while the screen is off and resumes
     // full speed on the next screen-on. Written from the engine thread.
     @Volatile var powerSaveMode = false
+    // Switch fade-in state (render thread only): a black overlay whose alpha
+    // decays over ~250ms after a switch, drawn on top of every presented frame.
+    private var fadeAlpha = 0f
+    private var fadeGeneration = 0
+    private var lastImageBitmap: Bitmap? = null
+    private var lastImageScaleMode: ScaleMode = ScaleMode.FIT
+    private var lastRenderWasImage = false
     private var vertexBuffer: FloatBuffer? = null
     private var imageTexId = 0
     private var imageTexMatrix = FloatArray(16)
@@ -353,6 +362,85 @@ class WallpaperRenderer(
         }
     }
 
+    /**
+     * Start a fade-in-from-black transition after a switch. The overlay is
+     * drawn on top of every presented frame while its alpha decays, so it
+     * works for images, GIFs and videos alike. Call after the new media has
+     * been applied.
+     */
+    fun requestFade() {
+        postToRenderThread {
+            startFadeSteps()
+        }
+    }
+
+    /**
+     * Schedule the fade overlay steps. Runs on the render thread. For static
+     * images the last bitmap is re-rendered each step (so the overlay is
+     * visible even without new frames); video/GIF frames keep arriving and are
+     * drawn with the overlay automatically.
+     */
+    private fun startFadeSteps() {
+        fadeGeneration++
+        val gen = fadeGeneration
+        fadeAlpha = 1f
+        val stepMs = 30L
+        val steps = 8
+        var step = 0
+        val runnable = object : Runnable {
+            override fun run() {
+                if (gen != fadeGeneration) return
+                step++
+                fadeAlpha = (1f - step.toFloat() / steps).coerceAtLeast(0f)
+                if (lastRenderWasImage) {
+                    // Force a redraw so the static image is re-presented with
+                    // the current overlay alpha.
+                    val bmp = lastImageBitmap
+                    if (bmp != null && !bmp.isRecycled) {
+                        renderImage(bmp, lastImageScaleMode, useMipmap = true)
+                    } else {
+                        fadeAlpha = 0f
+                    }
+                }
+                if (fadeAlpha > 0f) {
+                    renderHandler?.postDelayed(this, stepMs)
+                } else {
+                    fadeAlpha = 0f
+                }
+            }
+        }
+        renderHandler?.post(runnable)
+    }
+
+    /**
+     * Draw the fade overlay quad (black, alpha = [alpha]) over the current
+     * framebuffer. Must be called right before eglSwapBuffers on the render
+     * thread; blending is disabled afterwards.
+     */
+    private fun drawFadeOverlayNoSwap(alpha: Float) {
+        if (alpha <= 0f || imageProgram == 0 || blackTexId == 0) return
+        if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
+        val bg = backgroundBuffer ?: return
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glUseProgram(imageProgram)
+        GLES20.glUniformMatrix4fv(imageTexMatLoc, 1, false, imageTexMatrix, 0)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, blackTexId)
+        GLES20.glUniform1i(imageTexLoc, 0)
+        GLES20.glUniform2f(imageTexelLoc, 1f, 1f)
+        GLES20.glUniform1f(imageSharpLoc, 0f)
+        GLES20.glUniform1f(imageAlphaLoc, alpha)
+        bg.position(0)
+        GLES20.glEnableVertexAttribArray(imagePosLoc)
+        GLES20.glVertexAttribPointer(imagePosLoc, 2, GLES20.GL_FLOAT, false, 16, bg)
+        bg.position(2)
+        GLES20.glEnableVertexAttribArray(imageTcLoc)
+        GLES20.glVertexAttribPointer(imageTcLoc, 2, GLES20.GL_FLOAT, false, 16, bg)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
     private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode, useMipmap: Boolean) {
         try {
             if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
@@ -408,6 +496,7 @@ class WallpaperRenderer(
                 imageSharpLoc,
                 sharpnessFor(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
             )
+            GLES20.glUniform1f(imageAlphaLoc, 1f)
 
             vertexBuffer?.position(0)
             GLES20.glEnableVertexAttribArray(posLoc)
@@ -417,10 +506,16 @@ class WallpaperRenderer(
             GLES20.glVertexAttribPointer(tcLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            if (fadeAlpha > 0f) drawFadeOverlayNoSwap(fadeAlpha)
             val swapped = EGL14.eglSwapBuffers(eglDisplay, eglSurface)
             if (!swapped) {
                 Log.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
             }
+            // Remember the last presented image so the fade steps can force
+            // redraws of static images with the decaying overlay.
+            lastImageBitmap = bitmap
+            lastImageScaleMode = scaleMode
+            lastRenderWasImage = true
         } catch (t: Throwable) {
             Log.e(TAG, "renderImage failed", t)
         }
@@ -1026,6 +1121,7 @@ class WallpaperRenderer(
             GLES20.glUniform1i(texLoc, 0)
             // Flat black must never be sharpened (uSharp=0 is identity).
             GLES20.glUniform1f(imageSharpLoc, 0f)
+            GLES20.glUniform1f(imageAlphaLoc, 1f)
 
             bg.position(0)
             GLES20.glEnableVertexAttribArray(posLoc)
@@ -1113,12 +1209,14 @@ class WallpaperRenderer(
             GLES20.glVertexAttribPointer(tcLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            if (fadeAlpha > 0f) drawFadeOverlayNoSwap(fadeAlpha)
             val swapped = EGL14.eglSwapBuffers(eglDisplay, eglSurface)
             if (swapped) {
                 lastVideoFrameAt = now
             } else {
                 Log.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
             }
+            lastRenderWasImage = false
         } catch (t: Throwable) {
             Log.e(TAG, "renderVideoFrame failed", t)
         }
@@ -1242,6 +1340,7 @@ class WallpaperRenderer(
         imageTcLoc = GLES20.glGetAttribLocation(imageProgram, "aTexCoord")
         imageTexelLoc = GLES20.glGetUniformLocation(imageProgram, "uTexelSize")
         imageSharpLoc = GLES20.glGetUniformLocation(imageProgram, "uSharp")
+        imageAlphaLoc = GLES20.glGetUniformLocation(imageProgram, "uAlpha")
         videoTexMatLoc = GLES20.glGetUniformLocation(videoProgram, "uTexMatrix")
         videoTexLoc = GLES20.glGetUniformLocation(videoProgram, "uTexture")
         videoPosLoc = GLES20.glGetAttribLocation(videoProgram, "aPosition")

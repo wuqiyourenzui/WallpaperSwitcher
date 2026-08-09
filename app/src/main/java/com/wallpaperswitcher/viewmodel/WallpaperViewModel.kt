@@ -205,6 +205,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         .map { it ?: "auto" }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "auto")
 
+    // Fade-in transition after each switch (default on).
+    val switchFadeEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.SWITCH_FADE_ENABLED)
+        .map { it?.toBooleanStrictOrNull() ?: true }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
     // Periodic folder auto-scan
     val autoScanEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.AUTO_SCAN_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: false }
@@ -249,6 +254,10 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setClarityMode(mode: String) {
         viewModelScope.launch { settingsDao.setString(SettingsKeys.CLARITY_MODE, mode) }
+    }
+
+    fun setSwitchFadeEnabled(enabled: Boolean) {
+        viewModelScope.launch { settingsDao.setBool(SettingsKeys.SWITCH_FADE_ENABLED, enabled) }
     }
 
     // Theme color (stored as hex string like "#6750A4", empty = system default)
@@ -418,6 +427,36 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
      */
     suspend fun getAllImageIds(groupId: Long): List<Long> {
         return imageDao.getImageIdsByGroup(groupId)
+    }
+
+    /**
+     * Scan every media entry in a group and return the ones whose files can no
+     * longer be opened (deleted / moved / unreadable). Progress is reported
+     * through [scanProgress]; runs on the IO dispatcher.
+     */
+    suspend fun scanBrokenMedia(groupId: Long): List<WallpaperImage> {
+        return withContext(Dispatchers.IO) {
+            val resolver = getApplication<Application>().contentResolver
+            val all = imageDao.getImagesByGroupSync(groupId)
+            val broken = mutableListOf<WallpaperImage>()
+            var checked = 0
+            for (image in all) {
+                if (!isActive) return@withContext broken
+                val ok = try {
+                    resolver.openInputStream(Uri.parse(image.uri))?.use { true } ?: false
+                } catch (_: Exception) {
+                    false
+                }
+                if (!ok) broken.add(image)
+                checked++
+                if (checked % 50 == 0 || checked == all.size) {
+                    _scanProgress.value = "检查中 $checked/${all.size}"
+                }
+                if (checked % 100 == 0) yield()
+            }
+            _scanProgress.value = ""
+            broken
+        }
     }
 
     fun switchNow() {

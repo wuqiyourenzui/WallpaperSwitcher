@@ -616,6 +616,7 @@ class LiveWallpaperService : WallpaperService() {
                 failedMediaIds.clear()
                 recoveryFailCount = 0
             }
+            if (lastDisplayedId == nextImage.id) maybeFade()
         }
 
         private suspend fun pickNextImage(
@@ -743,6 +744,7 @@ class LiveWallpaperService : WallpaperService() {
                                 currentBitmap = null
                                 if (startVideo(image.uri, currentScaleMode)) {
                                     lastDisplayedId = image.id
+                                    maybeFade()
                                 } else {
                                     lastDisplayedId = 0L
                                 }
@@ -753,6 +755,7 @@ class LiveWallpaperService : WallpaperService() {
                                 videoMode = false
                                 mainHandler.post { playGif(image.uri, currentScaleMode) }
                                 lastDisplayedId = image.id
+                                maybeFade()
                                 return@launch
                             }
                             else -> {
@@ -768,6 +771,7 @@ class LiveWallpaperService : WallpaperService() {
                                     }
                                     r.stopVideoAndRender(bitmap, currentScaleMode)
                                     lastDisplayedId = image.id
+                                    maybeFade()
                                     return@launch
                                 } else {
                                     Log.e(TAG, "drawCurrentImage failed to load bitmap: ${image.uri}")
@@ -820,6 +824,22 @@ class LiveWallpaperService : WallpaperService() {
                 "strong" -> 1.6f
                 else -> 1f
             }
+        }
+
+        /**
+         * Start the fade-in transition after a switch when the setting is
+         * enabled and the wallpaper is actually visible (skip it while covered
+         * or the screen is off - nobody can see it then).
+         */
+        private suspend fun maybeFade() {
+            if (renderer?.powerSaveMode == true) return
+            if (renderer?.isSurfaceReady() != true) return
+            val enabled = try {
+                db.settingsDao().getBool(SettingsKeys.SWITCH_FADE_ENABLED, true)
+            } catch (_: Exception) {
+                true
+            }
+            if (enabled) renderer?.requestFade()
         }
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode): Boolean {

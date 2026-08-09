@@ -13,6 +13,8 @@ object SettingsKeys {
     const val GLOBAL_SCALE_MODE = "global_scale_mode"
     // Low-res media clarity enhancement: "auto" (default) | "off" | "strong"
     const val CLARITY_MODE = "clarity_mode"
+    // Fade-in-from-black transition after each switch (default on).
+    const val SWITCH_FADE_ENABLED = "switch_fade_enabled"
     // Periodic folder auto-scan
     const val AUTO_SCAN_ENABLED = "auto_scan_enabled"
     const val AUTO_SCAN_INTERVAL_MS = "auto_scan_interval_ms"
