@@ -432,6 +432,10 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 // 1. Save target ID. The engine reads this from DB when it starts.
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
                 Log.d(TAG, "LAST_IMAGE_ID saved: ${image.id}")
+                // 1b. SEQUENTIAL mode continues from the wallpaper that was
+                // just set, not from the beginning: anchor the index at the
+                // item AFTER this one (in id order).
+                anchorSequentialIndex(image)
 
                 // 2. Engine running -> broadcast; otherwise set the static wallpaper.
                 val engineRunning = LiveWallpaperService.engineRunning
@@ -466,6 +470,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 Log.d(TAG, "setAsLiveWallpaper: id=${image.id}")
                 settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
+                anchorSequentialIndex(image)
 
                 val engineRunning = LiveWallpaperService.engineRunning
                 if (engineRunning) {
@@ -480,6 +485,24 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 _toastMessage.emit("设置失败: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Point SEQUENTIAL_INDEX at the media that follows [image] in the
+     * id-ordered sequence, so 顺序播放 continues from the wallpaper the user
+     * just set instead of restarting from the first item. Only applied when
+     * the image belongs to an enabled group (otherwise it is not part of the
+     * enabled sequence).
+     */
+    private suspend fun anchorSequentialIndex(image: WallpaperImage) {
+        try {
+            val group = groupDao.getGroupById(image.groupId) ?: return
+            if (!group.isEnabled) return
+            val total = imageDao.countByEnabledGroups()
+            if (total <= 0) return
+            val idx = imageDao.getSequentialIndexBefore(image.id)
+            settingsDao.setLong(SettingsKeys.SEQUENTIAL_INDEX, ((idx + 1) % total).toLong())
+        } catch (_: Exception) {}
     }
 
     private fun sendTargetBroadcast(targetId: Long) {

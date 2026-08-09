@@ -103,6 +103,15 @@ interface WallpaperImageDao {
     """)
     suspend fun getSequentialImageFromEnabledGroups(offset: Int): WallpaperImage?
 
+    // Number of enabled media with a smaller id: the 0-based position of
+    // targetId in the id-ordered sequence used by SEQUENTIAL mode.
+    @Query("""
+        SELECT COUNT(*) FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        AND id < :targetId
+    """)
+    suspend fun getSequentialIndexBefore(targetId: Long): Int
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(image: WallpaperImage): Long
 
