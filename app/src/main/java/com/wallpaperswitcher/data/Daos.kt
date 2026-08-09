@@ -6,6 +6,9 @@ import kotlinx.coroutines.flow.Flow
 /** A (groupId, folderPath) pair recorded by a folder import, for auto-scan. */
 data class ScannedFolderPath(val groupId: Long, val folderPath: String)
 
+/** groupId -> media count, for the home screen group cards. */
+data class GroupMediaCount(val groupId: Long, val mediaCount: Int)
+
 @Dao
 interface WallpaperGroupDao {
 
@@ -189,6 +192,11 @@ interface WallpaperImageDao {
         WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND type = :groupType)
     """)
     suspend fun countByEnabledGroupsOfType(groupType: String): Int
+
+    // --- Per-group media counts (home screen cards) ---
+
+    @Query("SELECT groupId, COUNT(*) AS mediaCount FROM wallpaper_images GROUP BY groupId")
+    fun getMediaCounts(): Flow<List<GroupMediaCount>>
 }
 
 @Dao

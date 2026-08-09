@@ -279,7 +279,9 @@ fun GroupDetailScreen(
             EmptyImagesHint()
         } else {
             LazyVerticalGrid(
-                columns = GridCells.Fixed(3),
+                // Adaptive columns: 3 on phones, more on tablets/landscape, so
+                // the grid uses the available width instead of fixed 3 cells.
+                columns = GridCells.Adaptive(104.dp),
                 contentPadding = PaddingValues(16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -394,7 +396,7 @@ private fun GroupInfoHeader(
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    "$imageCount 张图片${if (loadedCount < imageCount) " (已加载 $loadedCount)" else ""}",
+                    "$imageCount 个媒体${if (loadedCount < imageCount) " (已加载 $loadedCount)" else ""}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f)
                 )
@@ -787,12 +789,22 @@ fun FolderPickerDialog(
                             ) {
                                 val sample = folder.sampleUris.firstOrNull()
                                 if (sample != null) {
-                                    AsyncImage(
-                                        model = ImageRequest.Builder(context)
+                                    // Cache the request per folder so selection /
+                                    // filter recompositions never rebuild it, and
+                                    // let video samples show a real thumbnail.
+                                    val sampleRequest = remember(sample, context) {
+                                        ImageRequest.Builder(context)
                                             .data(Uri.parse(sample))
                                             .size(96, 96)
-                                            .allowHardware(false)
-                                            .build(),
+                                            .crossfade(0)
+                                            .allowHardware(true)
+                                            .apply {
+                                                decoderFactory(VideoFrameDecoder.Factory())
+                                            }
+                                            .build()
+                                    }
+                                    AsyncImage(
+                                        model = sampleRequest,
                                         contentDescription = null,
                                         contentScale = ContentScale.Crop,
                                         modifier = Modifier
@@ -888,7 +900,11 @@ fun WallpaperPreviewDialog(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    if (image.mediaType == "VIDEO") "将此视频设置为壁纸" else "将此图片设置为壁纸",
+                    when (image.mediaType) {
+                        "VIDEO" -> "将此视频设置为壁纸"
+                        "GIF" -> "将此 GIF 设置为壁纸"
+                        else -> "将此图片设置为壁纸"
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

@@ -21,6 +21,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.data.WallpaperGroup
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
+import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import kotlinx.coroutines.launch
 
 @Composable
@@ -29,6 +30,7 @@ fun HomeScreen(
     onGroupClick: (Long) -> Unit
 ) {
     val groups by viewModel.groups.collectAsStateWithLifecycle()
+    val mediaCounts by viewModel.mediaCounts.collectAsStateWithLifecycle()
     val serviceEnabled by viewModel.serviceEnabled.collectAsStateWithLifecycle()
     var showCreateDialog by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
@@ -44,6 +46,40 @@ fun HomeScreen(
             onToggle = { viewModel.toggleService(it) },
             onSwitchNow = { viewModel.switchNow() }
         )
+
+        // The live wallpaper engine is what actually receives timer /
+        // double-tap / unlock switches. If it is not running (wallpaper never
+        // applied, or a different live wallpaper was selected), switching
+        // appears dead. Surface that state here instead of silently failing.
+        val engineRunning = LiveWallpaperService.engineRunning
+        if (serviceEnabled && !engineRunning) {
+            Spacer(modifier = Modifier.height(12.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer
+                ),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Outlined.Warning,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        "动态壁纸引擎未运行：请在系统壁纸设置中选中「壁纸切换」，否则定时/双击/解锁切换不生效",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(20.dp))
 
@@ -77,6 +113,7 @@ fun HomeScreen(
                 items(groups, key = { it.id }) { group ->
                     GroupCard(
                         group = group,
+                        mediaCount = mediaCounts[group.id] ?: 0,
                         onClick = { onGroupClick(group.id) },
                         onToggle = { viewModel.toggleGroupEnabled(group.id, it) }
                     )
@@ -172,6 +209,7 @@ private fun ServiceControlCard(
 @Composable
 private fun GroupCard(
     group: WallpaperGroup,
+    mediaCount: Int,
     onClick: () -> Unit,
     onToggle: (Boolean) -> Unit
 ) {
@@ -231,7 +269,7 @@ private fun GroupCard(
                         MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                 )
                 Text(
-                    "图片 / 视频",
+                    if (mediaCount > 0) "$mediaCount 个媒体" else "暂无媒体",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

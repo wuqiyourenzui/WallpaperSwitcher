@@ -42,6 +42,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     val groups: StateFlow<List<WallpaperGroup>> = groupDao.getAllGroups()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // Per-group media counts for the home screen cards (image + video + GIF).
+    val mediaCounts: StateFlow<Map<Long, Int>> = imageDao.getMediaCounts()
+        .map { list -> list.associate { it.groupId to it.mediaCount } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+
     val serviceEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.SERVICE_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: false }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
@@ -97,15 +102,20 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _isLoadingMore.value = true
             try {
-                if (reset) {
-                    _totalImageCount.value = imageDao.getImageCountByGroup(groupId)
-                    val firstPage = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, 0)
-                    _loadedImages.value = firstPage
-                } else {
-                    val currentSize = _loadedImages.value.size
-                    val nextPage = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, currentSize)
-                    if (nextPage.isNotEmpty()) {
-                        _loadedImages.value = _loadedImages.value + nextPage
+                // Only publish results for the group that is still selected:
+                // a slow query for a previously-opened group must never
+                // overwrite the list of the group the user switched to.
+                if (_selectedGroupId.value == groupId) {
+                    if (reset) {
+                        _totalImageCount.value = imageDao.getImageCountByGroup(groupId)
+                        val firstPage = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, 0)
+                        _loadedImages.value = firstPage
+                    } else {
+                        val currentSize = _loadedImages.value.size
+                        val nextPage = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, currentSize)
+                        if (nextPage.isNotEmpty()) {
+                            _loadedImages.value = _loadedImages.value + nextPage
+                        }
                     }
                 }
             } catch (e: Exception) {

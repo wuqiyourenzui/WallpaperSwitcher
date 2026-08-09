@@ -13,6 +13,7 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.ui.screens.*
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 import kotlinx.coroutines.flow.collectLatest
@@ -35,6 +36,10 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
         }
     }
 
+    // Show the actual group name in the detail page's top bar instead of a
+    // generic "分组详情" label.
+    val selectedGroup by viewModel.selectedGroup.collectAsStateWithLifecycle()
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -42,7 +47,7 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                     Text(
                         when (currentScreen) {
                             is Screen.Home -> "壁纸切换"
-                            is Screen.GroupDetail -> "分组详情"
+                            is Screen.GroupDetail -> selectedGroup?.name ?: "分组详情"
                             is Screen.Settings -> "设置"
                         }
                     )

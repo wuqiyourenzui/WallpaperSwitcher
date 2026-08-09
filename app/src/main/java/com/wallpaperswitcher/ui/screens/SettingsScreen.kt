@@ -26,7 +26,7 @@ import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.ui.theme.parseHexColor
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun SettingsScreen(viewModel: WallpaperViewModel) {
     val serviceEnabled by viewModel.serviceEnabled.collectAsStateWithLifecycle()
@@ -68,34 +68,48 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
             Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
             // Switch mode
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.Shuffle, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(16.dp))
-                Text("切换模式", modifier = Modifier.weight(1f))
-                SwitchMode.entries.forEach { mode ->
-                    FilterChip(
-                        selected = globalSwitchMode == mode,
-                        onClick = { viewModel.setGlobalSwitchMode(mode) },
-                        label = { Text(when (mode) { SwitchMode.RANDOM -> "随机"; SwitchMode.SEQUENTIAL -> "顺序"; SwitchMode.SHUFFLE -> "洗牌" }) },
-                        modifier = Modifier.padding(start = 4.dp)
-                    )
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.Shuffle, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text("切换模式", modifier = Modifier.weight(1f))
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    SwitchMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = globalSwitchMode == mode,
+                            onClick = { viewModel.setGlobalSwitchMode(mode) },
+                            label = { Text(when (mode) { SwitchMode.RANDOM -> "随机"; SwitchMode.SEQUENTIAL -> "顺序"; SwitchMode.SHUFFLE -> "洗牌" }) }
+                        )
+                    }
                 }
             }
 
             Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
             // Scale mode
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.AspectRatio, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(16.dp))
-                Text("缩放模式", modifier = Modifier.weight(1f))
-                ScaleMode.entries.forEach { mode ->
-                    FilterChip(
-                        selected = globalScaleMode == mode,
-                        onClick = { viewModel.setGlobalScaleMode(mode) },
-                        label = { Text(when (mode) { ScaleMode.FILL -> "填充"; ScaleMode.FIT -> "适应"; ScaleMode.STRETCH -> "拉伸" }) },
-                        modifier = Modifier.padding(start = 4.dp)
-                    )
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.AspectRatio, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text("缩放模式", modifier = Modifier.weight(1f))
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    ScaleMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = globalScaleMode == mode,
+                            onClick = { viewModel.setGlobalScaleMode(mode) },
+                            label = { Text(when (mode) { ScaleMode.FILL -> "填充"; ScaleMode.FIT -> "适应"; ScaleMode.STRETCH -> "拉伸" }) }
+                        )
+                    }
                 }
             }
         }
@@ -176,7 +190,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 title = "如何使用",
                 subtitle = buildString {
                     appendLine("1. 创建分组，添加图片或视频。")
-                    appendLine("2. 长按图片/视频 → 设为壁纸。")
+                    appendLine("2. 点击媒体右下角 ⋮ → 设为壁纸。")
                     appendLine("3. 在「切换方式」中开启定时、双击或解锁切换。")
                 }
             )
@@ -508,7 +522,7 @@ fun ThemeColorPickerDialog(
         text = {
             Column {
                 Text(
-                    "选择主题颜色，重启后生效",
+                    "选择主题颜色，立即生效",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(bottom = 16.dp)

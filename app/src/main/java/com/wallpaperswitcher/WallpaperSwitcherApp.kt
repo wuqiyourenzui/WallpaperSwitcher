@@ -51,7 +51,10 @@ class WallpaperSwitcherApp : Application() {
             .memoryCachePolicy(CachePolicy.ENABLED)
             .memoryCache {
                 coil.memory.MemoryCache.Builder(this)
-                    .maxSizePercent(0.25) // Use 25% of available memory for cache
+                    // 20% instead of 25%: leaves more headroom for the wallpaper
+                    // engine's video decode buffers + GL textures on low-RAM
+                    // devices while thumbnails stay cached.
+                    .maxSizePercent(0.20)
                     .build()
             }
             .diskCachePolicy(CachePolicy.ENABLED)

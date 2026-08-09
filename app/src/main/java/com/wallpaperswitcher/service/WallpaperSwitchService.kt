@@ -19,6 +19,7 @@ import com.wallpaperswitcher.engine.WallpaperApplier
 import com.wallpaperswitcher.ui.MainActivity
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import kotlinx.coroutines.*
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Timed wallpaper switch foreground service.
@@ -107,12 +108,24 @@ class WallpaperSwitchService : Service() {
         if (LiveWallpaperService.engineRunning) {
             sendSwitchBroadcast(source)
         } else {
+            // The timer loop does not wait for the static apply, so a slow
+            // (e.g. cloud) bitmap decode must never overlap the next tick's
+            // apply: two concurrent setBitmap calls could corrupt the wallpaper
+            // and waste resources. Skip the tick if one is already running.
+            if (!staticApplyInProgress.compareAndSet(false, true)) {
+                Log.d(TAG, "Static wallpaper apply already in progress, skipping tick")
+                return
+            }
             scope.launch {
-                val ok = WallpaperApplier.applyNext(applicationContext)
-                if (ok) {
-                    Log.d(TAG, "Static wallpaper switched")
-                } else {
-                    Log.e(TAG, "Static wallpaper switch failed (no media?)")
+                try {
+                    val ok = WallpaperApplier.applyNext(applicationContext)
+                    if (ok) {
+                        Log.d(TAG, "Static wallpaper switched")
+                    } else {
+                        Log.e(TAG, "Static wallpaper switch failed (no media?)")
+                    }
+                } finally {
+                    staticApplyInProgress.set(false)
                 }
             }
         }
@@ -147,6 +160,9 @@ class WallpaperSwitchService : Service() {
         private const val NOTIFICATION_ID = 1001
         const val ACTION_SWITCH_NOW = "com.wallpaperswitcher.SWITCH_NOW"
         const val ACTION_STOP = "com.wallpaperswitcher.STOP"
+        // Shared guard so the timer loop and a manual "switch now" can never
+        // apply two static wallpapers at the same time.
+        private val staticApplyInProgress = AtomicBoolean(false)
 
         fun start(context: Context) {
             val intent = Intent(context, WallpaperSwitchService::class.java)
@@ -169,8 +185,16 @@ class WallpaperSwitchService : Service() {
                 intent.setPackage(context.packageName)
                 context.sendBroadcast(intent)
             } else {
+                if (!staticApplyInProgress.compareAndSet(false, true)) {
+                    Log.d(TAG, "Static wallpaper apply already in progress, skipping switchNow")
+                    return
+                }
                 CoroutineScope(Dispatchers.IO).launch {
-                    WallpaperApplier.applyNext(context)
+                    try {
+                        WallpaperApplier.applyNext(context)
+                    } finally {
+                        staticApplyInProgress.set(false)
+                    }
                 }
             }
         }

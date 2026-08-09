@@ -133,6 +133,11 @@ class WallpaperRenderer(
     // thread that outruns the render thread (rapid switching, heavy load) can
     // never grow the handler queue without bound.
     private val renderPostQueued = AtomicBoolean(false)
+    // Same coalescing for GIF frames: the GIF loop runs at ~20fps, but if the
+    // render thread is momentarily busy (e.g. mid-switch) the queued posts
+    // must not pile up. GIF frames are disposable - the newest one wins, so
+    // skipping an intermediate frame costs nothing visually.
+    private val imageRenderPostQueued = AtomicBoolean(false)
 
     // Render thread (persists across surface recreations)
     private var renderThread: HandlerThread? = null
@@ -275,6 +280,21 @@ class WallpaperRenderer(
      */
     fun showImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         postToRenderThread {
+            if (!surfaceReady || !contextReady) return@postToRenderThread
+            renderImage(bitmap, scaleMode, useMipmap = false)
+        }
+    }
+
+    /**
+     * Show a GIF frame with coalescing: at most one GIF render post is queued,
+     * so the GIF loop can never pile up behind a busy render thread.
+     * The static showImage() is intentionally NOT coalesced - a switch result
+     * must always be drawn even if the previous frame is still queued.
+     */
+    fun showGifFrame(bitmap: Bitmap, scaleMode: ScaleMode) {
+        if (!imageRenderPostQueued.compareAndSet(false, true)) return
+        postToRenderThread {
+            imageRenderPostQueued.set(false)
             if (!surfaceReady || !contextReady) return@postToRenderThread
             renderImage(bitmap, scaleMode, useMipmap = false)
         }

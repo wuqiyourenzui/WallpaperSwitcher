@@ -238,6 +238,13 @@ class LiveWallpaperService : WallpaperService() {
         override fun onSurfaceDestroyed(holder: SurfaceHolder?) {
             surfaceReady = false
             lastDisplayedId = 0L
+            // The surface is gone: the renderer stops presenting, so a video
+            // that was playing can no longer produce frames. Cancel the health
+            // monitor instead of letting it trigger a spurious recovery switch
+            // while the surface is destroyed.
+            videoMode = false
+            videoHealthJob?.cancel()
+            videoHealthJob = null
             renderer?.surfaceDestroyed()
             pauseGif()
         }
@@ -817,7 +824,7 @@ class LiveWallpaperService : WallpaperService() {
                                     cv.scale(drawScale, drawScale)
                                 }
                                 drawable.draw(cv)
-                                r?.showImage(bmp, scaleMode)
+                                r?.showGifFrame(bmp, scaleMode)
                             } catch (t: Throwable) {
                                 Log.e(TAG, "GIF frame draw failed", t)
                             }
