@@ -591,6 +591,16 @@ class LiveWallpaperService : WallpaperService() {
                         lastDisplayedId = nextImage.id
                     } else {
                         Log.e(TAG, "Failed to load bitmap for: ${nextImage.displayName} uri=${nextImage.uri}")
+                        // A broken/deleted file must not leave the wallpaper
+                        // black/stuck until the next timer tick: blocklist the
+                        // id and schedule a recovery switch to a different
+                        // media (bounded like the video recovery path).
+                        failedMediaIds.add(nextImage.id)
+                        lastDisplayedId = 0L
+                        recoveryFailCount++
+                        if (recoveryFailCount <= 5) {
+                            requestSwitch("recovery")
+                        }
                     }
                 }
             }
@@ -598,6 +608,7 @@ class LiveWallpaperService : WallpaperService() {
             // previously-broken file can be retried later.
             if (lastDisplayedId == nextImage.id && nextImage.id !in failedMediaIds) {
                 failedMediaIds.clear()
+                recoveryFailCount = 0
             }
         }
 
