@@ -472,8 +472,14 @@ class WallpaperRenderer(
                 }
                 try { setupLatch.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
                 if (!setupOk || videoGeneration.get() != gen) {
-                    Log.e(TAG, "Video GL setup failed"); isVideoPlaying = false
-                    onVideoStartFailed?.invoke()
+                    Log.e(TAG, "Video GL setup failed")
+                    // Only reset engine state when THIS video is still the
+                    // current one. A superseded setup must not stop a newer
+                    // video that is already decoding/playing.
+                    if (videoGeneration.get() == gen) {
+                        isVideoPlaying = false
+                        onVideoStartFailed?.invoke()
+                    }
                     return
                 }
                 // A concurrent stopVideoAndRender/stopVideoInternal may have
@@ -486,8 +492,10 @@ class WallpaperRenderer(
                 val cs = codecSurface
                 if (st == null || cs == null || videoGeneration.get() != gen) {
                     Log.e(TAG, "Video resources torn down during setup")
-                    isVideoPlaying = false
-                    onVideoStartFailed?.invoke()
+                    if (videoGeneration.get() == gen) {
+                        isVideoPlaying = false
+                        onVideoStartFailed?.invoke()
+                    }
                     return
                 }
 
@@ -605,9 +613,24 @@ class WallpaperRenderer(
         } catch (t: Throwable) {
             // Catch Throwable (incl. OutOfMemoryError) so a decode failure can
             // never crash the whole process and kill the wallpaper engine.
-            Log.e(TAG, "Decode error", t)
+            if (videoGeneration.get() == gen) {
+                // The CURRENT video failed (e.g. codec configure raced a
+                // cleanup). Tell the engine to reset lastDisplayedId and retry,
+                // otherwise the previous frame stays frozen on screen forever.
+                Log.e(TAG, "Decode error", t)
+                isVideoPlaying = false
+                onVideoStartFailed?.invoke()
+            } else {
+                // Superseded by a newer switch: expected during rapid
+                // double-tap switching. The new video owns the screen, so this
+                // is not an error.
+                Log.d(TAG, "Decode thread superseded during setup", t)
+            }
         } finally {
-            isVideoPlaying = false
+            // Only clear the playing flag when THIS thread is still the current
+            // video. A superseded thread must never clobber a newer video's
+            // state (this used to make the engine restart the new video).
+            if (videoGeneration.get() == gen) isVideoPlaying = false
             try { localDecoder?.stop() } catch (_: Exception) {}
             try { localDecoder?.release() } catch (_: Exception) {}
             if (decoder === localDecoder) decoder = null
