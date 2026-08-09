@@ -709,6 +709,10 @@ class LiveWallpaperService : WallpaperService() {
                         if (videoMode && r.isVideoPlaying) return@launch
                         val shownBmp = currentBitmap
                         if (!videoMode && shownBmp != null && !shownBmp.isRecycled) return@launch
+                        // A GIF that is already rendering must not be re-decoded
+                        // and restarted by a coincidental redraw (e.g. a
+                        // visibility retry while a switch is settling).
+                        if (!videoMode && gifDrawable != null && gifFrameRunnable != null) return@launch
                     }
 
                     currentScaleMode = try {
