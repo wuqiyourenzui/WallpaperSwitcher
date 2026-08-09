@@ -254,9 +254,15 @@ fun GroupDetailScreen(
                     modifier = Modifier.padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    CircularProgressIndicator(
+                    // Static icon instead of CircularProgressIndicator: the
+                    // bundled animation-core version lacks the method M3's
+                    // progress indicator needs, which crashed with
+                    // NoSuchMethodError.
+                    Icon(
+                        Icons.Outlined.Sync,
+                        contentDescription = null,
                         modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer
                     )
                     Spacer(modifier = Modifier.width(12.dp))
                     Text(
@@ -686,7 +692,7 @@ fun FolderPickerDialog(
                     modifier = Modifier.fillMaxWidth().padding(24.dp),
                     contentAlignment = Alignment.Center
                 ) {
-                    CircularProgressIndicator()
+                    Text("正在扫描文件夹...")
                 }
                 folders.isNullOrEmpty() -> Text("未扫描到包含图片或视频的文件夹")
                 else -> LazyColumn(
