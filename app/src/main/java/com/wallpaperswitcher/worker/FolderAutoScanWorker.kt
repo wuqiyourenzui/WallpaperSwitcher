@@ -55,7 +55,7 @@ class FolderAutoScanWorker(
             }
             Log.d(TAG, "Auto-scan finished: $inserted new media")
             androidx.work.ListenableWorker.Result.success()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "Auto-scan failed", e)
             androidx.work.ListenableWorker.Result.retry()
         }

@@ -549,7 +549,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 } else {
                     _toastMessage.emit("所选文件夹没有新媒体")
                 }
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 if (e !is kotlinx.coroutines.CancellationException) {
                     Log.e(TAG, "importScannedFolders failed", e)
                     _toastMessage.emit("导入失败: ${e.message}")

@@ -48,7 +48,7 @@ object WallpaperApplier {
         try {
             WallpaperManager.getInstance(context).setBitmap(bitmap)
             applied = true
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "apply failed for ${image.displayName}", e)
         } finally {
             if (!bitmap.isRecycled) bitmap.recycle()
@@ -162,7 +162,7 @@ object WallpaperApplier {
             } else {
                 frame
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "videoFrame failed: $uriStr", e)
             null
         } finally {
@@ -207,7 +207,7 @@ object WallpaperApplier {
             } else {
                 BitmapUtils.loadBitmap(context, uriStr)
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "gifFirstFrame failed: $uriStr", e)
             null
         }

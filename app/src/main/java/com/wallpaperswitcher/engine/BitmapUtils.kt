@@ -76,7 +76,7 @@ object BitmapUtils {
                 Log.e(TAG, "decodeStream returned null for: $uriStr")
             }
             bitmap
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "loadBitmap exception: ${e.message} for: $uriStr", e)
             null
         }

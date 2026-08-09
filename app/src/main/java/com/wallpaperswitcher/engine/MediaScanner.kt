@@ -42,16 +42,55 @@ object MediaScanner {
             val names = mutableMapOf<String, String>()
             val samples = mutableMapOf<String, MutableList<String>>()
 
-            fun add(folderKey: String, folderName: String, mediaUri: String, isVideo: Boolean) {
-                val c = counts.getOrPut(folderKey) { IntArray(2) }
-                c[if (isVideo) 1 else 0]++
-                names.putIfAbsent(folderKey, folderName)
-                val list = samples.getOrPut(folderKey) { mutableListOf() }
-                if (list.size < 3) list.add(mediaUri)
+            // Index each MediaStore table and aggregate per folder on the fly:
+            // never build a full list of every media row, which can be huge and
+            // OOM on devices with large libraries.
+            fun index(isVideo: Boolean) {
+                val contentResolver = context.contentResolver
+                val collectionUri = if (isVideo) {
+                    MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                } else {
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                }
+                val useRelativePath = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                val projection = if (useRelativePath) {
+                    arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.RELATIVE_PATH)
+                } else {
+                    @Suppress("DEPRECATION")
+                    arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATA)
+                }
+                contentResolver.query(collectionUri, projection, null, null, null)?.use { cursor ->
+                    val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                    val pathCol = cursor.getColumnIndex(
+                        if (useRelativePath) MediaStore.Images.Media.RELATIVE_PATH
+                        else MediaStore.Images.Media.DATA
+                    )
+                    while (cursor.moveToNext()) {
+                        try {
+                            val id = cursor.getLong(idCol)
+                            val rawPath = if (pathCol >= 0) cursor.getString(pathCol) else null
+                            if (rawPath.isNullOrBlank()) continue
+                            val folderKey = if (useRelativePath) {
+                                rawPath.trimEnd('/')
+                            } else {
+                                @Suppress("DEPRECATION")
+                                rawPath.substringBeforeLast('/')
+                            }
+                            if (folderKey.isEmpty()) continue
+                            val c = counts.getOrPut(folderKey) { IntArray(2) }
+                            c[if (isVideo) 1 else 0]++
+                            names.putIfAbsent(folderKey, folderKey.substringAfterLast('/').ifEmpty { "Root" })
+                            val list = samples.getOrPut(folderKey) { mutableListOf() }
+                            if (list.size < 3) {
+                                list.add(Uri.withAppendedPath(collectionUri, id.toString()).toString())
+                            }
+                        } catch (_: Exception) { continue }
+                    }
+                }
             }
 
-            indexFolders(context, isVideo = false).forEach { (key, name, uri) -> add(key, name, uri, false) }
-            indexFolders(context, isVideo = true).forEach { (key, name, uri) -> add(key, name, uri, true) }
+            index(false)
+            index(true)
 
             counts.map { (path, c) ->
                 ScannedFolder(
@@ -65,60 +104,10 @@ object MediaScanner {
                 .filter { it.totalCount >= 1 }
                 .filter { f -> f.path.split("/").none { it.lowercase() in blockedFolders } }
                 .sortedByDescending { it.totalCount }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.e(TAG, "scanFolders failed", e)
             emptyList()
         }
-    }
-
-    /** Returns (folderKey, folderName, mediaUri) for every media item. */
-    private fun indexFolders(context: Context, isVideo: Boolean): List<Triple<String, String, String>> {
-        val contentResolver = context.contentResolver
-        val collectionUri = if (isVideo) {
-            MediaStore.Video.Media.EXTERNAL_CONTENT_URI
-        } else {
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI
-        }
-        val useRelativePath = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-        val projection = if (useRelativePath) {
-            arrayOf(
-                MediaStore.Images.Media._ID,
-                MediaStore.Images.Media.RELATIVE_PATH,
-                MediaStore.Images.Media.DISPLAY_NAME
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            arrayOf(
-                MediaStore.Images.Media._ID,
-                MediaStore.Images.Media.DATA,
-                MediaStore.Images.Media.DISPLAY_NAME
-            )
-        }
-        val result = mutableListOf<Triple<String, String, String>>()
-        contentResolver.query(collectionUri, projection, null, null, null)?.use { cursor ->
-            val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-            val pathCol = cursor.getColumnIndex(
-                if (useRelativePath) MediaStore.Images.Media.RELATIVE_PATH
-                else MediaStore.Images.Media.DATA
-            )
-            while (cursor.moveToNext()) {
-                try {
-                    val id = cursor.getLong(idCol)
-                    val rawPath = if (pathCol >= 0) cursor.getString(pathCol) else null
-                    if (rawPath.isNullOrBlank()) continue
-                    val folderKey = if (useRelativePath) {
-                        rawPath.trimEnd('/')
-                    } else {
-                        @Suppress("DEPRECATION")
-                        rawPath.substringBeforeLast('/')
-                    }
-                    if (folderKey.isEmpty()) continue
-                    val uri = Uri.withAppendedPath(collectionUri, id.toString()).toString()
-                    result.add(Triple(folderKey, folderKey.substringAfterLast('/').ifEmpty { "Root" }, uri))
-                } catch (_: Exception) { continue }
-            }
-        }
-        return result
     }
 
     /** All images + videos inside a MediaStore folder (images first, then videos). */
