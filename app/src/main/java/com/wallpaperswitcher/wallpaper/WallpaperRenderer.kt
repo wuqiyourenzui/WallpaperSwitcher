@@ -118,6 +118,11 @@ class WallpaperRenderer(
     private var decoder: MediaCodec? = null
     private var videoDecodeThread: Thread? = null
     @Volatile var isVideoPlaying = false; private set
+    // Elapsed realtime of the last successfully presented video frame. The
+    // engine's health monitor uses this to detect a stalled decoder (e.g. a
+    // cloud file whose stream read blocks forever) and recover automatically.
+    @Volatile var lastVideoFrameAt = 0L
+        private set
     private val videoGeneration = AtomicInteger(0)
     // Flag to prevent double-cleanup: stopVideoInternal sets this, decodeLoop checks it.
     private val videoCleanupDone = AtomicBoolean(false)
@@ -298,7 +303,9 @@ class WallpaperRenderer(
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             val swapped = EGL14.eglSwapBuffers(eglDisplay, eglSurface)
-            if (!swapped) {
+            if (swapped) {
+                lastVideoFrameAt = SystemClock.elapsedRealtime()
+            } else {
                 Log.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
             }
         } catch (t: Throwable) {

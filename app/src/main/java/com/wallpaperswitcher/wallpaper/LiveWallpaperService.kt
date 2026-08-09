@@ -88,6 +88,9 @@ class LiveWallpaperService : WallpaperService() {
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
         private var gifFrameRunnable: Runnable? = null
         private var gifBitmapBuffer: Bitmap? = null
+        // Detects a decoder that stopped producing frames (e.g. a cloud file
+        // whose stream read blocks forever) and triggers automatic recovery.
+        private var videoHealthJob: kotlinx.coroutines.Job? = null
 
         private val switchReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -284,6 +287,8 @@ class LiveWallpaperService : WallpaperService() {
                 }
             }
             gifDrawable = null
+            videoHealthJob?.cancel()
+            videoHealthJob = null
             scope.cancel()
             super.onDestroy()
         }
@@ -303,6 +308,8 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun stopVideo() {
             videoMode = false
+            videoHealthJob?.cancel()
+            videoHealthJob = null
             renderer?.stopVideo()
             renderer?.waitForDecodeThread(500)
         }
@@ -668,7 +675,29 @@ class LiveWallpaperService : WallpaperService() {
             videoMode = true
             Log.d(TAG, "startVideo: $uriStr")
             r.startVideo(uriStr, scaleMode)
+            startVideoHealthMonitor()
             return true
+        }
+
+        /**
+         * Watchdog for a stalled video: if the renderer stops presenting
+         * frames for 8s while the engine still believes it is playing, report
+         * the failure so the switch queue recovers with a different media.
+         */
+        private fun startVideoHealthMonitor() {
+            videoHealthJob?.cancel()
+            videoHealthJob = scope.launch {
+                while (isActive) {
+                    delay(10_000L)
+                    if (!videoMode || renderer?.isVideoPlaying != true) return@launch
+                    val last = renderer?.lastVideoFrameAt ?: 0L
+                    if (last > 0L && SystemClock.elapsedRealtime() - last > 8_000L) {
+                        Log.w(TAG, "Video stalled: no frame presented for 8s; recovering")
+                        onVideoStartFailed()
+                        return@launch
+                    }
+                }
+            }
         }
 
         private fun playGif(uriStr: String, scaleMode: ScaleMode) {
