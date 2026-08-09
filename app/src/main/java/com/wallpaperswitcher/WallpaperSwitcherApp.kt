@@ -1,6 +1,7 @@
 package com.wallpaperswitcher
 
 import android.app.Application
+import android.content.ComponentCallbacks2
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
@@ -29,6 +30,20 @@ class WallpaperSwitcherApp : Application() {
         initDefaultSettings()
         registerUnlockReceiver()
         initCoil()
+    }
+
+    /**
+     * When the system is running low on memory, drop the image cache so the
+     * wallpaper engine (video decode buffers + GL textures) has the best
+     * chance of surviving instead of being killed.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+            try {
+                Coil.imageLoader(this).memoryCache?.clear()
+            } catch (_: Exception) {}
+        }
     }
 
     private fun initCoil() {

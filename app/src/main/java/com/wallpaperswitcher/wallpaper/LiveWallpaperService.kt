@@ -94,7 +94,7 @@ class LiveWallpaperService : WallpaperService() {
         // Consecutive recovery failures: stops the 1.5s auto-recovery loop
         // when every candidate media is broken, instead of switching forever
         // and burning battery. Reset once a video actually plays.
-        private var recoveryFailCount = 0
+        @Volatile private var recoveryFailCount = 0
 
         private val switchReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
