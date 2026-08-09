@@ -121,6 +121,22 @@ class WallpaperRenderer(
     private var renderHandler: Handler? = null
 
     /**
+     * Post a task to the render thread with a safety net: an unexpected
+     * exception from GL/EGL/driver code is logged instead of crashing the
+     * render Looper (which would take down the whole wallpaper process).
+     */
+    private fun postToRenderThread(block: () -> Unit) {
+        val h = renderHandler ?: return
+        h.post {
+            try {
+                block()
+            } catch (t: Throwable) {
+                Log.e(TAG, "Render thread task failed", t)
+            }
+        }
+    }
+
+    /**
      * Invoked (on the decode thread) when a video fails to start, e.g. the GL
      * setup was skipped because a newer switch already replaced it, or the
      * surface/resources were torn down concurrently. The engine uses this to
@@ -146,7 +162,7 @@ class WallpaperRenderer(
         renderHandler = Handler(thread.looper)
 
         val latch = CountDownLatch(1)
-        renderHandler?.post {
+        postToRenderThread {
             screenW = initW
             screenH = initH
             setupEglContext()
@@ -161,8 +177,8 @@ class WallpaperRenderer(
     }
 
     fun surfaceCreated() {
-        renderHandler?.post {
-            if (!contextReady) return@post
+        postToRenderThread {
+            if (!contextReady) return@postToRenderThread
             createEglSurface()
         }
     }
@@ -175,7 +191,7 @@ class WallpaperRenderer(
     fun isSurfaceReady(): Boolean = surfaceReady
 
     fun surfaceChanged(width: Int, height: Int) {
-        renderHandler?.post {
+        postToRenderThread {
             screenW = width.toFloat()
             screenH = height.toFloat()
             if (surfaceReady) GLES20.glViewport(0, 0, width, height)
@@ -184,7 +200,7 @@ class WallpaperRenderer(
 
     fun surfaceDestroyed() {
         stopVideoInternal()
-        renderHandler?.post {
+        postToRenderThread {
             surfaceReady = false
             destroyEglSurface()
         }
@@ -197,10 +213,15 @@ class WallpaperRenderer(
         if (handler != null && thread != null) {
             val latch = CountDownLatch(1)
             handler.post {
-                surfaceReady = false
-                contextReady = false
-                cleanupAll()
-                latch.countDown()
+                try {
+                    surfaceReady = false
+                    contextReady = false
+                    cleanupAll()
+                } catch (t: Throwable) {
+                    Log.e(TAG, "Release task failed", t)
+                } finally {
+                    latch.countDown()
+                }
             }
             try { latch.await(2, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
             thread.quitSafely()
@@ -216,9 +237,8 @@ class WallpaperRenderer(
      * If video might be playing, use stopVideoAndRender() instead.
      */
     fun showImage(bitmap: Bitmap, scaleMode: ScaleMode) {
-        val handler = renderHandler ?: return
-        handler.post {
-            if (!surfaceReady || !contextReady) return@post
+        postToRenderThread {
+            if (!surfaceReady || !contextReady) return@postToRenderThread
             renderImage(bitmap, scaleMode)
         }
     }
@@ -359,8 +379,7 @@ class WallpaperRenderer(
         videoDecodeThread?.interrupt()
 
         // Atomic: cleanup + render on same handler post
-        val handler = renderHandler ?: return
-        handler.post {
+        postToRenderThread {
             cleanupVideoResourcesOnRenderThread()
             if (surfaceReady && contextReady) {
                 renderImage(bitmap, scaleMode)
@@ -382,8 +401,7 @@ class WallpaperRenderer(
 
         videoDecodeThread?.interrupt()
 
-        val handler = renderHandler ?: return
-        handler.post {
+        postToRenderThread {
             cleanupVideoResourcesOnRenderThread()
         }
     }
@@ -470,36 +488,41 @@ class WallpaperRenderer(
                 val setupLatch = CountDownLatch(1)
                 var setupOk = false
                 handler.post {
-                    if (videoGeneration.get() != gen) {
-                        setupLatch.countDown()
-                        return@post
-                    }
-                    if (!surfaceReady || !contextReady) {
-                        setupLatch.countDown()
-                        return@post
-                    }
-                    if (videoTexId == 0) {
-                        val texIds = IntArray(1)
-                        GLES20.glGenTextures(1, texIds, 0)
-                        videoTexId = texIds[0]
-                    }
-                    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTexId)
-                    GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-                    GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                    try {
+                        if (videoGeneration.get() != gen) {
+                            setupLatch.countDown()
+                            return@post
+                        }
+                        if (!surfaceReady || !contextReady) {
+                            setupLatch.countDown()
+                            return@post
+                        }
+                        if (videoTexId == 0) {
+                            val texIds = IntArray(1)
+                            GLES20.glGenTextures(1, texIds, 0)
+                            videoTexId = texIds[0]
+                        }
+                        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTexId)
+                        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
 
-                    val st = SurfaceTexture(videoTexId)
-                    st.setDefaultBufferSize(videoW, videoH)
-                    surfaceTexture = st
-                    codecSurface = Surface(st)
-                    // Clear immediately so the previous video's frame cannot
-                    // linger around/behind the new video while its first frame
-                    // is being decoded.
-                    if (eglSurface != EGL14.EGL_NO_SURFACE) {
-                        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-                        EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+                        val st = SurfaceTexture(videoTexId)
+                        st.setDefaultBufferSize(videoW, videoH)
+                        surfaceTexture = st
+                        codecSurface = Surface(st)
+                        // Clear immediately so the previous video's frame cannot
+                        // linger around/behind the new video while its first frame
+                        // is being decoded.
+                        if (eglSurface != EGL14.EGL_NO_SURFACE) {
+                            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                            EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+                        }
+                        setupOk = true
+                        setupLatch.countDown()
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "Video GL setup failed", t)
+                        setupLatch.countDown()
                     }
-                    setupOk = true
-                    setupLatch.countDown()
                 }
                 try { setupLatch.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
                 if (!setupOk || videoGeneration.get() != gen) {
@@ -539,12 +562,16 @@ class WallpaperRenderer(
 
                 // Cache render quad on render thread
                 handler.post {
-                    if (videoGeneration.get() != gen) return@post
-                    val quad = computeVideoQuad(quadW.toFloat(), quadH.toFloat(), scaleMode)
-                    vertexBuffer?.clear()
-                    vertexBuffer?.put(quad)?.position(0)
-                    Log.d(TAG, "Video quad set: video=${quadW}x${quadH} mode=$scaleMode " +
-                            "screen=${screenW.toInt()}x${screenH.toInt()} quad=${quad.toList()}")
+                    try {
+                        if (videoGeneration.get() != gen) return@post
+                        val quad = computeVideoQuad(quadW.toFloat(), quadH.toFloat(), scaleMode)
+                        vertexBuffer?.clear()
+                        vertexBuffer?.put(quad)?.position(0)
+                        Log.d(TAG, "Video quad set: video=${quadW}x${quadH} mode=$scaleMode " +
+                                "screen=${screenW.toInt()}x${screenH.toInt()} quad=${quad.toList()}")
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "Video quad computation failed", t)
+                    }
                 }
 
                 Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps")
@@ -650,7 +677,11 @@ class WallpaperRenderer(
                     // Loop: clean this round's GL resources, then the outer
                     // loop recreates the extractor + codec + SurfaceTexture.
                     handler.post {
-                        cleanupVideoResourcesOnRenderThread()
+                        try {
+                            cleanupVideoResourcesOnRenderThread()
+                        } catch (t: Throwable) {
+                            Log.e(TAG, "Video cleanup failed", t)
+                        }
                     }
                     continue
                 }
@@ -690,7 +721,11 @@ class WallpaperRenderer(
             // check makes sure only the CURRENT video's thread may clean up.
             if (videoGeneration.get() == gen && !videoCleanupDone.getAndSet(true)) {
                 handler.post {
-                    cleanupVideoResourcesOnRenderThread()
+                    try {
+                        cleanupVideoResourcesOnRenderThread()
+                    } catch (t: Throwable) {
+                        Log.e(TAG, "Video cleanup failed", t)
+                    }
                 }
             }
         }
