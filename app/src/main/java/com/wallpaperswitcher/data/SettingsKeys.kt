@@ -11,6 +11,8 @@ object SettingsKeys {
     const val GLOBAL_INTERVAL_MS = "global_interval_ms"
     const val GLOBAL_SWITCH_MODE = "global_switch_mode"
     const val GLOBAL_SCALE_MODE = "global_scale_mode"
+    // Low-res media clarity enhancement: "auto" (default) | "off" | "strong"
+    const val CLARITY_MODE = "clarity_mode"
     // Periodic folder auto-scan
     const val AUTO_SCAN_ENABLED = "auto_scan_enabled"
     const val AUTO_SCAN_INTERVAL_MS = "auto_scan_interval_ms"

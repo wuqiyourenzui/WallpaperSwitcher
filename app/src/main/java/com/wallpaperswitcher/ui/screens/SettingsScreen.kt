@@ -35,6 +35,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
     val globalIntervalMs by viewModel.globalIntervalMs.collectAsStateWithLifecycle()
     val globalSwitchMode by viewModel.globalSwitchMode.collectAsStateWithLifecycle()
     val globalScaleMode by viewModel.globalScaleMode.collectAsStateWithLifecycle()
+    val clarityMode by viewModel.clarityMode.collectAsStateWithLifecycle()
     val themeColor by viewModel.themeColor.collectAsStateWithLifecycle()
     val autoScanEnabled by viewModel.autoScanEnabled.collectAsStateWithLifecycle()
     val autoScanIntervalMs by viewModel.autoScanIntervalMs.collectAsStateWithLifecycle()
@@ -108,6 +109,37 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                             selected = globalScaleMode == mode,
                             onClick = { viewModel.setGlobalScaleMode(mode) },
                             label = { Text(when (mode) { ScaleMode.FILL -> "填充"; ScaleMode.FIT -> "适应"; ScaleMode.STRETCH -> "拉伸" }) }
+                        )
+                    }
+                }
+            }
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            // Clarity enhancement for low-res media (default "auto" keeps the
+            // current behavior; the option lets users tune it on-device).
+            Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Outlined.HighQuality, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text("清晰度增强", modifier = Modifier.weight(1f))
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    "低画质图片/视频放大显示时自动增强清晰度",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    listOf("auto" to "自动", "off" to "关闭", "strong" to "增强").forEach { (mode, label) ->
+                        FilterChip(
+                            selected = clarityMode == mode,
+                            onClick = { viewModel.setClarityMode(mode) },
+                            label = { Text(label) }
                         )
                     }
                 }

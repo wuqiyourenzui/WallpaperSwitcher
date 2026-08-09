@@ -120,6 +120,10 @@ class WallpaperRenderer(
     private var imageSharpLoc = -1
     private var videoTexelLoc = -1
     private var videoSharpLoc = -1
+    // Engine-controlled clarity strength multiplier: 0 = off, 1 = default
+    // curve, >1 = stronger. Written from the engine thread on each switch,
+    // read on the render thread.
+    @Volatile var sharpnessScale: Float = 1f
     private var vertexBuffer: FloatBuffer? = null
     private var imageTexId = 0
     private var imageTexMatrix = FloatArray(16)
@@ -434,7 +438,11 @@ class WallpaperRenderer(
             ScaleMode.FIT -> minOf(scaleX, scaleY)
             ScaleMode.FILL, ScaleMode.STRETCH -> maxOf(scaleX, scaleY)
         }
-        return if (upscale > 1f) ((upscale - 1f) * 0.3f).coerceIn(0f, 0.55f) else 0f
+        return if (upscale > 1f) {
+            ((upscale - 1f) * 0.3f).coerceIn(0f, 0.55f) * sharpnessScale.coerceIn(0f, 2f)
+        } else {
+            0f
+        }
     }
 
     // ======== Video: MediaCodec + SurfaceTexture ========

@@ -398,6 +398,7 @@ class LiveWallpaperService : WallpaperService() {
         private suspend fun executeSwitch(source: String, targetId: Long?) {
             val dao = db.settingsDao()
             val imageDao = db.wallpaperImageDao()
+            applyClarityMode()
 
             val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
             if (groups.isEmpty()) return
@@ -602,6 +603,7 @@ class LiveWallpaperService : WallpaperService() {
                     }
                     val dao = db.settingsDao()
                     val imageDao = db.wallpaperImageDao()
+                    applyClarityMode()
                     var imageId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
 
                     if (imageId == lastDisplayedId && lastDisplayedId != 0L) {
@@ -695,6 +697,23 @@ class LiveWallpaperService : WallpaperService() {
             return imageDao.getRandomImageFromEnabledGroupsExcludingAt(lastId, offset)
                 ?: imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
                 ?: imageDao.getRandomImageFromEnabledGroups()
+        }
+
+        /**
+         * Sync the clarity-enhancement setting into the renderer. Called before
+         * every switch/redraw so the user's choice applies to the next media.
+         */
+        private suspend fun applyClarityMode() {
+            val mode = try {
+                db.settingsDao().getString(SettingsKeys.CLARITY_MODE, "auto")
+            } catch (_: Exception) {
+                "auto"
+            }
+            renderer?.sharpnessScale = when (mode) {
+                "off" -> 0f
+                "strong" -> 1.6f
+                else -> 1f
+            }
         }
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode): Boolean {

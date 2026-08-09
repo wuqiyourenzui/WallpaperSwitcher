@@ -189,6 +189,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         .map { try { ScaleMode.valueOf(it ?: "FIT") } catch (_: Exception) { ScaleMode.FIT } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ScaleMode.FIT)
 
+    // Low-res media clarity enhancement: "auto" | "off" | "strong".
+    val clarityMode: StateFlow<String> = settingsDao.getValueFlow(SettingsKeys.CLARITY_MODE)
+        .map { it ?: "auto" }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "auto")
+
     // Periodic folder auto-scan
     val autoScanEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.AUTO_SCAN_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: false }
@@ -229,6 +234,10 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setGlobalScaleMode(mode: ScaleMode) {
         viewModelScope.launch { settingsDao.setString(SettingsKeys.GLOBAL_SCALE_MODE, mode.name) }
+    }
+
+    fun setClarityMode(mode: String) {
+        viewModelScope.launch { settingsDao.setString(SettingsKeys.CLARITY_MODE, mode) }
     }
 
     // Theme color (stored as hex string like "#6750A4", empty = system default)
