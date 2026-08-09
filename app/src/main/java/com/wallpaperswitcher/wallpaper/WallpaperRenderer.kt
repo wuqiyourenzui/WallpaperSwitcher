@@ -598,21 +598,37 @@ class WallpaperRenderer(
             // cloud files are not re-opened on every playback loop.
             val openResult = java.util.concurrent.atomic.AtomicReference<AssetFileDescriptor?>(null)
             val openError = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+            // Set when the 15s timeout fires while the helper thread is still
+            // blocked in openAssetFileDescriptor: if it later returns, the
+            // descriptor is closed immediately instead of leaking.
+            val abandonOpen = java.util.concurrent.atomic.AtomicBoolean(false)
             val openThread = Thread({
                 try {
-                    openResult.set(context.contentResolver.openAssetFileDescriptor(Uri.parse(uriStr), "r"))
+                    val afd = context.contentResolver.openAssetFileDescriptor(Uri.parse(uriStr), "r")
+                    if (abandonOpen.get()) {
+                        try { afd?.close() } catch (_: Exception) {}
+                    } else {
+                        openResult.set(afd)
+                    }
                 } catch (t: Throwable) {
                     openError.set(t)
                 }
-            }, "VideoOpen").apply { start() }
+            }, "VideoOpen").apply {
+                // Never keep the process alive because a cloud provider is
+                // unresponsive.
+                isDaemon = true
+                start()
+            }
             try {
                 openThread.join(15_000)
             } catch (_: InterruptedException) {
+                abandonOpen.set(true)
                 openThread.interrupt()
                 Thread.currentThread().interrupt()
                 return
             }
             if (openThread.isAlive) {
+                abandonOpen.set(true)
                 openThread.interrupt()
                 Log.e(TAG, "Timed out opening video stream: $uriStr")
                 if (videoGeneration.get() == gen) {
