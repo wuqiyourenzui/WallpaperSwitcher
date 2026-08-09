@@ -93,7 +93,13 @@ class WallpaperSwitchService : Service() {
                     // Get global interval
                     val interval = db.settingsDao().getLong(SettingsKeys.GLOBAL_INTERVAL_MS, 60_000L)
                         .coerceAtLeast(10_000L)
-                    delay(interval)
+                    // Screen off: recheck at a low frequency (60s) instead of
+                    // every interval, so the service stops waking every 10s in
+                    // the dark. When the screen is back on, the normal interval
+                    // is restored from the next check.
+                    val interactive =
+                        (getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isInteractive == true
+                    delay(if (interactive) interval else SCREEN_OFF_RECHECK_MS)
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
                     Log.e(TAG, "Switch loop error", e)
@@ -179,6 +185,9 @@ class WallpaperSwitchService : Service() {
         private const val NOTIFICATION_ID = 1001
         const val ACTION_SWITCH_NOW = "com.wallpaperswitcher.SWITCH_NOW"
         const val ACTION_STOP = "com.wallpaperswitcher.STOP"
+        // While the screen is off, re-check every 60s instead of the configured
+        // interval (which can be as low as 10s) to avoid useless wakeups.
+        private const val SCREEN_OFF_RECHECK_MS = 60_000L
         // Shared guard so the timer loop and a manual "switch now" can never
         // apply two static wallpapers at the same time.
         private val staticApplyInProgress = AtomicBoolean(false)
