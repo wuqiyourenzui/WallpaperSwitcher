@@ -56,9 +56,20 @@ class WallpaperRenderer(
         private const val IMAGE_FRAGMENT_SHADER = """
             precision mediump float;
             uniform sampler2D uTexture;
+            uniform vec2 uTexelSize;
+            uniform float uSharp;
             varying vec2 vTexCoord;
             void main() {
-                gl_FragColor = texture2D(uTexture, vTexCoord);
+                // Mild unsharp mask. uSharp == 0.0 keeps the original pixel
+                // exactly (used for downscaled/native media and the black
+                // background), so normal wallpapers are byte-identical.
+                vec4 c = texture2D(uTexture, vTexCoord);
+                vec4 s = c * (1.0 + 4.0 * uSharp)
+                       - (texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0))
+                        + texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0))
+                        + texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y))
+                        + texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y))) * uSharp;
+                gl_FragColor = clamp(s, 0.0, 1.0);
             }
         """
 
@@ -66,9 +77,17 @@ class WallpaperRenderer(
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
             uniform samplerExternalOES uTexture;
+            uniform vec2 uTexelSize;
+            uniform float uSharp;
             varying vec2 vTexCoord;
             void main() {
-                gl_FragColor = texture2D(uTexture, vTexCoord);
+                vec4 c = texture2D(uTexture, vTexCoord);
+                vec4 s = c * (1.0 + 4.0 * uSharp)
+                       - (texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0))
+                        + texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0))
+                        + texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y))
+                        + texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y))) * uSharp;
+                gl_FragColor = clamp(s, 0.0, 1.0);
             }
         """
     }
@@ -96,6 +115,11 @@ class WallpaperRenderer(
     private var videoTexLoc = -1
     private var videoPosLoc = -1
     private var videoTcLoc = -1
+    // Sharpening uniforms (queried once per program creation).
+    private var imageTexelLoc = -1
+    private var imageSharpLoc = -1
+    private var videoTexelLoc = -1
+    private var videoSharpLoc = -1
     private var vertexBuffer: FloatBuffer? = null
     private var imageTexId = 0
     private var imageTexMatrix = FloatArray(16)
@@ -117,6 +141,11 @@ class WallpaperRenderer(
     private var videoTexId = 0
     private var surfaceTexture: SurfaceTexture? = null
     private var codecSurface: Surface? = null
+    // Source size + scale mode of the current video (render thread only),
+    // used to sharpen the picture when a low-res video is magnified.
+    private var videoSourceW = 0f
+    private var videoSourceH = 0f
+    private var videoScaleMode: ScaleMode = ScaleMode.FIT
     private var extractor: MediaExtractor? = null
     private var decoder: MediaCodec? = null
     private var videoDecodeThread: Thread? = null
@@ -346,6 +375,15 @@ class WallpaperRenderer(
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLES20.glUniform1i(texLoc, 0)
+            GLES20.glUniform2f(
+                imageTexelLoc,
+                1f / bitmap.width.coerceAtLeast(1),
+                1f / bitmap.height.coerceAtLeast(1)
+            )
+            GLES20.glUniform1f(
+                imageSharpLoc,
+                sharpnessFor(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
+            )
 
             vertexBuffer?.position(0)
             GLES20.glEnableVertexAttribArray(posLoc)
@@ -375,6 +413,23 @@ class WallpaperRenderer(
             ScaleMode.STRETCH -> Pair(1f, 1f)
         }
         return floatArrayOf(-dw,-dh,0f,1f, dw,-dh,1f,1f, -dw,dh,0f,0f, dw,dh,1f,0f)
+    }
+
+    /**
+     * How strongly to sharpen an upscaled source. 0.0 when the media is
+     * displayed at or below its native size (downscaled sources are already
+     * smooth), rising gently when a low-res image/video is magnified to fill
+     * the screen. uSharp == 0.0 reproduces the original sampling exactly.
+     */
+    private fun sharpnessFor(sourceW: Float, sourceH: Float, scaleMode: ScaleMode): Float {
+        if (sourceW <= 0f || sourceH <= 0f || screenW <= 0f || screenH <= 0f) return 0f
+        val scaleX = screenW / sourceW
+        val scaleY = screenH / sourceH
+        val upscale = when (scaleMode) {
+            ScaleMode.FIT -> minOf(scaleX, scaleY)
+            ScaleMode.FILL, ScaleMode.STRETCH -> maxOf(scaleX, scaleY)
+        }
+        return if (upscale > 1f) ((upscale - 1f) * 0.3f).coerceIn(0f, 0.55f) else 0f
     }
 
     // ======== Video: MediaCodec + SurfaceTexture ========
@@ -643,6 +698,12 @@ class WallpaperRenderer(
                         st.setDefaultBufferSize(videoW, videoH)
                         surfaceTexture = st
                         codecSurface = Surface(st)
+                        // Remember the source size + scale mode so the frame
+                        // renderer can sharpen low-res videos that are
+                        // magnified to fill the screen.
+                        videoSourceW = videoW.toFloat()
+                        videoSourceH = videoH.toFloat()
+                        videoScaleMode = scaleMode
                         // Clear immediately so the previous video's frame cannot
                         // linger around/behind the new video while its first frame
                         // is being decoded.
@@ -907,6 +968,8 @@ class WallpaperRenderer(
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, blackTexId)
             GLES20.glUniform1i(texLoc, 0)
+            // Flat black must never be sharpened (uSharp=0 is identity).
+            GLES20.glUniform1f(imageSharpLoc, 0f)
 
             bg.position(0)
             GLES20.glEnableVertexAttribArray(posLoc)
@@ -970,6 +1033,12 @@ class WallpaperRenderer(
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTexId)
             GLES20.glUniform1i(texLoc, 0)
+            GLES20.glUniform2f(
+                videoTexelLoc,
+                if (videoSourceW > 0f) 1f / videoSourceW else 1f,
+                if (videoSourceH > 0f) 1f / videoSourceH else 1f
+            )
+            GLES20.glUniform1f(videoSharpLoc, sharpnessFor(videoSourceW, videoSourceH, videoScaleMode))
 
             vertexBuffer?.position(0)
             GLES20.glEnableVertexAttribArray(posLoc)
@@ -1106,10 +1175,14 @@ class WallpaperRenderer(
         imageTexLoc = GLES20.glGetUniformLocation(imageProgram, "uTexture")
         imagePosLoc = GLES20.glGetAttribLocation(imageProgram, "aPosition")
         imageTcLoc = GLES20.glGetAttribLocation(imageProgram, "aTexCoord")
+        imageTexelLoc = GLES20.glGetUniformLocation(imageProgram, "uTexelSize")
+        imageSharpLoc = GLES20.glGetUniformLocation(imageProgram, "uSharp")
         videoTexMatLoc = GLES20.glGetUniformLocation(videoProgram, "uTexMatrix")
         videoTexLoc = GLES20.glGetUniformLocation(videoProgram, "uTexture")
         videoPosLoc = GLES20.glGetAttribLocation(videoProgram, "aPosition")
         videoTcLoc = GLES20.glGetAttribLocation(videoProgram, "aTexCoord")
+        videoTexelLoc = GLES20.glGetUniformLocation(videoProgram, "uTexelSize")
+        videoSharpLoc = GLES20.glGetUniformLocation(videoProgram, "uSharp")
         vertexBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
         backgroundBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
             put(floatArrayOf(-1f,-1f,0f,1f, 1f,-1f,1f,1f, -1f,1f,0f,0f, 1f,1f,1f,0f))
