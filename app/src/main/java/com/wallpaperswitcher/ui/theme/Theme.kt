@@ -4,6 +4,7 @@ import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 
@@ -85,22 +86,30 @@ fun WallpaperSwitcherTheme(
     themeColorHex: String = "",
     content: @Composable () -> Unit
 ) {
-    val customColor = if (themeColorHex.isNotEmpty()) parseHexColor(themeColorHex) else null
+    val context = LocalContext.current
+    val customColor = remember(themeColorHex) {
+        if (themeColorHex.isNotEmpty()) parseHexColor(themeColorHex) else null
+    }
 
-    val colorScheme = when {
-        // Custom color takes priority
-        customColor != null -> {
-            if (darkTheme) customDarkColorScheme(customColor)
-            else customLightColorScheme(customColor)
+    // Build the color scheme only when an input actually changed. Recreating
+    // dynamic/custom color schemes on every recomposition was a visible source
+    // of jank when switching theme colors (each color tap rebuilt the whole
+    // scheme tree and re-queried the system palette).
+    val colorScheme = remember(darkTheme, themeColorHex, customColor, context) {
+        when {
+            // Custom color takes priority
+            customColor != null -> {
+                if (darkTheme) customDarkColorScheme(customColor)
+                else customLightColorScheme(customColor)
+            }
+            // Android 12+ dynamic color
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                if (darkTheme) dynamicDarkColorScheme(context)
+                else dynamicLightColorScheme(context)
+            }
+            darkTheme -> DarkColorScheme
+            else -> LightColorScheme
         }
-        // Android 12+ dynamic color
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context)
-            else dynamicLightColorScheme(context)
-        }
-        darkTheme -> DarkColorScheme
-        else -> LightColorScheme
     }
 
     MaterialTheme(

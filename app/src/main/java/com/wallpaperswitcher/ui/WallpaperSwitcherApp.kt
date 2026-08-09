@@ -9,6 +9,8 @@ import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.Saver
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.wallpaperswitcher.ui.screens.*
@@ -19,7 +21,12 @@ import kotlinx.coroutines.flow.collectLatest
 @Composable
 fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
     val context = LocalContext.current
-    var currentScreen by remember { mutableStateOf<Screen>(Screen.Home) }
+    // Save the current screen so opening the system live-wallpaper picker
+    // (or any activity recreation) returns to the same page instead of
+    // falling back to the home/group list.
+    var currentScreen by rememberSaveable(stateSaver = ScreenSaver) {
+        mutableStateOf<Screen>(Screen.Home)
+    }
 
     // Toast 消息
     LaunchedEffect(Unit) {
@@ -110,3 +117,23 @@ sealed class Screen {
     data class GroupDetail(val groupId: Long) : Screen()
     data object Settings : Screen()
 }
+
+private val ScreenSaver = Saver<Screen, String>(
+    save = { screen ->
+        when (screen) {
+            is Screen.Home -> "home"
+            is Screen.GroupDetail -> "group:${screen.groupId}"
+            is Screen.Settings -> "settings"
+        }
+    },
+    restore = { value ->
+        when {
+            value == "home" -> Screen.Home
+            value == "settings" -> Screen.Settings
+            value.startsWith("group:") ->
+                value.removePrefix("group:").toLongOrNull()?.let { Screen.GroupDetail(it) }
+                    ?: Screen.Home
+            else -> Screen.Home
+        }
+    }
+)

@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -64,9 +65,16 @@ fun GroupDetailScreen(
         }
     }
 
-    // Refresh images when screen becomes visible
+    // Refresh images when the screen becomes visible. After an activity or
+    // process recreation (e.g. returning from the system live-wallpaper
+    // picker), re-select the group so the grid is repopulated instead of
+    // staying empty / falling back to the home screen.
     LaunchedEffect(groupId) {
-        viewModel.refreshImages()
+        if (viewModel.selectedGroupId.value != groupId) {
+            viewModel.selectGroup(groupId)
+        } else {
+            viewModel.refreshImages()
+        }
     }
 
     val currentGroup = group
@@ -408,6 +416,25 @@ private fun ImageGridItem(
     onSetLiveWallpaper: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    // Cache the image request + painters so scrolling (and theme-color
+    // changes that recompose every grid item) never rebuild or re-fetch them.
+    val imageRequest = remember(image.uri, image.mediaType, context) {
+        ImageRequest.Builder(context)
+            .data(Uri.parse(image.uri))
+            .size(400, 400) // Grid thumbnail: limit to 400px, not full resolution
+            .crossfade(200) // Smooth 200ms fade
+            .allowHardware(false) // Software bitmap for Canvas compatibility
+            .apply {
+                // Use video frame decoder for video/GIF thumbnails
+                if (image.mediaType == "VIDEO") {
+                    decoderFactory(VideoFrameDecoder.Factory())
+                }
+            }
+            .build()
+    }
+    val placeholderPainter = remember { ColorPainter(Color(0xFFE0E0E0)) }
+    val errorPainter = remember { ColorPainter(Color(0xFFBDBDBD)) }
 
     Box(
         modifier = Modifier
@@ -422,22 +449,11 @@ private fun ImageGridItem(
             )
     ) {
         AsyncImage(
-            model = ImageRequest.Builder(LocalContext.current)
-                .data(Uri.parse(image.uri))
-                .size(400, 400) // Grid thumbnail: limit to 400px, not full resolution
-                .crossfade(200) // Smooth 200ms fade
-                .allowHardware(false) // Software bitmap for Canvas compatibility
-                .apply {
-                    // Use video frame decoder for video/GIF thumbnails
-                    if (image.mediaType == "VIDEO") {
-                        decoderFactory(VideoFrameDecoder.Factory())
-                    }
-                }
-                .build(),
+            model = imageRequest,
             contentDescription = image.displayName,
             contentScale = ContentScale.Crop,
-            placeholder = androidx.compose.ui.graphics.painter.ColorPainter(Color(0xFFE0E0E0)),
-            error = androidx.compose.ui.graphics.painter.ColorPainter(Color(0xFFBDBDBD)),
+            placeholder = placeholderPainter,
+            error = errorPainter,
             modifier = Modifier.fillMaxSize()
         )
 
