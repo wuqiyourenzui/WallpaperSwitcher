@@ -416,7 +416,11 @@ class WallpaperRenderer(
                     return
                 }
                 localAfd = afd
-                ext.setDataSource(afd.fileDescriptor)
+                // Use the descriptor's offset/length: cloud-hosted or
+                // container-backed documents can expose a non-zero start
+                // offset, and decoding from the beginning would fail or read
+                // the wrong bytes.
+                ext.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
                 val trackIdx = (0 until ext.trackCount).firstOrNull { i ->
                     ext.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
                 } ?: run {
