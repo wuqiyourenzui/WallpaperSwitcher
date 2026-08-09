@@ -467,6 +467,14 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private suspend fun executeSwitch(source: String, targetId: Long?) {
+            // Screen off: the timer keeps ticking normally, but starting a new
+            // decode in the dark only wastes battery - the switch simply runs
+            // on the next tick once the screen is back on. Unlock/double-tap
+            // happen with the screen on, so they are never affected.
+            if (renderer?.powerSaveMode == true) {
+                Log.d(TAG, "Skip $source switch while screen is off (power save)")
+                return
+            }
             val dao = db.settingsDao()
             val imageDao = db.wallpaperImageDao()
             applyClarityMode()
@@ -653,6 +661,7 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun drawCurrentImage() {
             if (!surfaceReady || !isVisible) return
+            if (renderer?.powerSaveMode == true) return
             val r = renderer ?: return
             if (switchInProgress) {
                 // A switch is running right now; retry shortly instead of
