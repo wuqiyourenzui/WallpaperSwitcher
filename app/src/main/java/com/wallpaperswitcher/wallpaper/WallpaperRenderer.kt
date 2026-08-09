@@ -433,8 +433,18 @@ class WallpaperRenderer(
                 var videoW = format.getIntegerSafe(MediaFormat.KEY_WIDTH)
                 var videoH = format.getIntegerSafe(MediaFormat.KEY_HEIGHT)
                 val maxDim = maxOf(videoW, videoH)
-                if (maxDim > 1280) {
-                    val scale = 1280f / maxDim
+                // Decode to at most the screen resolution. This keeps the
+                // rendered picture pixel-identical to the source on the actual
+                // display (the old fixed 1280px cap made large videos blurry)
+                // while avoiding the wasted power/memory of decoding far
+                // larger sources (4K/8K videos) at full size.
+                val screenMax = maxOf(
+                    context.resources.displayMetrics.widthPixels,
+                    context.resources.displayMetrics.heightPixels
+                )
+                val decodeCap = minOf(screenMax, 3200).coerceAtLeast(1280)
+                if (maxDim > decodeCap) {
+                    val scale = decodeCap.toFloat() / maxDim
                     videoW = (videoW * scale).toInt().and(0xFFFFFFFE.toInt())
                     videoH = (videoH * scale).toInt().and(0xFFFFFFFE.toInt())
                 }
@@ -592,7 +602,10 @@ class WallpaperRenderer(
                                 } catch (_: InterruptedException) {}
                             }
                         } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                            try { Thread.sleep(1) } catch (_: InterruptedException) {}
+                            // 5ms poll interval instead of 1ms: with slow /
+                            // cloud-hosted decoders this cuts idle CPU wakeups
+                            // by 5x with no visible latency impact.
+                            try { Thread.sleep(5) } catch (_: InterruptedException) {}
                         }
                     } catch (t: Throwable) {
                         // A codec can throw (e.g. IllegalStateException) when it
