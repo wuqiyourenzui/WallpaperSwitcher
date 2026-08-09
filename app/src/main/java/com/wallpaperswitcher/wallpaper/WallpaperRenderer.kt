@@ -556,7 +556,16 @@ class WallpaperRenderer(
                     context.resources.displayMetrics.widthPixels,
                     context.resources.displayMetrics.heightPixels
                 )
-                val decodeCap = minOf(screenMax, 3200).coerceAtLeast(1280)
+                val baseCap = minOf(screenMax, 3200).coerceAtLeast(1280)
+                // FIT never enlarges the media beyond the screen, so the screen
+                // cap keeps quality identical. FILL/STRETCH upscale the media,
+                // so keep a higher decode ceiling (up to 4096) to avoid
+                // softening large sources when they are magnified.
+                val decodeCap = when (scaleMode) {
+                    ScaleMode.FIT -> baseCap
+                    ScaleMode.FILL, ScaleMode.STRETCH ->
+                        minOf(screenMax * 2, 4096).coerceAtLeast(1920)
+                }
                 if (maxDim > decodeCap) {
                     val scale = decodeCap.toFloat() / maxDim
                     videoW = (videoW * scale).toInt().and(0xFFFFFFFE.toInt())

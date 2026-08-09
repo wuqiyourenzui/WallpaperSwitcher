@@ -833,7 +833,9 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private fun loadBitmap(uriStr: String): Bitmap? {
-            return com.wallpaperswitcher.engine.BitmapUtils.loadBitmap(applicationContext, uriStr)
+            return com.wallpaperswitcher.engine.BitmapUtils.loadBitmap(
+                applicationContext, uriStr, currentScaleMode
+            )
         }
 
         private fun getMetrics(): android.util.DisplayMetrics {

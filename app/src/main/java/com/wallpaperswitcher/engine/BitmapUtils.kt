@@ -8,6 +8,7 @@ import android.os.Build
 import android.util.DisplayMetrics
 import android.util.Log
 import android.view.WindowManager
+import com.wallpaperswitcher.data.ScaleMode
 
 object BitmapUtils {
 
@@ -19,7 +20,12 @@ object BitmapUtils {
      * Uses ARGB_8888 for full color depth.
      * Single ContentResolver.openInputStream call (reads bounds + decodes in one pass).
      */
-    fun loadBitmap(context: Context, uriStr: String): Bitmap? {
+    /**
+     * @param scaleMode null = default behavior (screen resolution cap);
+     * FIT keeps the screen cap, FILL/STRETCH use a higher ceiling so large
+     * sources stay sharp when the wallpaper magnifies them.
+     */
+    fun loadBitmap(context: Context, uriStr: String, scaleMode: ScaleMode? = null): Bitmap? {
         return try {
             val uri = Uri.parse(uriStr)
 
@@ -47,7 +53,11 @@ object BitmapUtils {
                 getScreenMetrics(context).widthPixels,
                 getScreenMetrics(context).heightPixels
             )
-            val decodeCap = minOf(screenMax, 3200).coerceAtLeast(1920)
+            val decodeCap = when (scaleMode) {
+                ScaleMode.FILL, ScaleMode.STRETCH ->
+                    minOf(screenMax * 2, 4096).coerceAtLeast(2560)
+                else -> minOf(screenMax, 3200).coerceAtLeast(1920)
+            }
             while (maxDim / sample > decodeCap) sample *= 2
 
             // Second pass: decode actual bitmap from a fresh stream
