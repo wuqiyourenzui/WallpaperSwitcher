@@ -38,6 +38,9 @@ class LiveWallpaperService : WallpaperService() {
         // 20fps cap instead of 30fps: GIF wallpapers look identical (most GIFs
         // are <=15fps) but cost ~1/3 less CPU/GPU for the frame upload + swap.
         private const val GIF_FRAME_INTERVAL_MS = 50L
+        // Image/GIF bitmap loads get the same timeout as video opens, so a
+        // stuck cloud/SAF provider can never freeze the switch queue forever.
+        private const val BITMAP_LOAD_TIMEOUT_MS = 15_000L
         private const val SHUFFLE_MAX_ATTEMPTS = 10
 
         @Volatile
@@ -578,7 +581,7 @@ class LiveWallpaperService : WallpaperService() {
                     // Any → Image: load bitmap FIRST, then stop video + render atomically
                     videoMode = false
                     Log.d(TAG, "Loading image bitmap: ${nextImage.uri}")
-                    val bitmap = loadBitmap(nextImage.uri)
+                    val bitmap = withTimeoutOrNull(BITMAP_LOAD_TIMEOUT_MS) { loadBitmap(nextImage.uri) }
                     if (bitmap != null) {
                         Log.d(TAG, "Bitmap loaded: ${bitmap.width}x${bitmap.height}")
                         // Recycle old bitmap to avoid memory leak
@@ -755,7 +758,7 @@ class LiveWallpaperService : WallpaperService() {
                             else -> {
                                 videoMode = false
                                 Log.d(TAG, "drawCurrentImage loading bitmap: ${image.uri}")
-                                val bitmap = loadBitmap(image.uri)
+                                val bitmap = withTimeoutOrNull(BITMAP_LOAD_TIMEOUT_MS) { loadBitmap(image.uri) }
                                 if (bitmap != null) {
                                     Log.d(TAG, "drawCurrentImage bitmap loaded: ${bitmap.width}x${bitmap.height}")
                                     val old = currentBitmap
@@ -896,7 +899,7 @@ class LiveWallpaperService : WallpaperService() {
                             playGif28(drawable, scaleMode)
                         }
                     } else {
-                        val bmp = loadBitmap(uriStr)
+                        val bmp = withTimeoutOrNull(BITMAP_LOAD_TIMEOUT_MS) { loadBitmap(uriStr) }
                         mainHandler.post {
                             if (pendingGifUri != uriStr || !surfaceReady) {
                                 if (bmp != null && !bmp.isRecycled) bmp.recycle()
@@ -910,7 +913,7 @@ class LiveWallpaperService : WallpaperService() {
                     throw ce
                 } catch (t: Throwable) {
                     Log.e(TAG, "playGif failed, falling back to static frame", t)
-                    val bmp = loadBitmap(uriStr)
+                    val bmp = withTimeoutOrNull(BITMAP_LOAD_TIMEOUT_MS) { loadBitmap(uriStr) }
                     mainHandler.post {
                         if (pendingGifUri != uriStr || !surfaceReady) {
                             if (bmp != null && !bmp.isRecycled) bmp.recycle()
