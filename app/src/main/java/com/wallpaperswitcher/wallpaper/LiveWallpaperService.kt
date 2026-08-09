@@ -91,6 +91,10 @@ class LiveWallpaperService : WallpaperService() {
         // Detects a decoder that stopped producing frames (e.g. a cloud file
         // whose stream read blocks forever) and triggers automatic recovery.
         private var videoHealthJob: kotlinx.coroutines.Job? = null
+        // Consecutive recovery failures: stops the 1.5s auto-recovery loop
+        // when every candidate media is broken, instead of switching forever
+        // and burning battery. Reset once a video actually plays.
+        private var recoveryFailCount = 0
 
         private val switchReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
@@ -210,6 +214,11 @@ class LiveWallpaperService : WallpaperService() {
             if (lastDisplayedId > 0L) failedMediaIds.add(lastDisplayedId)
             videoMode = false
             lastDisplayedId = 0L
+            recoveryFailCount++
+            if (recoveryFailCount > 5) {
+                Log.w(TAG, "Too many consecutive video failures; pausing auto-recovery")
+                return
+            }
             mainHandler.postDelayed({
                 if (isVisible && surfaceReady && !switchInProgress && renderer?.isVideoPlaying != true) {
                     // Switch to a DIFFERENT media instead of retrying the same
@@ -691,10 +700,15 @@ class LiveWallpaperService : WallpaperService() {
                     delay(10_000L)
                     if (!videoMode || renderer?.isVideoPlaying != true) return@launch
                     val last = renderer?.lastVideoFrameAt ?: 0L
-                    if (last > 0L && SystemClock.elapsedRealtime() - last > 8_000L) {
-                        Log.w(TAG, "Video stalled: no frame presented for 8s; recovering")
-                        onVideoStartFailed()
-                        return@launch
+                    if (last > 0L) {
+                        if (SystemClock.elapsedRealtime() - last > 8_000L) {
+                            Log.w(TAG, "Video stalled: no frame presented for 8s; recovering")
+                            onVideoStartFailed()
+                            return@launch
+                        }
+                        // Playing healthily: any previous recovery failures are
+                        // stale, so auto-recovery can kick in again if needed.
+                        if (recoveryFailCount > 0) recoveryFailCount = 0
                     }
                 }
             }
