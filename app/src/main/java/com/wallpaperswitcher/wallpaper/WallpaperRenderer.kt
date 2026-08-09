@@ -62,8 +62,14 @@ class WallpaperRenderer(
             void main() {
                 // Mild unsharp mask. uSharp == 0.0 keeps the original pixel
                 // exactly (used for downscaled/native media and the black
-                // background), so normal wallpapers are byte-identical.
+                // background). The early return also skips the 4 neighbor
+                // fetches, so normal/high-res wallpapers cost exactly the
+                // same GPU bandwidth as before sharpening was added.
                 vec4 c = texture2D(uTexture, vTexCoord);
+                if (uSharp <= 0.001) {
+                    gl_FragColor = c;
+                    return;
+                }
                 vec4 s = c * (1.0 + 4.0 * uSharp)
                        - (texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0))
                         + texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0))
@@ -82,6 +88,10 @@ class WallpaperRenderer(
             varying vec2 vTexCoord;
             void main() {
                 vec4 c = texture2D(uTexture, vTexCoord);
+                if (uSharp <= 0.001) {
+                    gl_FragColor = c;
+                    return;
+                }
                 vec4 s = c * (1.0 + 4.0 * uSharp)
                        - (texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0))
                         + texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0))

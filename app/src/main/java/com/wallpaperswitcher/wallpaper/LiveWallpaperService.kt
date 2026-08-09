@@ -329,14 +329,25 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun flushShuffleState() {
             if (!shuffleDirty) return
-            kotlinx.coroutines.runBlocking(Dispatchers.IO) {
-                try {
-                    val dao = db.settingsDao()
-                    // Save shuffle state for both image and video types
-                    // (the shown IDs set is shared across types in this engine instance)
-                    dao.setString(SettingsKeys.SHUFFLE_SHOWN_IDS, shuffleShownIds.joinToString(","))
-                    dao.setLong(SettingsKeys.SHUFFLE_ALL_COUNT, shuffleAllCount.toLong())
-                } catch (_: Exception) {}
+            // onDestroy runs on the main thread: bound the DB write so a busy
+            // Room executor (e.g. during a large folder import) can never block
+            // the main thread long enough to trigger an ANR. Shuffle state is
+            // only a hint - losing it just resets the deck on the next use.
+            try {
+                kotlinx.coroutines.runBlocking {
+                    withTimeoutOrNull(1500L) {
+                        withContext(Dispatchers.IO) {
+                            val dao = db.settingsDao()
+                            // Save shuffle state for both image and video types
+                            // (the shown IDs set is shared across types in this
+                            // engine instance).
+                            dao.setString(SettingsKeys.SHUFFLE_SHOWN_IDS, shuffleShownIds.joinToString(","))
+                            dao.setLong(SettingsKeys.SHUFFLE_ALL_COUNT, shuffleAllCount.toLong())
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Timeout or cancellation: skip persisting this time.
             }
         }
 
