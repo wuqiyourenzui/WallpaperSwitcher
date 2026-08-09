@@ -83,8 +83,15 @@ object WallpaperApplier {
         // Honor the global switch mode the same way the live engine does.
         val image = when (mode) {
             SwitchMode.RANDOM -> {
-                imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
-                    ?: imageDao.getRandomImageFromEnabledGroups()
+                val count = imageDao.countByEnabledGroups()
+                if (count == 0) null
+                else if (count == 1) imageDao.getRandomImageFromEnabledGroups()
+                else {
+                    val offset = kotlin.random.Random.nextInt(count)
+                    imageDao.getRandomImageFromEnabledGroupsExcludingAt(lastId, offset)
+                        ?: imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                        ?: imageDao.getRandomImageFromEnabledGroups()
+                }
             }
             SwitchMode.SEQUENTIAL -> {
                 val count = imageDao.countByEnabledGroups()
@@ -113,8 +120,15 @@ object WallpaperApplier {
                     var candidate: WallpaperImage? = null
                     var attempts = 0
                     while (attempts < 10 && candidate == null) {
-                        val img = imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
-                            ?: imageDao.getRandomImageFromEnabledGroups()
+                        val count = imageDao.countByEnabledGroups()
+                        val img = if (count <= 1) {
+                            imageDao.getRandomImageFromEnabledGroups()
+                        } else {
+                            val offset = kotlin.random.Random.nextInt(count)
+                            imageDao.getRandomImageFromEnabledGroupsExcludingAt(lastId, offset)
+                                ?: imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                                ?: imageDao.getRandomImageFromEnabledGroups()
+                        }
                         if (img != null && img.id !in shown) candidate = img
                         attempts++
                     }

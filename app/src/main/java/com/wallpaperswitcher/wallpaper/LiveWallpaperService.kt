@@ -515,8 +515,7 @@ class LiveWallpaperService : WallpaperService() {
         ): WallpaperImage? {
             return when (switchMode) {
                 SwitchMode.RANDOM -> {
-                    imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
-                        ?: imageDao.getRandomImageFromEnabledGroups()
+                    randomEnabledImage(imageDao, lastId)
                 }
                 SwitchMode.SEQUENTIAL -> {
                     val count = imageDao.countByEnabledGroups()
@@ -550,8 +549,7 @@ class LiveWallpaperService : WallpaperService() {
                         }
                         var attempts = 0; var candidate: WallpaperImage? = null
                         while (attempts < SHUFFLE_MAX_ATTEMPTS && candidate == null) {
-                            val img = imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
-                                ?: imageDao.getRandomImageFromEnabledGroups()
+                            val img = randomEnabledImage(imageDao, lastId)
                             if (img != null && img.id !in shuffleShownIds) candidate = img
                             else if (img != null && shuffleShownIds.size >= totalCount) {
                                 shuffleShownIds.clear(); candidate = img
@@ -674,6 +672,23 @@ class LiveWallpaperService : WallpaperService() {
                     redrawInProgress.set(false)
                 }
             }
+        }
+
+        /**
+         * Random pick without ORDER BY RANDOM(): count + random OFFSET is
+         * orders of magnitude faster on large libraries (thousands of rows).
+         */
+        private suspend fun randomEnabledImage(
+            imageDao: WallpaperImageDao,
+            lastId: Long
+        ): WallpaperImage? {
+            val count = imageDao.countByEnabledGroups()
+            if (count == 0) return null
+            if (count == 1) return imageDao.getRandomImageFromEnabledGroups()
+            val offset = kotlin.random.Random.nextInt(count)
+            return imageDao.getRandomImageFromEnabledGroupsExcludingAt(lastId, offset)
+                ?: imageDao.getRandomImageFromEnabledGroupsExcluding(lastId)
+                ?: imageDao.getRandomImageFromEnabledGroups()
         }
 
         private fun startVideo(uriStr: String, scaleMode: ScaleMode): Boolean {

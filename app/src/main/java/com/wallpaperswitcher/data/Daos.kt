@@ -135,6 +135,25 @@ interface WallpaperImageDao {
     """)
     suspend fun getRandomImageFromEnabledGroupsExcluding(excludeId: Long): WallpaperImage?
 
+    // Fast random picks: ORDER BY RANDOM() sorts the whole table on every
+    // switch, which is slow and power-hungry on large libraries. These use a
+    // random OFFSET instead (with the ORDER BY RANDOM() variants kept as a
+    // fallback when the offset lands on a deleted row gap).
+    @Query("""
+        SELECT * FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        ORDER BY id LIMIT 1 OFFSET :offset
+    """)
+    suspend fun getRandomImageFromEnabledGroupsAt(offset: Int): WallpaperImage?
+
+    @Query("""
+        SELECT * FROM wallpaper_images
+        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        AND id != :excludeId
+        ORDER BY id LIMIT 1 OFFSET :offset
+    """)
+    suspend fun getRandomImageFromEnabledGroupsExcludingAt(excludeId: Long, offset: Int): WallpaperImage?
+
     @Query("""
         SELECT COUNT(*) FROM wallpaper_images
         WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
