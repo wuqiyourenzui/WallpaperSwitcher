@@ -274,7 +274,11 @@ fun GroupDetailScreen(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxSize()
             ) {
-                itemsIndexed(images, key = { _, image -> image.id }) { _, image ->
+                itemsIndexed(
+                    images,
+                    key = { _, image -> image.id },
+                    contentType = { _, _ -> "media" }
+                ) { _, image ->
                     // Stable selection check - only recompose when THIS image's selection changes
                     val isImageSelected = remember(selectedIds) { image.id in selectedIds }
                     ImageGridItem(
@@ -422,9 +426,17 @@ private fun ImageGridItem(
     val imageRequest = remember(image.uri, image.mediaType, context) {
         ImageRequest.Builder(context)
             .data(Uri.parse(image.uri))
-            .size(400, 400) // Grid thumbnail: limit to 400px, not full resolution
-            .crossfade(200) // Smooth 200ms fade
-            .allowHardware(false) // Software bitmap for Canvas compatibility
+            // Lower-resolution thumbnails (300px) decode faster, use less
+            // memory and upload to the GPU quicker while still looking sharp
+            // in a 3-column grid on phone screens.
+            .size(300, 300)
+            // No crossfade: during fast scrolling every newly composed cell
+            // would otherwise start a 200ms fade animation on the UI thread.
+            .crossfade(0)
+            // Hardware bitmaps are rendered directly by the GPU and are much
+            // cheaper than software bitmaps when scrolling. Thumbnails are
+            // only displayed, never read back into Canvas.
+            .allowHardware(true)
             .apply {
                 // Use video frame decoder for video/GIF thumbnails
                 if (image.mediaType == "VIDEO") {
