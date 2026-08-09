@@ -98,6 +98,8 @@ class WallpaperRenderer(
     private var vertexBuffer: FloatBuffer? = null
     private var imageTexId = 0
     private var imageTexMatrix = FloatArray(16)
+    // Reused on the render thread to avoid allocating a matrix per video frame.
+    private val videoTexMatrix = FloatArray(16)
     // 1x1 opaque black texture + full-screen quad: drawn under every media so
     // the FIT/letterbox area always contains freshly presented black pixels
     // instead of whatever was left in the framebuffer (e.g. the previous
@@ -687,9 +689,8 @@ class WallpaperRenderer(
                                     if (!surfaceReady || !contextReady) return@post
                                     try {
                                         st.updateTexImage()
-                                        val texMatrix = FloatArray(16)
-                                        st.getTransformMatrix(texMatrix)
-                                        renderVideoFrame(texMatrix)
+                                        st.getTransformMatrix(videoTexMatrix)
+                                        renderVideoFrame(videoTexMatrix)
                                     } catch (t: Throwable) {
                                         Log.e(TAG, "renderVideoFrame failed", t)
                                     }
