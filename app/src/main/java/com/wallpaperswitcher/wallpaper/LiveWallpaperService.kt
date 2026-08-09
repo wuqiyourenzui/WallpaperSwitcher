@@ -581,7 +581,7 @@ class LiveWallpaperService : WallpaperService() {
                     // Any → Image: load bitmap FIRST, then stop video + render atomically
                     videoMode = false
                     Log.d(TAG, "Loading image bitmap: ${nextImage.uri}")
-                    val bitmap = withTimeoutOrNull(BITMAP_LOAD_TIMEOUT_MS) { loadBitmap(nextImage.uri) }
+                    val bitmap = loadBitmapWithTimeout(nextImage.uri)
                     if (bitmap != null) {
                         Log.d(TAG, "Bitmap loaded: ${bitmap.width}x${bitmap.height}")
                         // Recycle old bitmap to avoid memory leak
@@ -758,7 +758,7 @@ class LiveWallpaperService : WallpaperService() {
                             else -> {
                                 videoMode = false
                                 Log.d(TAG, "drawCurrentImage loading bitmap: ${image.uri}")
-                                val bitmap = withTimeoutOrNull(BITMAP_LOAD_TIMEOUT_MS) { loadBitmap(image.uri) }
+                                val bitmap = loadBitmapWithTimeout(image.uri)
                                 if (bitmap != null) {
                                     Log.d(TAG, "drawCurrentImage bitmap loaded: ${bitmap.width}x${bitmap.height}")
                                     val old = currentBitmap
@@ -899,7 +899,7 @@ class LiveWallpaperService : WallpaperService() {
                             playGif28(drawable, scaleMode)
                         }
                     } else {
-                        val bmp = withTimeoutOrNull(BITMAP_LOAD_TIMEOUT_MS) { loadBitmap(uriStr) }
+                        val bmp = loadBitmapWithTimeout(uriStr)
                         mainHandler.post {
                             if (pendingGifUri != uriStr || !surfaceReady) {
                                 if (bmp != null && !bmp.isRecycled) bmp.recycle()
@@ -913,7 +913,7 @@ class LiveWallpaperService : WallpaperService() {
                     throw ce
                 } catch (t: Throwable) {
                     Log.e(TAG, "playGif failed, falling back to static frame", t)
-                    val bmp = withTimeoutOrNull(BITMAP_LOAD_TIMEOUT_MS) { loadBitmap(uriStr) }
+                    val bmp = loadBitmapWithTimeout(uriStr)
                     mainHandler.post {
                         if (pendingGifUri != uriStr || !surfaceReady) {
                             if (bmp != null && !bmp.isRecycled) bmp.recycle()
@@ -1033,6 +1033,48 @@ class LiveWallpaperService : WallpaperService() {
             return com.wallpaperswitcher.engine.BitmapUtils.loadBitmap(
                 applicationContext, uriStr, currentScaleMode
             )
+        }
+
+        /**
+         * Load a bitmap with a hard timeout. BitmapFactory/ContentResolver
+         * calls cannot be interrupted by coroutine cancellation (a plain
+         * withTimeout would keep waiting for the blocking call), so the decode
+         * runs on a helper thread and the caller abandons it after [timeoutMs].
+         * If the abandoned thread ever finishes, its bitmap is recycled.
+         */
+        private fun loadBitmapWithTimeout(
+            uriStr: String,
+            timeoutMs: Long = BITMAP_LOAD_TIMEOUT_MS
+        ): Bitmap? {
+            val result = java.util.concurrent.atomic.AtomicReference<Bitmap?>(null)
+            val abandoned = java.util.concurrent.atomic.AtomicBoolean(false)
+            val thread = Thread({
+                try {
+                    val bmp = loadBitmap(uriStr)
+                    if (abandoned.get()) {
+                        if (bmp != null && !bmp.isRecycled) bmp.recycle()
+                    } else {
+                        result.set(bmp)
+                    }
+                } catch (_: Throwable) {}
+            }, "BitmapLoad").apply {
+                // Never keep the process alive because a provider is stuck.
+                isDaemon = true
+                start()
+            }
+            try {
+                thread.join(timeoutMs)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            if (thread.isAlive) {
+                abandoned.set(true)
+                thread.interrupt()
+                return null
+            }
+            val bmp = result.get()
+            if (bmp != null && bmp.isRecycled) return null
+            return bmp
         }
 
         private fun getMetrics(): android.util.DisplayMetrics {
