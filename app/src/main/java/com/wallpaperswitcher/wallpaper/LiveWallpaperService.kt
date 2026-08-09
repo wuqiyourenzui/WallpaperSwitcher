@@ -764,8 +764,16 @@ class LiveWallpaperService : WallpaperService() {
                 val intrinsicW = drawable.intrinsicWidth.coerceAtLeast(1)
                 val intrinsicH = drawable.intrinsicHeight.coerceAtLeast(1)
                 val screenMax = maxOf(getMetrics().widthPixels, getMetrics().heightPixels)
-                val gifScale = if (maxOf(intrinsicW, intrinsicH) > screenMax) {
-                    screenMax.toFloat() / maxOf(intrinsicW, intrinsicH)
+                // FIT never enlarges; FILL/STRETCH magnify the GIF, so keep a
+                // higher buffer ceiling in those modes to avoid softening large
+                // GIFs when they are upscaled.
+                val gifCap = when (scaleMode) {
+                    ScaleMode.FILL, ScaleMode.STRETCH ->
+                        minOf(screenMax * 2, 4096).coerceAtLeast(2560)
+                    else -> screenMax
+                }
+                val gifScale = if (maxOf(intrinsicW, intrinsicH) > gifCap) {
+                    gifCap.toFloat() / maxOf(intrinsicW, intrinsicH)
                 } else {
                     1f
                 }
