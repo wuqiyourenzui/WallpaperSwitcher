@@ -633,6 +633,11 @@ class WallpaperRenderer(
                 return
             }
 
+            // Clear the whole framebuffer first. In FIT/STRETCH-less modes the
+            // video quad does not cover the full screen; without clearing, the
+            // letterbox area keeps showing the PREVIOUS video's last frame
+            // (user-visible as "the old video stays on screen after switching").
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             GLES20.glUseProgram(videoProgram)
 
             val texMatLoc = GLES20.glGetUniformLocation(videoProgram, "uTexMatrix")
