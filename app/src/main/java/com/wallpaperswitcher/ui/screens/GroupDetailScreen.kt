@@ -276,7 +276,24 @@ fun GroupDetailScreen(
 
         // 图片网格
         if (images.isEmpty()) {
-            EmptyImagesHint()
+            if (isLoadingMore || totalCount > 0) {
+                // First page is still loading (or a refresh is in progress):
+                // show a loading hint instead of flashing "还没有壁纸".
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 60.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "正在加载...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            } else {
+                EmptyImagesHint()
+            }
         } else {
             LazyVerticalGrid(
                 // Adaptive columns: 3 on phones, more on tablets/landscape, so

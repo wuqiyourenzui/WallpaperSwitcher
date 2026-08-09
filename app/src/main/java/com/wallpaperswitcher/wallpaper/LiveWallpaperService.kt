@@ -88,6 +88,9 @@ class LiveWallpaperService : WallpaperService() {
         private var gifDrawable: android.graphics.drawable.AnimatedImageDrawable? = null
         private var gifFrameRunnable: Runnable? = null
         private var gifBitmapBuffer: Bitmap? = null
+        // GIF uri whose decode is in flight; a newer switch clears it so a
+        // stale decoded drawable can never start after newer media.
+        @Volatile private var pendingGifUri: String? = null
         // Detects a decoder that stopped producing frames (e.g. a cloud file
         // whose stream read blocks forever) and triggers automatic recovery.
         private var videoHealthJob: kotlinx.coroutines.Job? = null
@@ -361,6 +364,7 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun pauseGif() {
             gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
+            pendingGifUri = null
         }
 
         // ======== Switch logic ========
@@ -797,21 +801,57 @@ class LiveWallpaperService : WallpaperService() {
 
         private fun playGif(uriStr: String, scaleMode: ScaleMode) {
             if (!surfaceReady) return
-            try {
-                if (Build.VERSION.SDK_INT >= 28) playGif28(uriStr, scaleMode)
-                else loadBitmap(uriStr)?.let { renderer?.showImage(it, scaleMode) }
-            } catch (t: Throwable) {
-                Log.e(TAG, "playGif failed, falling back to static frame", t)
-                loadBitmap(uriStr)?.let { renderer?.showImage(it, scaleMode) }
+            pendingGifUri = uriStr
+            // Decode off the main thread: ImageDecoder's first pass for a large
+            // GIF can take tens of ms and would jank the UI on the main looper.
+            // The drawable (or fallback bitmap) is handed back to the main
+            // thread for the actual animation, guarded so a stale decode that
+            // lost the race against a newer switch is discarded.
+            scope.launch {
+                try {
+                    if (Build.VERSION.SDK_INT >= 28) {
+                        val source = android.graphics.ImageDecoder.createSource(contentResolver, Uri.parse(uriStr))
+                        val drawable = android.graphics.ImageDecoder.decodeDrawable(source) { decoder, _, _ ->
+                            decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+                        }
+                        mainHandler.post {
+                            if (pendingGifUri != uriStr || !surfaceReady) {
+                                try { (drawable as java.lang.AutoCloseable).close() } catch (_: Exception) {}
+                                return@post
+                            }
+                            pendingGifUri = null
+                            playGif28(drawable, scaleMode)
+                        }
+                    } else {
+                        val bmp = loadBitmap(uriStr)
+                        mainHandler.post {
+                            if (pendingGifUri != uriStr || !surfaceReady) {
+                                if (bmp != null && !bmp.isRecycled) bmp.recycle()
+                                return@post
+                            }
+                            pendingGifUri = null
+                            bmp?.let { renderer?.showImage(it, scaleMode) }
+                        }
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (t: Throwable) {
+                    Log.e(TAG, "playGif failed, falling back to static frame", t)
+                    val bmp = loadBitmap(uriStr)
+                    mainHandler.post {
+                        if (pendingGifUri != uriStr || !surfaceReady) {
+                            if (bmp != null && !bmp.isRecycled) bmp.recycle()
+                            return@post
+                        }
+                        pendingGifUri = null
+                        bmp?.let { renderer?.showImage(it, scaleMode) }
+                    }
+                }
             }
         }
 
         @android.annotation.TargetApi(28)
-        private fun playGif28(uriStr: String, scaleMode: ScaleMode) {
-            val source = android.graphics.ImageDecoder.createSource(contentResolver, Uri.parse(uriStr))
-            val drawable = android.graphics.ImageDecoder.decodeDrawable(source) { decoder, _, _ ->
-                decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
-            }
+        private fun playGif28(drawable: android.graphics.drawable.Drawable, scaleMode: ScaleMode) {
             if (drawable is android.graphics.drawable.AnimatedImageDrawable) {
                 // Release the previous GIF (if any) before replacing it.
                 gifDrawable?.let { old ->
