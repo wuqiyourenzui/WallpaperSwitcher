@@ -131,6 +131,11 @@ class WallpaperRenderer(
     var onVideoStartFailed: (() -> Unit)? = null
     @Volatile
     private var lastRenderLogAt = 0L
+    // Render-side presentation throttle (~30fps max). The decoder keeps
+    // running at the source frame rate, so playback speed, duration and
+    // picture quality are unchanged; 50/60fps sources simply skip every other
+    // present, which roughly halves rendering/composition power for them.
+    private var lastVideoFrameSwappedAt = 0L
 
     // ======== Lifecycle ========
 
@@ -631,6 +636,11 @@ class WallpaperRenderer(
                 try { dec.stop() } catch (_: Exception) {}
                 try { dec.release() } catch (_: Exception) {}
                 if (decoder === dec) decoder = null
+                // Release this round's extractor too: it holds a file
+                // descriptor, and looping videos would otherwise accumulate an
+                // extractor + fd per playback pass until the thread exits.
+                try { ext.release() } catch (_: Exception) {}
+                if (localExtractor === ext) localExtractor = null
                 val afdToClose = localAfd
                 localAfd = null
                 try { afdToClose.close() } catch (_: Exception) {}
@@ -747,6 +757,8 @@ class WallpaperRenderer(
             }
 
             val now = SystemClock.elapsedRealtime()
+            if (now - lastVideoFrameSwappedAt < 33L) return
+            lastVideoFrameSwappedAt = now
             if (now - lastRenderLogAt > 5000L) {
                 lastRenderLogAt = now
                 Log.d(TAG, "Video frame rendered: tex=$videoTexId screen=${screenW.toInt()}x${screenH.toInt()}")
