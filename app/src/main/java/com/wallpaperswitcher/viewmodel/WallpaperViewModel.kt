@@ -75,6 +75,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     val totalImageCount: StateFlow<Int> = _totalImageCount
     private val _isLoadingMore = MutableStateFlow(false)
     val isLoadingMore: StateFlow<Boolean> = _isLoadingMore
+    // In-flight page load; a newer load cancels it so a stale query can never
+    // block a group switch or publish late results.
+    private var loadImagesJob: Job? = null
 
     // Scan progress
     private val _scanProgress = MutableStateFlow("")
@@ -98,8 +101,14 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
      * Load images in pages. Call with reset=true for first load.
      */
     fun loadImages(groupId: Long, reset: Boolean = false) {
-        if (_isLoadingMore.value) return
-        viewModelScope.launch {
+        if (!reset && _isLoadingMore.value) return
+        // A new load supersedes any in-flight one: without this, quickly
+        // switching groups while the previous group's page is still loading
+        // would skip the new group's first page (the isLoadingMore guard) and
+        // leave it stuck empty. The stale job is also guarded by the
+        // selectedGroupId check below, so it can never publish late results.
+        loadImagesJob?.cancel()
+        loadImagesJob = viewModelScope.launch {
             _isLoadingMore.value = true
             try {
                 // Only publish results for the group that is still selected:
@@ -118,6 +127,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                         }
                     }
                 }
+            } catch (ce: CancellationException) {
+                throw ce
             } catch (e: Exception) {
                 Log.e(TAG, "loadImages failed", e)
                 _toastMessage.emit("加载图片失败: ${e.message}")
@@ -502,10 +513,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun refreshImages() {
         val groupId = _selectedGroupId.value ?: return
-        viewModelScope.launch {
-            _totalImageCount.value = imageDao.getImageCountByGroup(groupId)
-            _loadedImages.value = imageDao.getImagesByGroupPaged(groupId, PAGE_SIZE, 0)
-        }
+        loadImages(groupId, reset = true)
     }
 
     // ======== Folder scanning (background) ========
