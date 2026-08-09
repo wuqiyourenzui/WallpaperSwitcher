@@ -720,7 +720,7 @@ class WallpaperRenderer(
                         errorPasses++
                         if (errorPasses >= 3) {
                             giveUp = true
-                            onVideoStartFailed?.invoke()
+                            if (videoGeneration.get() == gen) onVideoStartFailed?.invoke()
                         }
                         Log.e(TAG, "Decode pass interrupted", t)
                         eof = true
