@@ -11,6 +11,9 @@ object SettingsKeys {
     const val GLOBAL_INTERVAL_MS = "global_interval_ms"
     const val GLOBAL_SWITCH_MODE = "global_switch_mode"
     const val GLOBAL_SCALE_MODE = "global_scale_mode"
+    // Periodic folder auto-scan
+    const val AUTO_SCAN_ENABLED = "auto_scan_enabled"
+    const val AUTO_SCAN_INTERVAL_MS = "auto_scan_interval_ms"
     // Shuffle state persistence (comma-separated image IDs)
     const val SHUFFLE_SHOWN_IDS = "shuffle_shown_ids"
     const val SHUFFLE_ALL_COUNT = "shuffle_all_count"

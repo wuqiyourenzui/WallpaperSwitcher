@@ -3,6 +3,9 @@ package com.wallpaperswitcher.data
 import androidx.room.*
 import kotlinx.coroutines.flow.Flow
 
+/** A (groupId, folderPath) pair recorded by a folder import, for auto-scan. */
+data class ScannedFolderPath(val groupId: Long, val folderPath: String)
+
 @Dao
 interface WallpaperGroupDao {
 
@@ -51,6 +54,12 @@ interface WallpaperImageDao {
 
     @Query("SELECT id FROM wallpaper_images WHERE groupId = :groupId")
     suspend fun getImageIdsByGroup(groupId: Long): List<Long>
+
+    @Query("SELECT uri FROM wallpaper_images WHERE groupId = :groupId")
+    suspend fun getUrisByGroup(groupId: Long): List<String>
+
+    @Query("SELECT DISTINCT groupId, folderPath FROM wallpaper_images WHERE isFromFolder = 1 AND folderPath != ''")
+    suspend fun getScannedFolderPaths(): List<ScannedFolderPath>
 
     @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC")
     suspend fun getImagesByGroupSync(groupId: Long): List<WallpaperImage>

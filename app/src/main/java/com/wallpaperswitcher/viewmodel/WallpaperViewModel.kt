@@ -7,11 +7,19 @@ import android.provider.MediaStore
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.Constraints
+import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.PeriodicWorkRequestBuilder
+import androidx.work.WorkManager
 import com.wallpaperswitcher.WallpaperSwitcherApp
 import com.wallpaperswitcher.data.*
+import com.wallpaperswitcher.engine.MediaScanner
+import com.wallpaperswitcher.engine.ScannedFolder
 import com.wallpaperswitcher.engine.WallpaperApplier
 import com.wallpaperswitcher.service.WallpaperSwitchService
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
+import com.wallpaperswitcher.worker.FolderAutoScanWorker
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.*
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
@@ -170,6 +178,36 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     val globalScaleMode: StateFlow<ScaleMode> = settingsDao.getValueFlow(SettingsKeys.GLOBAL_SCALE_MODE)
         .map { try { ScaleMode.valueOf(it ?: "FIT") } catch (_: Exception) { ScaleMode.FIT } }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ScaleMode.FIT)
+
+    // Periodic folder auto-scan
+    val autoScanEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.AUTO_SCAN_ENABLED)
+        .map { it?.toBooleanStrictOrNull() ?: false }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    val autoScanIntervalMs: StateFlow<Long> = settingsDao.getValueFlow(SettingsKeys.AUTO_SCAN_INTERVAL_MS)
+        .map { it?.toLongOrNull() ?: (24L * 60 * 60 * 1000) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 24L * 60 * 60 * 1000)
+
+    fun toggleAutoScan(enabled: Boolean, intervalMs: Long) {
+        viewModelScope.launch {
+            settingsDao.setBool(SettingsKeys.AUTO_SCAN_ENABLED, enabled)
+            settingsDao.setLong(SettingsKeys.AUTO_SCAN_INTERVAL_MS, intervalMs.coerceAtLeast(15 * 60_000L))
+            if (enabled) scheduleAutoScan() else cancelAutoScan()
+        }
+    }
+
+    private fun scheduleAutoScan() {
+        val intervalMs = autoScanIntervalMs.value.coerceAtLeast(15 * 60_000L)
+        val request = PeriodicWorkRequestBuilder<FolderAutoScanWorker>(intervalMs, TimeUnit.MILLISECONDS)
+            .setConstraints(Constraints.Builder().setRequiresBatteryNotLow(true).build())
+            .build()
+        WorkManager.getInstance(getApplication())
+            .enqueueUniquePeriodicWork("folder_auto_scan", ExistingPeriodicWorkPolicy.UPDATE, request)
+    }
+
+    private fun cancelAutoScan() {
+        WorkManager.getInstance(getApplication()).cancelUniqueWork("folder_auto_scan")
+    }
 
     fun setGlobalInterval(ms: Long) {
         viewModelScope.launch { settingsDao.setLong(SettingsKeys.GLOBAL_INTERVAL_MS, ms.coerceAtLeast(10_000L)) }
@@ -454,163 +492,68 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     // ======== Folder scanning (background) ========
 
     /**
-     * Scan device image folders via MediaStore.
-     * Compatible with Xiaomi/MIUI devices.
-     * Only scans images (no videos).
+     * Scan device folders that contain images and/or videos (MediaStore).
      */
-    suspend fun scanImageFolders(): List<ScannedFolder> = withContext(Dispatchers.IO) {
-        try {
-            val folderCounts = mutableMapOf<String, Int>()
-            val folderSamples = mutableMapOf<String, MutableList<String>>() // only a few URIs per folder
-            val folderNames = mutableMapOf<String, String>()
-            val contentResolver = getApplication<Application>().contentResolver
-
-            // Use RELATIVE_PATH on API 29+, fall back to DATA on older versions
-            val useRelativePath = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-            val projection = if (useRelativePath) {
-                arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.RELATIVE_PATH)
-            } else {
-                @Suppress("DEPRECATION")
-                arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATA)
-            }
-
-            contentResolver.query(
-                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                projection,
-                null,
-                null,
-                "${MediaStore.Images.Media.DATE_MODIFIED} DESC"
-            )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                val pathCol = cursor.getColumnIndex(if (useRelativePath) MediaStore.Images.Media.RELATIVE_PATH else MediaStore.Images.Media.DATA)
-
-                while (cursor.moveToNext()) {
-                    try {
-                        val id = cursor.getLong(idCol)
-                        val rawPath = if (pathCol >= 0) cursor.getString(pathCol) else null
-                        if (rawPath.isNullOrBlank()) continue
-
-                        // Normalize folder key: RELATIVE_PATH ends with '/', DATA is absolute
-                        val folderKey = if (useRelativePath) {
-                            rawPath.trimEnd('/')
-                        } else {
-                            @Suppress("DEPRECATION")
-                            rawPath.substringBeforeLast('/')
-                        }
-                        if (folderKey.isEmpty()) continue
-
-                        // Count images per folder
-                        folderCounts[folderKey] = (folderCounts[folderKey] ?: 0) + 1
-
-                        // Only store first 3 URIs per folder for preview
-                        val samples = folderSamples.getOrPut(folderKey) { mutableListOf() }
-                        if (samples.size < 3) {
-                            val uri = Uri.withAppendedPath(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString())
-                            samples.add(uri.toString())
-                        }
-
-                        folderNames.putIfAbsent(folderKey, folderKey.substringAfterLast('/').ifEmpty { "Root" })
-                    } catch (_: Exception) { continue }
-                }
-            }
-
-            folderCounts.map { (path, count) ->
-                ScannedFolder(
-                    path = path,
-                    name = folderNames[path] ?: path,
-                    imageCount = count,
-                    sampleUris = folderSamples[path] ?: emptyList()
-                )
-            }
-                .filter { it.imageCount >= 2 }
-                .filter { f ->
-                    val segments = f.path.split("/").map { it.lowercase() }
-                    val blocked = setOf("android", ".thumbnails", ".cache", ".trash", "obb")
-                    segments.none { it in blocked }
-                }
-                .sortedByDescending { it.imageCount }
-        } catch (e: Exception) {
-            Log.e(TAG, "scanImageFolders failed", e)
-            emptyList()
-        }
+    suspend fun loadScannedFolders(): List<ScannedFolder> {
+        return MediaScanner.scanFolders(getApplication())
     }
 
     /**
-     * Import all images from a scanned folder (batch insert).
+     * Import several scanned folders into a group (images + videos, deduped).
      */
-    /**
-     * Import all images from a scanned folder.
-     * Re-queries MediaStore to get all URIs (not just samples).
-     */
-    fun importScannedFolder(groupId: Long, folder: ScannedFolder) {
+    fun importScannedFolders(groupId: Long, folders: List<ScannedFolder>) {
+        if (folders.isEmpty()) return
         viewModelScope.launch {
             try {
-                _toastMessage.emit("正在从「${folder.name}」导入...")
+                _toastMessage.emit("正在从 ${folders.size} 个文件夹导入...")
                 _scanProgress.value = "查询中..."
                 var total = 0
                 withContext(Dispatchers.IO) {
-                    val contentResolver = getApplication<Application>().contentResolver
-                    val projection = arrayOf(
-                        MediaStore.Images.Media._ID,
-                        MediaStore.Images.Media.DISPLAY_NAME
-                    )
-                    val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Images.Media.SIZE} > 0"
-                    } else {
-                        "${MediaStore.Images.Media.DATA} LIKE ? AND ${MediaStore.Images.Media.SIZE} > 0"
-                    }
-                    val selectionArgs = arrayOf("${folder.path}%")
-
-                    contentResolver.query(
-                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-                        projection, selection, selectionArgs, null
-                    )?.use { cursor ->
-                        val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                        val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+                    val existing = imageDao.getUrisByGroup(groupId).toHashSet()
+                    for (folder in folders) {
+                        if (!isActive) return@withContext
+                        val media = MediaScanner.queryFolderMedia(getApplication(), folder.path)
                         val batch = mutableListOf<WallpaperImage>()
-
-                        while (cursor.moveToNext()) {
-                            if (!isActive) return@withContext
-                            try {
-                                val id = cursor.getLong(idCol)
-                                val name = cursor.getString(nameCol) ?: "untitled"
-                                val uri = Uri.withAppendedPath(
-                                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id.toString()
-                                )
-                                batch.add(WallpaperImage(
-                                    groupId = groupId,
-                                    uri = uri.toString(),
-                                    displayName = name,
-                                    isFromFolder = true,
-                                    folderPath = folder.path
-                                ))
-                                if (batch.size >= 500) {
-                                    imageDao.insertAll(batch.toList())
-                                    total += batch.size
-                                    batch.clear()
-                                    withContext(Dispatchers.Main) {
-                                        _scanProgress.value = "导入中 $total 张"
-                                    }
-                                    yield()
+                        for (m in media) {
+                            if (m.uri in existing) continue
+                            existing.add(m.uri)
+                            batch.add(WallpaperImage(
+                                groupId = groupId,
+                                uri = m.uri,
+                                displayName = m.displayName,
+                                mediaType = m.mediaType,
+                                isFromFolder = true,
+                                folderPath = folder.path
+                            ))
+                            if (batch.size >= 500) {
+                                imageDao.insertAll(batch.toList())
+                                total += batch.size
+                                batch.clear()
+                                withContext(Dispatchers.Main) {
+                                    _scanProgress.value = "导入中 $total 个媒体"
                                 }
-                            } catch (_: Exception) { continue }
+                                yield()
+                            }
                         }
                         if (batch.isNotEmpty() && isActive) {
                             imageDao.insertAll(batch)
                             total += batch.size
                         }
                     }
-                    _scanProgress.value = ""
                 }
+                _scanProgress.value = ""
+                refreshCount(groupId)
+                refreshImages()
                 if (total > 0) {
-                    refreshCount(groupId)
-                    refreshImages()
-                    _toastMessage.emit("已从「${folder.name}」导入 $total 张图片")
+                    _toastMessage.emit("已导入 $total 个媒体")
                 } else {
-                    _toastMessage.emit("未找到图片")
+                    _toastMessage.emit("所选文件夹没有新媒体")
                 }
             } catch (e: Exception) {
-                _toastMessage.emit("导入失败: ${e.message}")
+                if (e !is kotlinx.coroutines.CancellationException) {
+                    Log.e(TAG, "importScannedFolders failed", e)
+                    _toastMessage.emit("导入失败: ${e.message}")
+                }
                 _scanProgress.value = ""
             }
         }
@@ -630,10 +573,3 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 }
-
-data class ScannedFolder(
-    val path: String,
-    val name: String,
-    val imageCount: Int,
-    val sampleUris: List<String> = emptyList() // Only a few for preview
-)

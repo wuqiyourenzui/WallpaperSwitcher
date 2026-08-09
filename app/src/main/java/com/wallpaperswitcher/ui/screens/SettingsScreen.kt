@@ -36,9 +36,12 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
     val globalSwitchMode by viewModel.globalSwitchMode.collectAsStateWithLifecycle()
     val globalScaleMode by viewModel.globalScaleMode.collectAsStateWithLifecycle()
     val themeColor by viewModel.themeColor.collectAsStateWithLifecycle()
+    val autoScanEnabled by viewModel.autoScanEnabled.collectAsStateWithLifecycle()
+    val autoScanIntervalMs by viewModel.autoScanIntervalMs.collectAsStateWithLifecycle()
 
     var showIntervalDialog by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
+    var showAutoScanIntervalDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -132,6 +135,40 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
         Spacer(modifier = Modifier.height(8.dp))
 
+        // Folder auto-scan
+        SettingsSection(title = "文件夹自动扫描") {
+            SettingsSwitchItem(
+                icon = Icons.Outlined.Sync,
+                title = "自动扫描文件夹",
+                subtitle = "定期把已导入文件夹中的新增图片/视频自动加入分组",
+                checked = autoScanEnabled,
+                onCheckedChange = { viewModel.toggleAutoScan(it, autoScanIntervalMs) }
+            )
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showAutoScanIntervalDialog = true }
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Outlined.Schedule, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("扫描间隔", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        formatInterval(autoScanIntervalMs),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
         // Usage guide
         SettingsSection(title = "使用指南") {
             SettingsInfoItem(
@@ -212,6 +249,56 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
             onSelect = { viewModel.setThemeColor(it); showColorDialog = false }
         )
     }
+
+    if (showAutoScanIntervalDialog) {
+        AutoScanIntervalDialog(
+            currentMs = autoScanIntervalMs,
+            onDismiss = { showAutoScanIntervalDialog = false },
+            onSelect = { ms ->
+                viewModel.toggleAutoScan(autoScanEnabled, ms)
+                showAutoScanIntervalDialog = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun AutoScanIntervalDialog(
+    currentMs: Long,
+    onDismiss: () -> Unit,
+    onSelect: (Long) -> Unit
+) {
+    val options = listOf(
+        1L * 60 * 60 * 1000 to "1 小时",
+        6L * 60 * 60 * 1000 to "6 小时",
+        12L * 60 * 60 * 1000 to "12 小时",
+        24L * 60 * 60 * 1000 to "24 小时"
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("自动扫描间隔") },
+        text = {
+            Column {
+                options.forEach { (ms, label) ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().clickable { onSelect(ms) }.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        RadioButton(selected = currentMs == ms, onClick = { onSelect(ms) })
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(label)
+                    }
+                }
+                Text(
+                    "系统周期任务最短约 15 分钟，实际执行时间由系统调度",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    )
 }
 
 @Composable

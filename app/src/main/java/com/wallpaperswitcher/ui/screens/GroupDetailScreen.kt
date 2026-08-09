@@ -10,6 +10,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
@@ -34,8 +35,11 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.decode.VideoFrameDecoder
 import com.wallpaperswitcher.data.*
+import com.wallpaperswitcher.engine.ScannedFolder
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -52,6 +56,7 @@ fun GroupDetailScreen(
     val scanProgress by viewModel.scanProgress.collectAsStateWithLifecycle()
 
     var showAddDialog by remember { mutableStateOf(false) }
+    var showFolderPicker by remember { mutableStateOf(false) }
     var previewImage by remember { mutableStateOf<WallpaperImage?>(null) }
     var selectedIds by remember { mutableStateOf(setOf<Long>()) }
     var isSelectionMode by remember { mutableStateOf(false) }
@@ -322,7 +327,19 @@ fun GroupDetailScreen(
             onAddFolder = {
                 showAddDialog = false
                 folderPickerLauncher.launch(null)
+            },
+            onScanFolders = {
+                showAddDialog = false
+                showFolderPicker = true
             }
+        )
+    }
+
+    if (showFolderPicker) {
+        FolderPickerDialog(
+            viewModel = viewModel,
+            groupId = groupId,
+            onDismiss = { showFolderPicker = false }
         )
     }
 
@@ -592,7 +609,8 @@ fun AddWallpaperDialog(
     onDismiss: () -> Unit,
     onAddSingle: () -> Unit,
     onAddMultiple: () -> Unit,
-    onAddFolder: () -> Unit
+    onAddFolder: () -> Unit,
+    onScanFolders: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -623,11 +641,119 @@ fun AddWallpaperDialog(
                     Spacer(modifier = Modifier.width(12.dp))
                     Text("从文件夹添加", modifier = Modifier.weight(1f))
                 }
+                TextButton(
+                    onClick = onScanFolders,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Outlined.FolderOpen, null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("扫描到的文件夹（可多选）", modifier = Modifier.weight(1f))
+                }
             }
         },
         confirmButton = {
             TextButton(onClick = onDismiss) { Text("取消") }
         }
+    )
+}
+
+/**
+ * Lists device folders that contain images/videos (scanned via MediaStore) and
+ * lets the user select several at once to import into the group.
+ */
+@Composable
+fun FolderPickerDialog(
+    viewModel: WallpaperViewModel,
+    groupId: Long,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    var folders by remember { mutableStateOf<List<ScannedFolder>?>(null) }
+    var loading by remember { mutableStateOf(true) }
+    var selectedPaths by remember { mutableStateOf(setOf<String>()) }
+
+    LaunchedEffect(Unit) {
+        folders = withContext(Dispatchers.IO) { viewModel.loadScannedFolders() }
+        loading = false
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("选择文件夹（图片/视频）") },
+        text = {
+            when {
+                loading -> Box(
+                    modifier = Modifier.fillMaxWidth().padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+                folders.isNullOrEmpty() -> Text("未扫描到包含图片或视频的文件夹")
+                else -> LazyColumn(
+                    modifier = Modifier.heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(folders.orEmpty(), key = { it.path }) { folder ->
+                        val isSelected = folder.path in selectedPaths
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable {
+                                    selectedPaths = if (isSelected) selectedPaths - folder.path
+                                    else selectedPaths + folder.path
+                                }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            val sample = folder.sampleUris.firstOrNull()
+                            if (sample != null) {
+                                AsyncImage(
+                                    model = ImageRequest.Builder(context)
+                                        .data(Uri.parse(sample))
+                                        .size(96, 96)
+                                        .allowHardware(false)
+                                        .build(),
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(48.dp)
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(folder.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+                                Text(
+                                    "${folder.imageCount} 张图片 / ${folder.videoCount} 个视频",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Checkbox(checked = isSelected, onCheckedChange = null)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = selectedPaths.isNotEmpty(),
+                onClick = {
+                    val selected = folders.orEmpty().filter { it.path in selectedPaths }
+                    viewModel.importScannedFolders(groupId, selected)
+                    onDismiss()
+                }
+            ) { Text("导入所选 (${selectedPaths.size})") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
     )
 }
 
