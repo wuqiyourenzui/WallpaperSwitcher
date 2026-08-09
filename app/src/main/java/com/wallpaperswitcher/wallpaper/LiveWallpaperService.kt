@@ -548,7 +548,10 @@ class LiveWallpaperService : WallpaperService() {
 
             dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
             val mediaType = nextImage.mediaType
-            Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
+            // Include the id: multiple files can share the same display name
+            // (logs showed '1 (7).jpg' twice with different ids), which made
+            // duplicate/order investigations ambiguous.
+            Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType) id=${nextImage.id}")
 
             pauseGif()
 
