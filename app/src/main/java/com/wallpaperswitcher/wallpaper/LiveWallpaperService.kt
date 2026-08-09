@@ -402,7 +402,8 @@ class LiveWallpaperService : WallpaperService() {
                     Log.d(TAG, "Target $targetId already playing, skip")
                     return
                 }
-                if (!videoMode && currentBitmap != null && !currentBitmap!!.isRecycled) {
+                val shownBmp = currentBitmap
+                if (!videoMode && shownBmp != null && !shownBmp.isRecycled) {
                     Log.d(TAG, "Target $targetId already showing, skip")
                     return
                 }
@@ -601,7 +602,8 @@ class LiveWallpaperService : WallpaperService() {
 
                     if (imageId == lastDisplayedId && lastDisplayedId != 0L) {
                         if (videoMode && r.isVideoPlaying) return@launch
-                        if (!videoMode && currentBitmap != null && !currentBitmap!!.isRecycled) return@launch
+                        val shownBmp = currentBitmap
+                        if (!videoMode && shownBmp != null && !shownBmp.isRecycled) return@launch
                     }
 
                     currentScaleMode = try {
