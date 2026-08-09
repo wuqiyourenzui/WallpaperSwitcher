@@ -53,7 +53,9 @@ class FolderAutoScanWorker(
                     )
                 }
                 if (newItems.isNotEmpty()) {
-                    newItems.chunked(500).forEach { batch ->
+                    // 100 rows per INSERT stays under the 999 bound-variable
+                    // limit of older SQLite builds (8 columns x 100 = 800).
+                    newItems.chunked(100).forEach { batch ->
                         imageDao.insertAll(batch)
                         inserted += batch.size
                     }

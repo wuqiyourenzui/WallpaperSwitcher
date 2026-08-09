@@ -286,7 +286,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = name, mediaType = detectMediaType(name))
             }
             if (images.isNotEmpty()) {
-                imageDao.insertAll(images)
+                // Chunk large multi-select imports: 100 rows per INSERT stays
+                // under the 999 bound-variable limit of older SQLite builds.
+                images.chunked(100).forEach { chunk -> imageDao.insertAll(chunk) }
                 refreshCount(groupId)
                 refreshImages()
                 _toastMessage.emit("Added ${images.size} images")
@@ -386,7 +388,12 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteImages(images: List<WallpaperImage>) {
         viewModelScope.launch {
-            imageDao.deleteByIds(images.map { it.id })
+            // Chunk the DELETE: older SQLite builds cap a statement at 999
+            // bound variables, and a select-all delete can pass thousands of
+            // ids (would throw "too many SQL variables").
+            images.map { it.id }.chunked(500).forEach { chunk ->
+                imageDao.deleteByIds(chunk)
+            }
             _selectedGroupId.value?.let { refreshCount(it) }
             refreshImages()
         }
@@ -398,7 +405,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteImagesByIds(ids: Set<Long>) {
         if (ids.isEmpty()) return
         viewModelScope.launch {
-            imageDao.deleteByIds(ids.toList())
+            ids.toList().chunked(500).forEach { chunk ->
+                imageDao.deleteByIds(chunk)
+            }
             _selectedGroupId.value?.let { refreshCount(it) }
             refreshImages()
         }
@@ -553,7 +562,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                                 isFromFolder = true,
                                 folderPath = folder.path
                             ))
-                            if (batch.size >= 500) {
+                            // 100 rows per INSERT keeps the bound-variable count
+                            // well under the 999 limit of older SQLite builds.
+                            if (batch.size >= 100) {
                                 imageDao.insertAll(batch.toList())
                                 total += batch.size
                                 batch.clear()
