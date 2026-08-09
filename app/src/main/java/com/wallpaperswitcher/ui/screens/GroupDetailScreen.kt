@@ -669,7 +669,7 @@ fun AddWallpaperDialog(
  * Lists device folders that contain images/videos (scanned via MediaStore) and
  * lets the user select several at once to import into the group.
  */
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun FolderPickerDialog(
     viewModel: WallpaperViewModel,
@@ -723,28 +723,21 @@ fun FolderPickerDialog(
                         }
                     }
                 )
+                // Count + select-all on their own line, sort chips below:
+                // previously everything shared one Row, which squeezed the
+                // "共 N 个文件夹" text on narrow screens (it could clip or
+                // overflow next to the chips and the select-all button).
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
                         "共 ${displayFolders.size} 个文件夹",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.weight(1f)
                     )
-                    FilterChip(
-                        selected = !sortByName,
-                        onClick = { sortByName = false },
-                        label = { Text("媒体多优先") }
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    FilterChip(
-                        selected = sortByName,
-                        onClick = { sortByName = true },
-                        label = { Text("名称排序") }
-                    )
-                    Spacer(modifier = Modifier.weight(1f))
                     if (displayFolders.isNotEmpty()) {
                         TextButton(
                             onClick = {
@@ -758,6 +751,22 @@ fun FolderPickerDialog(
                             Text(if (allVisibleSelected) "取消全选" else "全选")
                         }
                     }
+                }
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    FilterChip(
+                        selected = !sortByName,
+                        onClick = { sortByName = false },
+                        label = { Text("媒体多优先") }
+                    )
+                    FilterChip(
+                        selected = sortByName,
+                        onClick = { sortByName = true },
+                        label = { Text("名称排序") }
+                    )
                 }
                 when {
                     loading -> Box(
