@@ -192,7 +192,10 @@ object MediaScanner {
         }
         val result = mutableListOf<FolderMedia>()
         contentResolver.query(
-            collectionUri, projection, selection, arrayOf("$folderPath%"), null
+            // "Folder/%" instead of "Folder%": the old prefix match also pulled
+            // sibling folders whose names merely start with the same text
+            // (e.g. importing "DCIM/Camera" also imported "DCIM/Camera2").
+            collectionUri, projection, selection, arrayOf("$folderPath/%"), null
         )?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)

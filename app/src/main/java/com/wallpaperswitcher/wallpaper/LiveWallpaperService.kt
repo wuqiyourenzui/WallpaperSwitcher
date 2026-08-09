@@ -132,7 +132,10 @@ class LiveWallpaperService : WallpaperService() {
             override fun onReceive(context: Context, intent: Intent) {
                 when (intent.action) {
                     Intent.ACTION_SCREEN_OFF -> setPowerSave(true, "screen-off")
-                    Intent.ACTION_SCREEN_ON -> setPowerSave(false, "screen-on")
+                    // Only resume full speed if the wallpaper is actually
+                    // visible: while the keyguard or another app still covers
+                    // it (screen on), keep the low-power throttle active.
+                    Intent.ACTION_SCREEN_ON -> if (isVisible) setPowerSave(false, "screen-on")
                 }
             }
         }
