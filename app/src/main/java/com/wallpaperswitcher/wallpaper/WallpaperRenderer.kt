@@ -699,16 +699,29 @@ class WallpaperRenderer(
                         val startNs = System.nanoTime()
 
                         if (!inputDone) {
-                            val inIdx = dec.dequeueInputBuffer(0)
-                            if (inIdx >= 0) {
-                                val buf = dec.getInputBuffer(inIdx) ?: continue
-                                val size = ext.readSampleData(buf, 0)
-                                if (size < 0) {
-                                    dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                    inputDone = true
+                            // Pre-fill a few input buffers: on cloud-hosted
+                            // files each readSampleData can block on the
+                            // network, and serializing read->decode->read made
+                            // playback stutter. Filling the codec input queue
+                            // in batches keeps the reads continuous while the
+                            // output cadence stays controlled by intervalNs
+                            // (playback speed is unchanged).
+                            var fed = 0
+                            while (fed < 3 && !inputDone) {
+                                val inIdx = dec.dequeueInputBuffer(0)
+                                if (inIdx >= 0) {
+                                    val buf = dec.getInputBuffer(inIdx) ?: break
+                                    val size = ext.readSampleData(buf, 0)
+                                    if (size < 0) {
+                                        dec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                        inputDone = true
+                                    } else {
+                                        dec.queueInputBuffer(inIdx, 0, size, ext.sampleTime, 0)
+                                        ext.advance()
+                                        fed++
+                                    }
                                 } else {
-                                    dec.queueInputBuffer(inIdx, 0, size, ext.sampleTime, 0)
-                                    ext.advance()
+                                    break
                                 }
                             }
                         }
