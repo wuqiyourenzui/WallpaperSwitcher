@@ -312,10 +312,11 @@ class LiveWallpaperService : WallpaperService() {
                         drawCurrentImage()
                     }
                 }
-            } else if (!powerManager.isInteractive()) {
-                // The screen is off: throttle the video decoder so it stops
-                // burning power in the dark. An app simply covering the
-                // wallpaper (screen still on) keeps full-speed playback.
+            } else {
+                // The wallpaper is not visible: either the screen is off or
+                // another app covers it. Throttle decode/render so the engine
+                // stops burning power behind other apps. Playback never stops
+                // or restarts - it resumes full speed when visible again.
                 setPowerSave(true, "visibility")
             }
         }
@@ -467,11 +468,12 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         private suspend fun executeSwitch(source: String, targetId: Long?) {
-            // Screen off: the timer keeps ticking normally, but starting a new
-            // decode in the dark only wastes battery - the switch simply runs
-            // on the next tick once the screen is back on. Unlock/double-tap
-            // happen with the screen on, so they are never affected.
-            if (renderer?.powerSaveMode == true) {
+            // Only skip when the SCREEN is actually off: starting a decode in
+            // the dark wastes battery, and the switch runs on the next tick
+            // after screen-on. When another app merely covers the wallpaper
+            // (screen still on), timer switches still execute - the new media
+            // simply plays in the throttled power-save mode until visible.
+            if (!powerManager.isInteractive()) {
                 Log.d(TAG, "Skip $source switch while screen is off (power save)")
                 return
             }
