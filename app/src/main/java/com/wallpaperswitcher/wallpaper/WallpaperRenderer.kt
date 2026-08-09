@@ -272,7 +272,6 @@ class WallpaperRenderer(
 
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
-            android.opengl.Matrix.setIdentityM(imageTexMatrix, 0)
             val quad = computeQuad(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
             vertexBuffer?.clear()
             vertexBuffer?.put(quad)?.position(0)
@@ -784,7 +783,6 @@ class WallpaperRenderer(
             val texLoc = imageTexLoc
             val posLoc = imagePosLoc
             val tcLoc = imageTcLoc
-            android.opengl.Matrix.setIdentityM(imageTexMatrix, 0)
             GLES20.glUniformMatrix4fv(texMatLoc, 1, false, imageTexMatrix, 0)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, blackTexId)
@@ -826,7 +824,6 @@ class WallpaperRenderer(
             // video quad does not cover the full screen; without clearing, the
             // letterbox area keeps showing the PREVIOUS video's last frame
             // (user-visible as "the old video stays on screen after switching").
-            GLES20.glClearColor(0f, 0f, 0f, 1f)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
             // Belt-and-suspenders: draw real black pixels over the whole
             // surface. Some devices/drivers do not fully invalidate preserved
