@@ -143,6 +143,21 @@ class LiveWallpaperService : WallpaperService() {
             activeEngine = this
             db = AppDatabase.getInstance(applicationContext)
             setTouchEventsEnabled(true)
+            // Apply the clarity setting live: toggling it in Settings updates
+            // the currently displayed wallpaper immediately instead of waiting
+            // for the next switch. The per-switch applyClarityMode() below
+            // remains as a belt-and-suspenders for the very first render.
+            scope.launch {
+                try {
+                    db.settingsDao().getValueFlow(SettingsKeys.CLARITY_MODE).collect { mode ->
+                        renderer?.sharpnessScale = when (mode) {
+                            "off" -> 0f
+                            "strong" -> 1.6f
+                            else -> 1f
+                        }
+                    }
+                } catch (_: Exception) {}
+            }
             // Start the switch queue consumer up-front so triggers are always
             // processed immediately.
             ensureSwitchConsumer()
