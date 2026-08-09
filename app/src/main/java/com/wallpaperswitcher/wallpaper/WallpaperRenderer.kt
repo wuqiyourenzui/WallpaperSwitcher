@@ -405,7 +405,10 @@ class WallpaperRenderer(
                 val afd = context.contentResolver.openAssetFileDescriptor(Uri.parse(uriStr), "r")
                 if (afd == null) {
                     Log.e(TAG, "Cannot open video stream: $uriStr")
-                    isVideoPlaying = false
+                    if (videoGeneration.get() == gen) {
+                        isVideoPlaying = false
+                        onVideoStartFailed?.invoke()
+                    }
                     return
                 }
                 localAfd = afd
@@ -413,7 +416,12 @@ class WallpaperRenderer(
                 val trackIdx = (0 until ext.trackCount).firstOrNull { i ->
                     ext.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
                 } ?: run {
-                    Log.e(TAG, "No video track"); isVideoPlaying = false; return
+                    Log.e(TAG, "No video track")
+                    if (videoGeneration.get() == gen) {
+                        isVideoPlaying = false
+                        onVideoStartFailed?.invoke()
+                    }
+                    return
                 }
                 ext.selectTrack(trackIdx)
                 val format = ext.getTrackFormat(trackIdx)

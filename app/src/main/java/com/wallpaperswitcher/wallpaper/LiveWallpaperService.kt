@@ -70,6 +70,10 @@ class LiveWallpaperService : WallpaperService() {
         private val shuffleShownIds = ConcurrentHashMap.newKeySet<Long>()
         @Volatile private var shuffleAllCount = 0
         @Volatile private var shuffleDirty = false
+        // Media ids that recently failed to start (e.g. a video with no video
+        // track). Recovery switches skip these so one broken file can never
+        // freeze the wallpaper until the next timer tick.
+        private val failedMediaIds = ConcurrentHashMap.newKeySet<Long>()
 
         // Unified EGL renderer — lives across surface recreations
         private var renderer: WallpaperRenderer? = null
@@ -192,12 +196,16 @@ class LiveWallpaperService : WallpaperService() {
          * current media if nothing else started playing.
          */
         private fun onVideoStartFailed() {
-            Log.w(TAG, "Video failed to start; scheduling recovery")
+            Log.w(TAG, "Video failed to start; scheduling recovery switch")
+            if (lastDisplayedId > 0L) failedMediaIds.add(lastDisplayedId)
             videoMode = false
             lastDisplayedId = 0L
             mainHandler.postDelayed({
                 if (isVisible && surfaceReady && !switchInProgress && renderer?.isVideoPlaying != true) {
-                    drawCurrentImage()
+                    // Switch to a DIFFERENT media instead of retrying the same
+                    // broken file: RANDOM pick excludes the failed LAST_IMAGE_ID
+                    // and the failedMediaIds blocklist covers sequential/shuffle.
+                    requestSwitch("recovery")
                 }
             }, 1500L)
         }
@@ -403,6 +411,23 @@ class LiveWallpaperService : WallpaperService() {
                 if (nextImage == null) return
             }
 
+            // Skip media that recently failed to start (broken video files) so
+            // recovery switches never re-pick the same broken item.
+            var media: WallpaperImage = nextImage
+            if (media.id in failedMediaIds) {
+                var attempts = 0
+                while (attempts < 5) {
+                    val alt = imageDao.getRandomImageFromEnabledGroupsExcluding(media.id)
+                        ?: imageDao.getRandomImageFromEnabledGroups()
+                    if (alt == null || alt.id !in failedMediaIds) {
+                        if (alt != null) media = alt
+                        break
+                    }
+                    attempts++
+                }
+            }
+            nextImage = media
+
             dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
             val mediaType = nextImage.mediaType
             Log.d(TAG, "Switch to: ${nextImage.displayName} ($mediaType)")
@@ -450,6 +475,11 @@ class LiveWallpaperService : WallpaperService() {
                         Log.e(TAG, "Failed to load bitmap for: ${nextImage.displayName} uri=${nextImage.uri}")
                     }
                 }
+            }
+            // A healthy media was applied: clear the failure blocklist so a
+            // previously-broken file can be retried later.
+            if (lastDisplayedId == nextImage.id && nextImage.id !in failedMediaIds) {
+                failedMediaIds.clear()
             }
         }
 
