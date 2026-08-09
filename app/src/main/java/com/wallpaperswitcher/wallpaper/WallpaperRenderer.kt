@@ -276,11 +276,11 @@ class WallpaperRenderer(
     fun showImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         postToRenderThread {
             if (!surfaceReady || !contextReady) return@postToRenderThread
-            renderImage(bitmap, scaleMode)
+            renderImage(bitmap, scaleMode, useMipmap = false)
         }
     }
 
-    private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode) {
+    private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode, useMipmap: Boolean) {
         try {
             if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
             if (imageProgram == 0 || imageTexId == 0) {
@@ -293,6 +293,23 @@ class WallpaperRenderer(
 
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+            if (useMipmap) {
+                // Trilinear mipmapping removes aliasing/shimmer when a large
+                // image is downscaled (FIT mode). Not used for GIF frames,
+                // where regenerating mipmaps every frame would cost power.
+                GLES20.glTexParameteri(
+                    GLES20.GL_TEXTURE_2D,
+                    GLES20.GL_TEXTURE_MIN_FILTER,
+                    GLES20.GL_LINEAR_MIPMAP_LINEAR
+                )
+                GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D)
+            } else {
+                GLES20.glTexParameteri(
+                    GLES20.GL_TEXTURE_2D,
+                    GLES20.GL_TEXTURE_MIN_FILTER,
+                    GLES20.GL_LINEAR
+                )
+            }
             val quad = computeQuad(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
             vertexBuffer?.clear()
             vertexBuffer?.put(quad)?.position(0)
@@ -426,7 +443,7 @@ class WallpaperRenderer(
         postToRenderThread {
             cleanupVideoResourcesOnRenderThread()
             if (surfaceReady && contextReady) {
-                renderImage(bitmap, scaleMode)
+                renderImage(bitmap, scaleMode, useMipmap = true)
             }
         }
     }
