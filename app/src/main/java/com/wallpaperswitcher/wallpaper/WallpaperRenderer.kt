@@ -8,6 +8,7 @@ import android.net.Uri
 import android.opengl.*
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import android.view.SurfaceHolder
@@ -87,6 +88,13 @@ class WallpaperRenderer(
     private var vertexBuffer: FloatBuffer? = null
     private var imageTexId = 0
     private var imageTexMatrix = FloatArray(16)
+    // 1x1 opaque black texture + full-screen quad: drawn under every media so
+    // the FIT/letterbox area always contains freshly presented black pixels
+    // instead of whatever was left in the framebuffer (e.g. the previous
+    // video's last frame), even on devices/drivers where glClear alone does
+    // not invalidate the whole window surface.
+    private var blackTexId = 0
+    private var backgroundBuffer: FloatBuffer? = null
 
     // Screen dimensions — only on render thread
     private var screenW = 0f
@@ -117,6 +125,8 @@ class WallpaperRenderer(
      */
     @Volatile
     var onVideoStartFailed: (() -> Unit)? = null
+    @Volatile
+    private var lastRenderLogAt = 0L
 
     // ======== Lifecycle ========
 
@@ -220,6 +230,7 @@ class WallpaperRenderer(
             vertexBuffer?.put(quad)?.position(0)
 
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            drawBlackBackground()
             GLES20.glUseProgram(imageProgram)
             val texMatLoc = GLES20.glGetUniformLocation(imageProgram, "uTexMatrix")
             val texLoc = GLES20.glGetUniformLocation(imageProgram, "uTexture")
@@ -449,6 +460,13 @@ class WallpaperRenderer(
                     st.setDefaultBufferSize(videoW, videoH)
                     surfaceTexture = st
                     codecSurface = Surface(st)
+                    // Clear immediately so the previous video's frame cannot
+                    // linger around/behind the new video while its first frame
+                    // is being decoded.
+                    if (eglSurface != EGL14.EGL_NO_SURFACE) {
+                        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+                        EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+                    }
                     setupOk = true
                     setupLatch.countDown()
                 }
@@ -486,6 +504,8 @@ class WallpaperRenderer(
                     val quad = computeVideoQuad(quadW.toFloat(), quadH.toFloat(), scaleMode)
                     vertexBuffer?.clear()
                     vertexBuffer?.put(quad)?.position(0)
+                    Log.d(TAG, "Video quad set: video=${quadW}x${quadH} mode=$scaleMode " +
+                            "screen=${screenW.toInt()}x${screenH.toInt()} quad=${quad.toList()}")
                 }
 
                 Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps")
@@ -621,6 +641,40 @@ class WallpaperRenderer(
     }
 
     /**
+     * Draw an opaque black quad covering the whole framebuffer. Called on the
+     * render thread right before the media quad. Unlike glClear, this draws
+     * real pixels into every region of the surface, so no stale content from a
+     * previous video can survive in the FIT letterbox area.
+     */
+    private fun drawBlackBackground() {
+        try {
+            val bg = backgroundBuffer ?: return
+            if (imageProgram == 0 || blackTexId == 0) return
+            if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
+            GLES20.glUseProgram(imageProgram)
+            val texMatLoc = GLES20.glGetUniformLocation(imageProgram, "uTexMatrix")
+            val texLoc = GLES20.glGetUniformLocation(imageProgram, "uTexture")
+            val posLoc = GLES20.glGetAttribLocation(imageProgram, "aPosition")
+            val tcLoc = GLES20.glGetAttribLocation(imageProgram, "aTexCoord")
+            android.opengl.Matrix.setIdentityM(imageTexMatrix, 0)
+            GLES20.glUniformMatrix4fv(texMatLoc, 1, false, imageTexMatrix, 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, blackTexId)
+            GLES20.glUniform1i(texLoc, 0)
+
+            bg.position(0)
+            GLES20.glEnableVertexAttribArray(posLoc)
+            GLES20.glVertexAttribPointer(posLoc, 2, GLES20.GL_FLOAT, false, 16, bg)
+            bg.position(2)
+            GLES20.glEnableVertexAttribArray(tcLoc)
+            GLES20.glVertexAttribPointer(tcLoc, 2, GLES20.GL_FLOAT, false, 16, bg)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        } catch (t: Throwable) {
+            Log.e(TAG, "drawBlackBackground failed", t)
+        }
+    }
+
+    /**
      * Render a video frame. Called on render thread.
      * No glClear — the full-screen quad overwrites the entire framebuffer.
      * This prevents black flash during transitions.
@@ -633,11 +687,22 @@ class WallpaperRenderer(
                 return
             }
 
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastRenderLogAt > 5000L) {
+                lastRenderLogAt = now
+                Log.d(TAG, "Video frame rendered: tex=$videoTexId screen=${screenW.toInt()}x${screenH.toInt()}")
+            }
             // Clear the whole framebuffer first. In FIT/STRETCH-less modes the
             // video quad does not cover the full screen; without clearing, the
             // letterbox area keeps showing the PREVIOUS video's last frame
             // (user-visible as "the old video stays on screen after switching").
+            GLES20.glClearColor(0f, 0f, 0f, 1f)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            // Belt-and-suspenders: draw real black pixels over the whole
+            // surface. Some devices/drivers do not fully invalidate preserved
+            // window buffers on glClear alone, which left the previous video
+            // visible in the FIT letterbox even after the clear was added.
+            drawBlackBackground()
             GLES20.glUseProgram(videoProgram)
 
             val texMatLoc = GLES20.glGetUniformLocation(videoProgram, "uTexMatrix")
@@ -776,6 +841,10 @@ class WallpaperRenderer(
         imageProgram = createProgram(VERTEX_SHADER, IMAGE_FRAGMENT_SHADER)
         videoProgram = createProgram(VERTEX_SHADER, VIDEO_FRAGMENT_SHADER)
         vertexBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        backgroundBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
+            put(floatArrayOf(-1f,-1f,0f,1f, 1f,-1f,1f,1f, -1f,1f,0f,0f, 1f,1f,1f,0f))
+            position(0)
+        }
         val textures = IntArray(1)
         GLES20.glGenTextures(1, textures, 0)
         imageTexId = textures[0]
@@ -785,13 +854,28 @@ class WallpaperRenderer(
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         android.opengl.Matrix.setIdentityM(imageTexMatrix, 0)
+
+        val black = IntArray(1)
+        GLES20.glGenTextures(1, black, 0)
+        blackTexId = black[0]
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, blackTexId)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        val blackBmp = Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888)
+        blackBmp.eraseColor(Color.BLACK)
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, blackBmp, 0)
+        blackBmp.recycle()
     }
 
     private fun cleanupGlResources() {
         if (imageProgram != 0) { GLES20.glDeleteProgram(imageProgram); imageProgram = 0 }
         if (videoProgram != 0) { GLES20.glDeleteProgram(videoProgram); videoProgram = 0 }
         if (imageTexId != 0) { GLES20.glDeleteTextures(1, intArrayOf(imageTexId), 0); imageTexId = 0 }
+        if (blackTexId != 0) { GLES20.glDeleteTextures(1, intArrayOf(blackTexId), 0); blackTexId = 0 }
         vertexBuffer = null
+        backgroundBuffer = null
         glResourcesValid = false
     }
 
