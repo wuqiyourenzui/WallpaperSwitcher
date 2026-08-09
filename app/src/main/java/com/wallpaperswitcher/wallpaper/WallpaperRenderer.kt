@@ -178,8 +178,17 @@ class WallpaperRenderer(
 
     fun surfaceCreated() {
         postToRenderThread {
-            if (!contextReady) return@postToRenderThread
-            createEglSurface()
+            if (!contextReady) {
+                // EGL initialization may have failed earlier (transient driver
+                // or memory issue). Retry on every surface creation so the
+                // wallpaper never stays blank forever.
+                setupEglContext()
+                if (contextReady) {
+                    setupGlResources()
+                    glResourcesValid = true
+                }
+            }
+            if (contextReady) createEglSurface()
         }
     }
 

@@ -177,14 +177,21 @@ class LiveWallpaperService : WallpaperService() {
          * an immediate draw could hit a not-yet-created EGL surface and leave
          * the wallpaper blank (which looks like switching stopped working).
          */
-        private fun redrawWhenSurfaceReady() {
+        private fun redrawWhenSurfaceReady(attempts: Int = 0) {
             if (!isVisible) return
             val r = renderer ?: return
             if (r.isSurfaceReady()) {
                 drawCurrentImage()
                 return
             }
-            mainHandler.postDelayed({ redrawWhenSurfaceReady() }, 50L)
+            if (attempts >= 60) {
+                // The EGL surface never became ready (e.g. initialization keeps
+                // failing). Stop polling: endless 50ms wakeups would waste
+                // battery. A later surfaceCreated()/visibility event retries.
+                Log.w(TAG, "Surface never became ready after ${attempts * 50L}ms; stopping redraw polling")
+                return
+            }
+            mainHandler.postDelayed({ redrawWhenSurfaceReady(attempts + 1) }, 50L)
         }
 
         /**
