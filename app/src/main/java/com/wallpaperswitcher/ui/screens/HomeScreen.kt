@@ -16,8 +16,11 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.data.WallpaperGroup
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
@@ -51,7 +54,20 @@ fun HomeScreen(
         // double-tap / unlock switches. If it is not running (wallpaper never
         // applied, or a different live wallpaper was selected), switching
         // appears dead. Surface that state here instead of silently failing.
-        val engineRunning = LiveWallpaperService.engineRunning
+        // Refresh on every ON_RESUME (e.g. after returning from the system
+        // live-wallpaper picker) so the warning disappears once the engine
+        // actually starts.
+        val lifecycleOwner = LocalLifecycleOwner.current
+        var engineRunning by remember { mutableStateOf(LiveWallpaperService.engineRunning) }
+        DisposableEffect(lifecycleOwner) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    engineRunning = LiveWallpaperService.engineRunning
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        }
         if (serviceEnabled && !engineRunning) {
             Spacer(modifier = Modifier.height(12.dp))
             Card(
