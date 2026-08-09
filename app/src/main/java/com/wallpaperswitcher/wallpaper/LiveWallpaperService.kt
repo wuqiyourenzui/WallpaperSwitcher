@@ -281,6 +281,9 @@ class LiveWallpaperService : WallpaperService() {
             switchInProgress = false
             switchStartedAt = 0L
             consumerStarted.set(false)
+            // Remove any pending delayed recovery / redraw callbacks so they
+            // can never fire after the engine is destroyed.
+            mainHandler.removeCallbacksAndMessages(null)
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
             flushShuffleState()
             try { renderer?.release() } catch (_: Exception) {}
