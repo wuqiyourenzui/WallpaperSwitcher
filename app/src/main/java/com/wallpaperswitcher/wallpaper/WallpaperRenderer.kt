@@ -143,8 +143,13 @@ class WallpaperRenderer(
     private var codecSurface: Surface? = null
     // Source size + scale mode of the current video (render thread only),
     // used to sharpen the picture when a low-res video is magnified.
+    // videoSourceW/H are the decoded texture size (for texel offsets);
+    // videoDisplayW/H are the on-screen orientation (90/270°-rotated phone
+    // recordings swap the axes), which is what the upscale factor needs.
     private var videoSourceW = 0f
     private var videoSourceH = 0f
+    private var videoDisplayW = 0f
+    private var videoDisplayH = 0f
     private var videoScaleMode: ScaleMode = ScaleMode.FIT
     private var extractor: MediaExtractor? = null
     private var decoder: MediaCodec? = null
@@ -703,6 +708,8 @@ class WallpaperRenderer(
                         // magnified to fill the screen.
                         videoSourceW = videoW.toFloat()
                         videoSourceH = videoH.toFloat()
+                        videoDisplayW = quadW.toFloat()
+                        videoDisplayH = quadH.toFloat()
                         videoScaleMode = scaleMode
                         // Clear immediately so the previous video's frame cannot
                         // linger around/behind the new video while its first frame
@@ -1038,7 +1045,7 @@ class WallpaperRenderer(
                 if (videoSourceW > 0f) 1f / videoSourceW else 1f,
                 if (videoSourceH > 0f) 1f / videoSourceH else 1f
             )
-            GLES20.glUniform1f(videoSharpLoc, sharpnessFor(videoSourceW, videoSourceH, videoScaleMode))
+            GLES20.glUniform1f(videoSharpLoc, sharpnessFor(videoDisplayW, videoDisplayH, videoScaleMode))
 
             vertexBuffer?.position(0)
             GLES20.glEnableVertexAttribArray(posLoc)
