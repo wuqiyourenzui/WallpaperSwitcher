@@ -319,9 +319,7 @@ class WallpaperRenderer(
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             val swapped = EGL14.eglSwapBuffers(eglDisplay, eglSurface)
-            if (swapped) {
-                lastVideoFrameAt = SystemClock.elapsedRealtime()
-            } else {
+            if (!swapped) {
                 Log.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
             }
         } catch (t: Throwable) {
@@ -461,6 +459,10 @@ class WallpaperRenderer(
         var localExtractor: MediaExtractor? = null
         var localDecoder: MediaCodec? = null
         var localAfd: AssetFileDescriptor? = null
+        // Reset the health-monitor timestamp for this video: lastVideoFrameAt
+        // is shared across videos, and a stale value from the previous video
+        // made the engine misjudge a healthy video as stalled.
+        lastVideoFrameAt = 0L
         try {
             // Outer loop: restart the codec cleanly when the video loops.
             // Flushing and re-feeding an in-place codec can crash some hardware
@@ -886,7 +888,7 @@ class WallpaperRenderer(
             }
             if (now - lastRenderLogAt > 5000L) {
                 lastRenderLogAt = now
-                Log.d(TAG, "Video frame rendered: tex=$videoTexId screen=${screenW.toInt()}x${screenH.toInt()}")
+                Log.d(TAG, "Video frame rendered: tex=$videoTexId screen=${screenW.toInt()}x${screenH.toInt()} last=$lastVideoFrameAt")
             }
             // Clear the whole framebuffer first. In FIT/STRETCH-less modes the
             // video quad does not cover the full screen; without clearing, the
@@ -919,7 +921,9 @@ class WallpaperRenderer(
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             val swapped = EGL14.eglSwapBuffers(eglDisplay, eglSurface)
-            if (!swapped) {
+            if (swapped) {
+                lastVideoFrameAt = now
+            } else {
                 Log.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
             }
         } catch (t: Throwable) {
@@ -939,6 +943,10 @@ class WallpaperRenderer(
      * The caller (stopVideoAndRender) will immediately draw the new image.
      */
     private fun cleanupVideoResourcesOnRenderThread() {
+        // Reset the render-rate window so the per-minute diagnostics only
+        // measure continuous playback, not idle gaps between switches.
+        renderFpsWindowStart = 0L
+        renderFpsCount = 0
         try { surfaceTexture?.release() } catch (_: Exception) {}
         surfaceTexture = null
         try { codecSurface?.release() } catch (_: Exception) {}

@@ -700,17 +700,27 @@ class LiveWallpaperService : WallpaperService() {
          */
         private fun startVideoHealthMonitor() {
             videoHealthJob?.cancel()
+            val startAt = SystemClock.elapsedRealtime()
             videoHealthJob = scope.launch {
                 while (isActive) {
                     delay(10_000L)
                     if (!videoMode || renderer?.isVideoPlaying != true) return@launch
+                    val now = SystemClock.elapsedRealtime()
                     val last = renderer?.lastVideoFrameAt ?: 0L
-                    if (last > 0L) {
-                        if (SystemClock.elapsedRealtime() - last > 8_000L) {
-                            Log.w(TAG, "Video stalled: no frame presented for 8s; recovering")
+                    if (last < startAt) {
+                        // No frame since this video started. Slow/cloud sources
+                        // can legitimately take a while for the first frame, so
+                        // only recover after a generous grace period.
+                        if (now - startAt > 15_000L) {
+                            Log.w(TAG, "Video never presented a frame in ${(now - startAt) / 1000}s; recovering (last=$last)")
                             onVideoStartFailed()
                             return@launch
                         }
+                    } else if (now - last > 12_000L) {
+                        Log.w(TAG, "Video stalled: no frame for ${(now - last) / 1000}s; recovering")
+                        onVideoStartFailed()
+                        return@launch
+                    } else {
                         // Playing healthily: any previous recovery failures are
                         // stale, so auto-recovery can kick in again if needed.
                         if (recoveryFailCount > 0) recoveryFailCount = 0
