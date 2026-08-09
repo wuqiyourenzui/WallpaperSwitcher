@@ -93,13 +93,14 @@ class WallpaperSwitchService : Service() {
                     // Get global interval
                     val interval = db.settingsDao().getLong(SettingsKeys.GLOBAL_INTERVAL_MS, 60_000L)
                         .coerceAtLeast(10_000L)
-                    // Screen off: recheck at a low frequency (60s) instead of
-                    // every interval, so the service stops waking every 10s in
-                    // the dark. When the screen is back on, the normal interval
-                    // is restored from the next check.
+                    // Screen off: recheck at max(interval, 60s) so short
+                    // intervals (e.g. 10s) stop waking the service in the dark,
+                    // while long intervals (e.g. 24h) are never checked MORE
+                    // often than their own cadence. When the screen is back on,
+                    // the normal interval is restored from the next check.
                     val interactive =
                         (getSystemService(Context.POWER_SERVICE) as? PowerManager)?.isInteractive == true
-                    delay(if (interactive) interval else SCREEN_OFF_RECHECK_MS)
+                    delay(if (interactive) interval else maxOf(interval, SCREEN_OFF_RECHECK_MS))
                 } catch (e: CancellationException) { throw e }
                 catch (e: Exception) {
                     Log.e(TAG, "Switch loop error", e)
