@@ -667,6 +667,7 @@ fun AddWallpaperDialog(
  * Lists device folders that contain images/videos (scanned via MediaStore) and
  * lets the user select several at once to import into the group.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FolderPickerDialog(
     viewModel: WallpaperViewModel,
@@ -677,73 +678,133 @@ fun FolderPickerDialog(
     var folders by remember { mutableStateOf<List<ScannedFolder>?>(null) }
     var loading by remember { mutableStateOf(true) }
     var selectedPaths by remember { mutableStateOf(setOf<String>()) }
+    var searchQuery by remember { mutableStateOf("") }
+    // 0 = most media first, 1 = name A-Z
+    var sortByName by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         folders = withContext(Dispatchers.IO) { viewModel.loadScannedFolders() }
         loading = false
     }
 
+    val displayFolders = remember(folders, searchQuery, sortByName) {
+        val all = folders.orEmpty()
+        val filtered = if (searchQuery.isBlank()) all else all.filter {
+            it.name.contains(searchQuery, ignoreCase = true) ||
+                it.path.contains(searchQuery, ignoreCase = true)
+        }
+        if (sortByName) {
+            filtered.sortedBy { it.name.lowercase() }
+        } else {
+            filtered.sortedByDescending { it.totalCount }
+        }
+    }
+    val allVisibleSelected = displayFolders.isNotEmpty() &&
+        displayFolders.all { it.path in selectedPaths }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("选择文件夹（图片/视频）") },
+        title = { Text("选择文件夹（搜索/多选/排序）") },
         text = {
-            when {
-                loading -> Box(
-                    modifier = Modifier.fillMaxWidth().padding(24.dp),
-                    contentAlignment = Alignment.Center
+            Column {
+                OutlinedTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    label = { Text("搜索文件夹名称或路径") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("正在扫描文件夹...")
-                }
-                folders.isNullOrEmpty() -> Text("未扫描到包含图片或视频的文件夹")
-                else -> LazyColumn(
-                    modifier = Modifier.heightIn(max = 420.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    items(folders.orEmpty(), key = { it.path }) { folder ->
-                        val isSelected = folder.path in selectedPaths
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickable {
-                                    selectedPaths = if (isSelected) selectedPaths - folder.path
-                                    else selectedPaths + folder.path
+                    FilterChip(
+                        selected = !sortByName,
+                        onClick = { sortByName = false },
+                        label = { Text("媒体多优先") }
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    FilterChip(
+                        selected = sortByName,
+                        onClick = { sortByName = true },
+                        label = { Text("名称排序") }
+                    )
+                    Spacer(modifier = Modifier.weight(1f))
+                    if (displayFolders.isNotEmpty()) {
+                        TextButton(
+                            onClick = {
+                                selectedPaths = if (allVisibleSelected) {
+                                    selectedPaths - displayFolders.map { it.path }.toSet()
+                                } else {
+                                    selectedPaths + displayFolders.map { it.path }
                                 }
-                                .padding(8.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                            }
                         ) {
-                            val sample = folder.sampleUris.firstOrNull()
-                            if (sample != null) {
-                                AsyncImage(
-                                    model = ImageRequest.Builder(context)
-                                        .data(Uri.parse(sample))
-                                        .size(96, 96)
-                                        .allowHardware(false)
-                                        .build(),
-                                    contentDescription = null,
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier
-                                        .size(48.dp)
-                                        .clip(RoundedCornerShape(6.dp))
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(48.dp)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                                )
+                            Text(if (allVisibleSelected) "取消全选" else "全选")
+                        }
+                    }
+                }
+                when {
+                    loading -> Box(
+                        modifier = Modifier.fillMaxWidth().padding(24.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text("正在扫描文件夹...")
+                    }
+                    displayFolders.isEmpty() -> Text(
+                        if (folders.isNullOrEmpty()) "未扫描到包含图片或视频的文件夹"
+                        else "没有匹配的文件夹"
+                    )
+                    else -> LazyColumn(
+                        modifier = Modifier.heightIn(max = 380.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        items(displayFolders, key = { it.path }) { folder ->
+                            val isSelected = folder.path in selectedPaths
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        selectedPaths = if (isSelected) selectedPaths - folder.path
+                                        else selectedPaths + folder.path
+                                    }
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                val sample = folder.sampleUris.firstOrNull()
+                                if (sample != null) {
+                                    AsyncImage(
+                                        model = ImageRequest.Builder(context)
+                                            .data(Uri.parse(sample))
+                                            .size(96, 96)
+                                            .allowHardware(false)
+                                            .build(),
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                    )
+                                } else {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(48.dp)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(12.dp))
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(folder.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
+                                    Text(
+                                        "${folder.imageCount} 张图片 / ${folder.videoCount} 个视频",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                Checkbox(checked = isSelected, onCheckedChange = null)
                             }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(folder.name, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
-                                Text(
-                                    "${folder.imageCount} 张图片 / ${folder.videoCount} 个视频",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Checkbox(checked = isSelected, onCheckedChange = null)
                         }
                     }
                 }
