@@ -78,7 +78,8 @@ class WallpaperRenderer(
     private var eglContext = EGL14.EGL_NO_CONTEXT
     private var eglSurface = EGL14.EGL_NO_SURFACE
     private var eglConfig: EGLConfig? = null
-    private var surfaceReady = false
+    // Written on the render thread, polled from the engine thread.
+    @Volatile private var surfaceReady = false
     private var contextReady = false
     private var glResourcesValid = false
 
