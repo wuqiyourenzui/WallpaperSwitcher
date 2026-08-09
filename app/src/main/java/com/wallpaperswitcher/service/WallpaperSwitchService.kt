@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.wallpaperswitcher.R
@@ -105,6 +106,16 @@ class WallpaperSwitchService : Service() {
      */
     private fun sendSwitch(source: String) {
         Log.d(TAG, "sendSwitch($source) engineRunning=${LiveWallpaperService.engineRunning}")
+        // Screen off: nobody can see the result, and the live engine is in
+        // power-save anyway. Skip the work so the timer never starts an
+        // invisible decode (live engine) or a wasteful setBitmap (static
+        // mode). The loop keeps its cadence; the next tick after the screen
+        // comes back on switches normally.
+        val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+        if (!pm.isInteractive) {
+            Log.d(TAG, "Screen off, skipping $source switch (power save)")
+            return
+        }
         if (LiveWallpaperService.engineRunning) {
             sendSwitchBroadcast(source)
         } else {
