@@ -868,12 +868,12 @@ class WallpaperRenderer(
                             }
 
                             val elapsedNs = System.nanoTime() - startNs
-                            // Screen-off power save: decode at ~5fps instead of
+                            // Screen-off power save: decode at ~2fps instead of
                             // the source rate. No restart, no visual jump - the
                             // engine just resumes full speed when the screen
                             // comes back on.
                             val effectiveInterval = if (powerSaveMode) {
-                                intervalNs.coerceAtLeast(200_000_000L)
+                                intervalNs.coerceAtLeast(500_000_000L)
                             } else {
                                 intervalNs
                             }
