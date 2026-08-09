@@ -347,6 +347,11 @@ class WallpaperRenderer(
         val handler = renderHandler ?: run { isVideoPlaying = false; return }
 
         videoDecodeThread = Thread({
+            // The decode thread shares the process with the UI. Background
+            // priority keeps it from stealing CPU from scrolling/composition
+            // on low-end devices; when the CPU is idle it still decodes at
+            // full speed.
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             decodeLoop(uriStr, scaleMode, gen, handler)
         }, "VideoDecode").also { it.start() }
     }
