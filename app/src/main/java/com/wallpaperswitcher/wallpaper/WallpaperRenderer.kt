@@ -422,23 +422,28 @@ class WallpaperRenderer(
         if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
         val bg = backgroundBuffer ?: return
         GLES20.glEnable(GLES20.GL_BLEND)
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
-        GLES20.glUseProgram(imageProgram)
-        GLES20.glUniformMatrix4fv(imageTexMatLoc, 1, false, imageTexMatrix, 0)
-        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, blackTexId)
-        GLES20.glUniform1i(imageTexLoc, 0)
-        GLES20.glUniform2f(imageTexelLoc, 1f, 1f)
-        GLES20.glUniform1f(imageSharpLoc, 0f)
-        GLES20.glUniform1f(imageAlphaLoc, alpha)
-        bg.position(0)
-        GLES20.glEnableVertexAttribArray(imagePosLoc)
-        GLES20.glVertexAttribPointer(imagePosLoc, 2, GLES20.GL_FLOAT, false, 16, bg)
-        bg.position(2)
-        GLES20.glEnableVertexAttribArray(imageTcLoc)
-        GLES20.glVertexAttribPointer(imageTcLoc, 2, GLES20.GL_FLOAT, false, 16, bg)
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-        GLES20.glDisable(GLES20.GL_BLEND)
+        try {
+            GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+            GLES20.glUseProgram(imageProgram)
+            GLES20.glUniformMatrix4fv(imageTexMatLoc, 1, false, imageTexMatrix, 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, blackTexId)
+            GLES20.glUniform1i(imageTexLoc, 0)
+            GLES20.glUniform2f(imageTexelLoc, 1f, 1f)
+            GLES20.glUniform1f(imageSharpLoc, 0f)
+            GLES20.glUniform1f(imageAlphaLoc, alpha)
+            bg.position(0)
+            GLES20.glEnableVertexAttribArray(imagePosLoc)
+            GLES20.glVertexAttribPointer(imagePosLoc, 2, GLES20.GL_FLOAT, false, 16, bg)
+            bg.position(2)
+            GLES20.glEnableVertexAttribArray(imageTcLoc)
+            GLES20.glVertexAttribPointer(imageTcLoc, 2, GLES20.GL_FLOAT, false, 16, bg)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        } finally {
+            // Blending must never be left enabled: a later exception could
+            // otherwise make subsequent frames render translucent.
+            GLES20.glDisable(GLES20.GL_BLEND)
+        }
     }
 
     private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode, useMipmap: Boolean) {
