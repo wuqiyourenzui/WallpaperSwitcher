@@ -506,6 +506,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 _toastMessage.emit("正在从 ${folders.size} 个文件夹导入...")
+                Log.d(TAG, "importScannedFolders: group=$groupId folders=${folders.map { it.path }}")
                 _scanProgress.value = "查询中..."
                 var total = 0
                 withContext(Dispatchers.IO) {

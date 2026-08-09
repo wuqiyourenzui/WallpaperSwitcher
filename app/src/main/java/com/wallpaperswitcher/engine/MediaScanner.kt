@@ -93,7 +93,7 @@ object MediaScanner {
             index(false)
             index(true)
 
-            counts.map { (path, c) ->
+            val result = counts.map { (path, c) ->
                 ScannedFolder(
                     path = path,
                     name = names[path] ?: path,
@@ -105,6 +105,8 @@ object MediaScanner {
                 .filter { it.totalCount >= 1 }
                 .filter { f -> f.path.split("/").none { it.lowercase() in blockedFolders } }
                 .sortedByDescending { it.totalCount }
+            Log.d(TAG, "scanFolders: found ${result.size} folders")
+            result
         } catch (e: Throwable) {
             Log.e(TAG, "scanFolders failed", e)
             emptyList()
@@ -114,8 +116,10 @@ object MediaScanner {
     /** All images + videos inside a MediaStore folder (images first, then videos). */
     suspend fun queryFolderMedia(context: Context, folderPath: String): List<FolderMedia> =
         withContext(Dispatchers.IO) {
-            queryByFolder(context, folderPath, isVideo = false) +
+            val media = queryByFolder(context, folderPath, isVideo = false) +
                 queryByFolder(context, folderPath, isVideo = true)
+            Log.d(TAG, "queryFolderMedia: $folderPath -> ${media.size} items")
+            media
         }
 
     /**
@@ -147,6 +151,7 @@ object MediaScanner {
                     }
                 }
                 scanDir(docFile)
+                Log.d(TAG, "queryDocumentFolder: $treeUri -> ${result.size} items")
                 result
             } catch (e: Throwable) {
                 Log.e(TAG, "queryDocumentFolder failed: $treeUri", e)
