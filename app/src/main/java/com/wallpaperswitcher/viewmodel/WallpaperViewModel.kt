@@ -365,9 +365,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 if (total > 0) {
                     refreshCount(groupId)
                     refreshImages()
-                    _toastMessage.emit("已添加 $total 张图片")
+                    _toastMessage.emit("已添加 $total 个媒体")
                 } else {
-                    _toastMessage.emit("未找到图片")
+                    _toastMessage.emit("未找到媒体")
                 }
             } catch (e: Exception) {
                 if (e !is kotlinx.coroutines.CancellationException) {
