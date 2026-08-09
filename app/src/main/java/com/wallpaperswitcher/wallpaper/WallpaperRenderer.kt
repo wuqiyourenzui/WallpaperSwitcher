@@ -134,6 +134,11 @@ class WallpaperRenderer(
     // curve, >1 = stronger. Written from the engine thread on each switch,
     // read on the render thread.
     @Volatile var sharpnessScale: Float = 1f
+    // Screen-off low-power mode: while true the decode loop throttles to
+    // ~10fps instead of the source rate. Playback is never stopped/restarted;
+    // the position simply advances slowly while the screen is off and resumes
+    // full speed on the next screen-on. Written from the engine thread.
+    @Volatile var powerSaveMode = false
     private var vertexBuffer: FloatBuffer? = null
     private var imageTexId = 0
     private var imageTexMatrix = FloatArray(16)
@@ -673,13 +678,14 @@ class WallpaperRenderer(
                 )
                 val baseCap = minOf(screenMax, 3200).coerceAtLeast(1280)
                 // FIT never enlarges the media beyond the screen, so the screen
-                // cap keeps quality identical. FILL/STRETCH upscale the media,
-                // so keep a higher decode ceiling (up to 4096) to avoid
-                // softening large sources when they are magnified.
+                // cap keeps quality identical. FILL/STRETCH keep a 1920 floor
+                // so small sources stay sharp when magnified; sources larger
+                // than the screen are downscaled by the GPU anyway, so the old
+                // 4096 ceiling only wasted decode power on 4K videos.
                 val decodeCap = when (scaleMode) {
                     ScaleMode.FIT -> baseCap
                     ScaleMode.FILL, ScaleMode.STRETCH ->
-                        minOf(screenMax * 2, 4096).coerceAtLeast(1920)
+                        minOf(screenMax, 3200).coerceAtLeast(1920)
                 }
                 if (maxDim > decodeCap) {
                     val scale = decodeCap.toFloat() / maxDim
@@ -862,7 +868,16 @@ class WallpaperRenderer(
                             }
 
                             val elapsedNs = System.nanoTime() - startNs
-                            val sleepNs = intervalNs - elapsedNs
+                            // Screen-off power save: decode at ~10fps instead of
+                            // the source rate. No restart, no visual jump - the
+                            // engine just resumes full speed when the screen
+                            // comes back on.
+                            val effectiveInterval = if (powerSaveMode) {
+                                intervalNs.coerceAtLeast(100_000_000L)
+                            } else {
+                                intervalNs
+                            }
+                            val sleepNs = effectiveInterval - elapsedNs
                             if (sleepNs > 0) {
                                 // InterruptedException is the normal "stop" signal.
                                 try {

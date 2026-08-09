@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
 import android.util.Log
@@ -34,7 +35,9 @@ class LiveWallpaperService : WallpaperService() {
         const val SOURCE_UNLOCK = "unlock"
         const val SOURCE_MANUAL = "manual"
         private const val SWITCH_SETTLE_DELAY_MS = 80L
-        private const val GIF_FRAME_INTERVAL_MS = 33L
+        // 20fps cap instead of 30fps: GIF wallpapers look identical (most GIFs
+        // are <=15fps) but cost ~1/3 less CPU/GPU for the frame upload + swap.
+        private const val GIF_FRAME_INTERVAL_MS = 50L
         private const val SHUFFLE_MAX_ATTEMPTS = 10
 
         @Volatile
@@ -56,6 +59,9 @@ class LiveWallpaperService : WallpaperService() {
         // not deliver onVisibilityChanged reliably right after unlock, which
         // would otherwise make double-tap / unlock switching appear dead.
         @Volatile private var isVisible = true
+        private val powerManager: PowerManager by lazy {
+            applicationContext.getSystemService(Context.POWER_SERVICE) as PowerManager
+        }
         // All switch triggers (timer / double-tap / unlock / manual) are sent
         // through a single serialized queue. A switch in progress never blocks
         // or drops new triggers: they wait in the queue and run in order.
@@ -119,6 +125,18 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
+        // Screen on/off fallback: some devices do not deliver a visibility
+        // change when the screen turns off/on, so the engine would otherwise
+        // keep decoding video at full speed in the dark.
+        private val screenStateReceiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                when (intent.action) {
+                    Intent.ACTION_SCREEN_OFF -> setPowerSave(true, "screen-off")
+                    Intent.ACTION_SCREEN_ON -> setPowerSave(false, "screen-on")
+                }
+            }
+        }
+
         private val gestureDetector = GestureDetector(
             applicationContext,
             object : GestureDetector.SimpleOnGestureListener() {
@@ -172,6 +190,14 @@ class LiveWallpaperService : WallpaperService() {
                 } else {
                     applicationContext.registerReceiver(switchReceiver, filter)
                 }
+            } catch (_: Exception) {}
+            try {
+                try { applicationContext.unregisterReceiver(screenStateReceiver) } catch (_: Exception) {}
+                val screenFilter = IntentFilter().apply {
+                    addAction(Intent.ACTION_SCREEN_OFF)
+                    addAction(Intent.ACTION_SCREEN_ON)
+                }
+                applicationContext.registerReceiver(screenStateReceiver, screenFilter)
             } catch (_: Exception) {}
         }
 
@@ -275,6 +301,7 @@ class LiveWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
             if (visible) {
+                setPowerSave(false, "visibility")
                 scope.launch {
                     if (!surfaceReady || renderer == null) return@launch
                     val dao = db.settingsDao()
@@ -285,10 +312,12 @@ class LiveWallpaperService : WallpaperService() {
                         drawCurrentImage()
                     }
                 }
+            } else if (!powerManager.isInteractive()) {
+                // The screen is off: throttle the video decoder so it stops
+                // burning power in the dark. An app simply covering the
+                // wallpaper (screen still on) keeps full-speed playback.
+                setPowerSave(true, "visibility")
             }
-            // When the wallpaper becomes invisible (e.g. an app is opened) the
-            // playback intentionally continues: the video keeps running and is
-            // not restarted or interrupted by opening apps / visibility changes.
         }
 
         override fun onDestroy() {
@@ -310,6 +339,7 @@ class LiveWallpaperService : WallpaperService() {
             // can never fire after the engine is destroyed.
             mainHandler.removeCallbacksAndMessages(null)
             try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
+            try { applicationContext.unregisterReceiver(screenStateReceiver) } catch (_: Exception) {}
             flushShuffleState()
             try { renderer?.release() } catch (_: Exception) {}
             renderer = null
@@ -365,6 +395,17 @@ class LiveWallpaperService : WallpaperService() {
         private fun pauseGif() {
             gifFrameRunnable?.let { mainHandler.removeCallbacks(it) }
             pendingGifUri = null
+        }
+
+        /**
+         * Toggle the renderer's screen-off power-save mode. This only throttles
+         * the video decode rate and GIF redraws - it never stops or restarts
+         * playback, and switching/timer/unlock behavior is untouched.
+         */
+        private fun setPowerSave(enabled: Boolean, reason: String) {
+            if (renderer?.powerSaveMode == enabled) return
+            renderer?.powerSaveMode = enabled
+            Log.d(TAG, "Power save ${if (enabled) "ON" else "OFF"} ($reason)")
         }
 
         // ======== Switch logic ========
@@ -895,6 +936,13 @@ class LiveWallpaperService : WallpaperService() {
                         // Stopped/closed (engine destroyed or replaced):
                         // stop ticking forever.
                         if (gifDrawable == null) return
+                        // Screen off: redraw at ~2fps instead of 20fps. The
+                        // drawable keeps animating internally and resumes at
+                        // full rate on screen-on - no restart, no jump.
+                        if (renderer?.powerSaveMode == true) {
+                            mainHandler.postDelayed(this, 500L)
+                            return
+                        }
                         // Keep ticking even when the surface is temporarily
                         // unavailable, so the animation resumes automatically
                         // once the surface comes back (previously the runnable
