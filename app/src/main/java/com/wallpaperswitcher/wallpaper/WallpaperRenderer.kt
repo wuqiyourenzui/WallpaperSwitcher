@@ -287,6 +287,9 @@ class WallpaperRenderer(
                 Log.w(TAG, "renderImage skipped: program=$imageProgram tex=$imageTexId")
                 return
             }
+            // A concurrent switch may recycle the bitmap before this queued
+            // render runs; uploading a recycled bitmap would throw.
+            if (bitmap.isRecycled) return
 
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
