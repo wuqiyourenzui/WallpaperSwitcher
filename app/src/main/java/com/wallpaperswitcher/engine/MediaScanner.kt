@@ -62,7 +62,7 @@ object MediaScanner {
                     sampleUris = samples[path] ?: emptyList()
                 )
             }
-                .filter { it.totalCount >= 2 }
+                .filter { it.totalCount >= 1 }
                 .filter { f -> f.path.split("/").none { it.lowercase() in blockedFolders } }
                 .sortedByDescending { it.totalCount }
         } catch (e: Exception) {

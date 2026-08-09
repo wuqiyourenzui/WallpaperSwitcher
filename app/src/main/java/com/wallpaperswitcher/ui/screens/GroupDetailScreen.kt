@@ -634,20 +634,20 @@ fun AddWallpaperDialog(
                     Text("选择多张图片/视频", modifier = Modifier.weight(1f))
                 }
                 TextButton(
-                    onClick = onAddFolder,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Outlined.Folder, null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("从文件夹添加", modifier = Modifier.weight(1f))
-                }
-                TextButton(
                     onClick = onScanFolders,
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(Icons.Outlined.FolderOpen, null, modifier = Modifier.size(20.dp))
                     Spacer(modifier = Modifier.width(12.dp))
                     Text("扫描到的文件夹（可多选）", modifier = Modifier.weight(1f))
+                }
+                TextButton(
+                    onClick = onAddFolder,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Outlined.Folder, null, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Text("从文件夹添加", modifier = Modifier.weight(1f))
                 }
             }
         },
