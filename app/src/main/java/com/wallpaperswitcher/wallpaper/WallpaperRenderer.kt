@@ -656,7 +656,8 @@ class WallpaperRenderer(
                     }
                 }
 
-                Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps")
+                val codecName = try { dec.name } catch (_: Exception) { "unknown" }
+                Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps codec=$codecName")
 
                 // --- Inner decode loop (one playback pass) ---
                 val bufferInfo = MediaCodec.BufferInfo()
