@@ -452,62 +452,64 @@ class WallpaperRenderer(
             // Flushing and re-feeding an in-place codec can crash some hardware
             // decoders during repeat playback, which is how the engine died
             // while just playing (no switch involved) in the captured logs.
+            // Prefer an AssetFileDescriptor: MediaExtractor streaming through
+            // a ContentResolver on cloud-mounted SAF URIs (e.g. PikPak) can
+            // block for tens of seconds, which made the engine look dead.
+            // Opening a cloud-hosted document can itself block for tens of
+            // seconds, so run it on a helper thread with a 15s timeout:
+            // switching must never be stuck on an unresponsive provider.
+            // The descriptor is opened ONCE and reused across loop passes so
+            // cloud files are not re-opened on every playback loop.
+            val openResult = java.util.concurrent.atomic.AtomicReference<AssetFileDescriptor?>(null)
+            val openError = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+            val openThread = Thread({
+                try {
+                    openResult.set(context.contentResolver.openAssetFileDescriptor(Uri.parse(uriStr), "r"))
+                } catch (t: Throwable) {
+                    openError.set(t)
+                }
+            }, "VideoOpen").apply { start() }
+            try {
+                openThread.join(15_000)
+            } catch (_: InterruptedException) {
+                openThread.interrupt()
+                Thread.currentThread().interrupt()
+                return
+            }
+            if (openThread.isAlive) {
+                openThread.interrupt()
+                Log.e(TAG, "Timed out opening video stream: $uriStr")
+                if (videoGeneration.get() == gen) {
+                    isVideoPlaying = false
+                    onVideoStartFailed?.invoke()
+                }
+                return
+            }
+            val openErr = openError.get()
+            if (openErr != null) {
+                Log.e(TAG, "Failed to open video stream: $uriStr", openErr)
+                if (videoGeneration.get() == gen) {
+                    isVideoPlaying = false
+                    onVideoStartFailed?.invoke()
+                }
+                return
+            }
+            val afd = openResult.get()
+            if (afd == null) {
+                Log.e(TAG, "Cannot open video stream: $uriStr")
+                if (videoGeneration.get() == gen) {
+                    isVideoPlaying = false
+                    onVideoStartFailed?.invoke()
+                }
+                return
+            }
+            localAfd = afd
             var errorPasses = 0
             var giveUp = false
             while (videoGeneration.get() == gen && !Thread.interrupted() && !giveUp) {
                 // --- Setup MediaExtractor ---
                 val ext = MediaExtractor()
                 localExtractor = ext
-                // Prefer an AssetFileDescriptor: MediaExtractor streaming through
-                // a ContentResolver on cloud-mounted SAF URIs (e.g. PikPak) can
-                // block for tens of seconds, which made the engine look dead.
-                // Opening a cloud-hosted document can itself block for tens of
-                // seconds, so run it on a helper thread with a 15s timeout:
-                // switching must never be stuck on an unresponsive provider.
-                val openResult = java.util.concurrent.atomic.AtomicReference<AssetFileDescriptor?>(null)
-                val openError = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
-                val openThread = Thread({
-                    try {
-                        openResult.set(context.contentResolver.openAssetFileDescriptor(Uri.parse(uriStr), "r"))
-                    } catch (t: Throwable) {
-                        openError.set(t)
-                    }
-                }, "VideoOpen").apply { start() }
-                try {
-                    openThread.join(15_000)
-                } catch (_: InterruptedException) {
-                    openThread.interrupt()
-                    Thread.currentThread().interrupt()
-                    return
-                }
-                if (openThread.isAlive) {
-                    openThread.interrupt()
-                    Log.e(TAG, "Timed out opening video stream: $uriStr")
-                    if (videoGeneration.get() == gen) {
-                        isVideoPlaying = false
-                        onVideoStartFailed?.invoke()
-                    }
-                    return
-                }
-                val openErr = openError.get()
-                if (openErr != null) {
-                    Log.e(TAG, "Failed to open video stream: $uriStr", openErr)
-                    if (videoGeneration.get() == gen) {
-                        isVideoPlaying = false
-                        onVideoStartFailed?.invoke()
-                    }
-                    return
-                }
-                val afd = openResult.get()
-                if (afd == null) {
-                    Log.e(TAG, "Cannot open video stream: $uriStr")
-                    if (videoGeneration.get() == gen) {
-                        isVideoPlaying = false
-                        onVideoStartFailed?.invoke()
-                    }
-                    return
-                }
-                localAfd = afd
                 // Use the descriptor's offset/length: cloud-hosted or
                 // container-backed documents can expose a non-zero start
                 // offset, and decoding from the beginning would fail or read
@@ -736,9 +738,6 @@ class WallpaperRenderer(
                 // extractor + fd per playback pass until the thread exits.
                 try { ext.release() } catch (_: Exception) {}
                 if (localExtractor === ext) localExtractor = null
-                val afdToClose = localAfd
-                localAfd = null
-                try { afdToClose.close() } catch (_: Exception) {}
 
                 if (videoGeneration.get() != gen || Thread.interrupted()) break
                 if (eof) {
