@@ -452,7 +452,44 @@ class WallpaperRenderer(
                 // Prefer an AssetFileDescriptor: MediaExtractor streaming through
                 // a ContentResolver on cloud-mounted SAF URIs (e.g. PikPak) can
                 // block for tens of seconds, which made the engine look dead.
-                val afd = context.contentResolver.openAssetFileDescriptor(Uri.parse(uriStr), "r")
+                // Opening a cloud-hosted document can itself block for tens of
+                // seconds, so run it on a helper thread with a 15s timeout:
+                // switching must never be stuck on an unresponsive provider.
+                val openResult = java.util.concurrent.atomic.AtomicReference<AssetFileDescriptor?>(null)
+                val openError = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+                val openThread = Thread({
+                    try {
+                        openResult.set(context.contentResolver.openAssetFileDescriptor(Uri.parse(uriStr), "r"))
+                    } catch (t: Throwable) {
+                        openError.set(t)
+                    }
+                }, "VideoOpen").apply { start() }
+                try {
+                    openThread.join(15_000)
+                } catch (_: InterruptedException) {
+                    openThread.interrupt()
+                    Thread.currentThread().interrupt()
+                    return
+                }
+                if (openThread.isAlive) {
+                    openThread.interrupt()
+                    Log.e(TAG, "Timed out opening video stream: $uriStr")
+                    if (videoGeneration.get() == gen) {
+                        isVideoPlaying = false
+                        onVideoStartFailed?.invoke()
+                    }
+                    return
+                }
+                val openErr = openError.get()
+                if (openErr != null) {
+                    Log.e(TAG, "Failed to open video stream: $uriStr", openErr)
+                    if (videoGeneration.get() == gen) {
+                        isVideoPlaying = false
+                        onVideoStartFailed?.invoke()
+                    }
+                    return
+                }
+                val afd = openResult.get()
                 if (afd == null) {
                     Log.e(TAG, "Cannot open video stream: $uriStr")
                     if (videoGeneration.get() == gen) {
