@@ -190,7 +190,14 @@ class WallpaperRenderer(
             }
             latch.countDown()
         }
-        try { latch.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
+        try {
+            latch.await(3, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        if (!contextReady) {
+            Log.w(TAG, "EGL initialization did not complete; will retry on surface creation")
+        }
     }
 
     fun surfaceCreated() {
