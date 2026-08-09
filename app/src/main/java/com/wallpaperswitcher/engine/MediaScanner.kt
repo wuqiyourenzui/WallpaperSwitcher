@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Log
+import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -116,6 +117,56 @@ object MediaScanner {
             queryByFolder(context, folderPath, isVideo = false) +
                 queryByFolder(context, folderPath, isVideo = true)
         }
+
+    /**
+     * Recursively scan a SAF DocumentFile tree (the URI recorded by the system
+     * folder picker) for supported images/videos/GIFs.
+     */
+    suspend fun queryDocumentFolder(context: Context, treeUri: String): List<FolderMedia> =
+        withContext(Dispatchers.IO) {
+            try {
+                val docFile = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext emptyList()
+                if (!docFile.isDirectory) return@withContext emptyList()
+                val result = mutableListOf<FolderMedia>()
+                fun scanDir(dir: DocumentFile) {
+                    val files = try { dir.listFiles() } catch (_: Exception) { emptyArray() }
+                    for (f in files) {
+                        try {
+                            if (f.isDirectory) {
+                                scanDir(f)
+                            } else if (f.isFile && isSupportedMedia(f.name ?: "")) {
+                                result.add(
+                                    FolderMedia(
+                                        uri = f.uri.toString(),
+                                        displayName = f.name ?: "untitled",
+                                        mediaType = detectMediaType(f.name ?: "")
+                                    )
+                                )
+                            }
+                        } catch (_: Exception) { continue }
+                    }
+                }
+                scanDir(docFile)
+                result
+            } catch (e: Throwable) {
+                Log.e(TAG, "queryDocumentFolder failed: $treeUri", e)
+                emptyList()
+            }
+        }
+
+    fun isSupportedMedia(name: String): Boolean {
+        val ext = name.lowercase().substringAfterLast('.', "")
+        return ext in listOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "mp4", "mkv", "webm", "avi", "mov", "3gp")
+    }
+
+    fun detectMediaType(name: String): String {
+        val ext = name.lowercase().substringAfterLast('.', "")
+        return when (ext) {
+            "gif" -> "GIF"
+            "mp4", "mkv", "webm", "avi", "mov", "3gp" -> "VIDEO"
+            else -> "IMAGE"
+        }
+    }
 
     private fun queryByFolder(context: Context, folderPath: String, isVideo: Boolean): List<FolderMedia> {
         val contentResolver = context.contentResolver

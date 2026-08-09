@@ -35,7 +35,13 @@ class FolderAutoScanWorker(
             var inserted = 0
             for (row in paths) {
                 val existing = imageDao.getUrisByGroup(row.groupId).toHashSet()
-                val media = MediaScanner.queryFolderMedia(context, row.folderPath)
+                val media = if (row.folderPath.startsWith("content://")) {
+                    // Imported via the system folder picker (SAF tree URI).
+                    MediaScanner.queryDocumentFolder(context, row.folderPath)
+                } else {
+                    // Imported via the scanned-folder list (MediaStore path).
+                    MediaScanner.queryFolderMedia(context, row.folderPath)
+                }
                 val newItems = media.filter { it.uri !in existing }.map {
                     WallpaperImage(
                         groupId = row.groupId,
