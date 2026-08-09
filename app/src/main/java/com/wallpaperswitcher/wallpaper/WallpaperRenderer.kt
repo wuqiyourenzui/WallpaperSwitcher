@@ -1052,6 +1052,15 @@ class WallpaperRenderer(
                 lastRenderLogAt = now
                 Log.d(TAG, "Video frame rendered: tex=$videoTexId screen=${screenW.toInt()}x${screenH.toInt()} last=$lastVideoFrameAt")
             }
+            // Screen-off power save: the texture was already updated above, so
+            // playback state keeps advancing; just skip the invisible draw +
+            // buffer swap (the biggest GPU cost). lastVideoFrameAt stays fresh
+            // so the health monitor never mistakes throttled playback for a
+            // stall, and the next screen-on frame presents immediately.
+            if (powerSaveMode) {
+                lastVideoFrameAt = now
+                return
+            }
             // Clear the whole framebuffer first. In FIT/STRETCH-less modes the
             // video quad does not cover the full screen; without clearing, the
             // letterbox area keeps showing the PREVIOUS video's last frame
