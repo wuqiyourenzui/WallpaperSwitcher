@@ -138,9 +138,30 @@ object WallpaperApplier {
         return try {
             retriever = MediaMetadataRetriever()
             retriever.setDataSource(context, Uri.parse(uriStr))
-            retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            val frame = retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 ?: retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 ?: retriever.getFrameAtTime()
+                ?: return null
+            // Scale very large frames (e.g. 4K/8K videos) down to the screen
+            // resolution before WallpaperManager.setBitmap: the wallpaper is
+            // displayed at screen size anyway, so quality is identical while a
+            // full-size ARGB frame (~33MB at 4K) can no longer cause OOM.
+            val screenMax = maxOf(
+                BitmapUtils.getScreenMetrics(context).widthPixels,
+                BitmapUtils.getScreenMetrics(context).heightPixels
+            )
+            val cap = minOf(screenMax, 3200).coerceAtLeast(1920)
+            val maxDim = maxOf(frame.width, frame.height)
+            if (maxDim > cap) {
+                val scale = cap.toFloat() / maxDim
+                val w = (frame.width * scale).toInt().coerceAtLeast(1)
+                val h = (frame.height * scale).toInt().coerceAtLeast(1)
+                val scaled = Bitmap.createScaledBitmap(frame, w, h, true)
+                if (scaled !== frame) frame.recycle()
+                scaled
+            } else {
+                frame
+            }
         } catch (e: Exception) {
             Log.e(TAG, "videoFrame failed: $uriStr", e)
             null
