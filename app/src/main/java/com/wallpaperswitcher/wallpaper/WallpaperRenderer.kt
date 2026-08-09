@@ -207,6 +207,10 @@ class WallpaperRenderer(
     private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode) {
         try {
             if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
+            if (imageProgram == 0 || imageTexId == 0) {
+                Log.w(TAG, "renderImage skipped: program=$imageProgram tex=$imageTexId")
+                return
+            }
 
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
@@ -235,7 +239,10 @@ class WallpaperRenderer(
             GLES20.glVertexAttribPointer(tcLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-            EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+            val swapped = EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+            if (!swapped) {
+                Log.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "renderImage failed", t)
         }
@@ -621,6 +628,10 @@ class WallpaperRenderer(
     private fun renderVideoFrame(texMatrix: FloatArray) {
         try {
             if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
+            if (videoProgram == 0 || videoTexId == 0) {
+                Log.w(TAG, "renderVideoFrame skipped: program=$videoProgram tex=$videoTexId")
+                return
+            }
 
             GLES20.glUseProgram(videoProgram)
 
@@ -642,7 +653,10 @@ class WallpaperRenderer(
             GLES20.glVertexAttribPointer(tcLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
-            EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+            val swapped = EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+            if (!swapped) {
+                Log.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "renderVideoFrame failed", t)
         }
