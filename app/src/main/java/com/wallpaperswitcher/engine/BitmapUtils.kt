@@ -37,12 +37,18 @@ object BitmapUtils {
                 return null
             }
 
-            // Cap the longest edge at ~2560px. Wallpapers only need ~2x the
-            // screen resolution; loading 12MP photos at full size during
-            // frequent switches wastes memory and risks OOM crashes.
+            // Decode to at most the screen resolution: the rendered wallpaper
+            // is displayed at screen size, so this keeps the picture identical
+            // to the source on 2K/4K displays while avoiding full-size decode
+            // of far larger photos (memory + power savings).
             var sample = 1
             val maxDim = maxOf(opts.outWidth, opts.outHeight)
-            while (maxDim / sample > 2560) sample *= 2
+            val screenMax = maxOf(
+                getScreenMetrics(context).widthPixels,
+                getScreenMetrics(context).heightPixels
+            )
+            val decodeCap = minOf(screenMax, 3200).coerceAtLeast(1920)
+            while (maxDim / sample > decodeCap) sample *= 2
 
             // Second pass: decode actual bitmap from a fresh stream
             val stream2 = context.contentResolver.openInputStream(uri)
