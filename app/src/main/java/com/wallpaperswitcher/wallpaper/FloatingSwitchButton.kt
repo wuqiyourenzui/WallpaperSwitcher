@@ -10,6 +10,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
 import android.widget.TextView
 import com.wallpaperswitcher.service.WallpaperSwitchService
 import kotlin.math.hypot
@@ -31,8 +32,15 @@ class FloatingSwitchButton(private val context: Context) {
         // Debounce after a detected double-tap so a sloppy triple tap does not
         // enqueue two back-to-back switches.
         private const val POST_SWITCH_DEBOUNCE_MS = 400L
-        private const val BUTTON_SIZE_DP = 56
+        // Touch target (48dp = Android's minimum comfortable target), while the
+        // visible circle is smaller and sits inside it.
+        private const val BUTTON_SIZE_DP = 48
+        private const val VISUAL_SIZE_DP = 40
         private const val DRAG_SLOP_PX = 8f
+        // Semi-transparent blue (25% opacity) + bright white text: visible
+        // enough to find, but unobtrusive over the wallpaper.
+        private const val CIRCLE_COLOR = 0x401E88E5.toInt()
+        private const val TEXT_COLOR = 0xE6FFFFFF.toInt()
     }
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -56,15 +64,25 @@ class FloatingSwitchButton(private val context: Context) {
         }
         val density = context.resources.displayMetrics.density
         val sizePx = (BUTTON_SIZE_DP * density).toInt()
-        val view = TextView(context).apply {
+        val visualPx = (VISUAL_SIZE_DP * density).toInt()
+        val marginPx = ((BUTTON_SIZE_DP - VISUAL_SIZE_DP) / 2 * density).toInt()
+        val circle = TextView(context).apply {
             text = "双"
-            textSize = 18f
-            setTextColor(android.graphics.Color.WHITE)
+            textSize = 12f
+            setTextColor(TEXT_COLOR)
             gravity = Gravity.CENTER
             background = android.graphics.drawable.GradientDrawable().apply {
                 shape = android.graphics.drawable.GradientDrawable.OVAL
-                setColor(0xCC1E88E5.toInt())
+                setColor(CIRCLE_COLOR)
             }
+        }
+        val view = FrameLayout(context).apply {
+            addView(
+                circle,
+                FrameLayout.LayoutParams(visualPx, visualPx).apply {
+                    setMargins(marginPx, marginPx, marginPx, marginPx)
+                }
+            )
         }
         val lp = WindowManager.LayoutParams(
             sizePx,
