@@ -43,14 +43,12 @@ object BitmapUtils {
                 return null
             }
 
-            // Decode to at most the screen resolution: the rendered wallpaper
-            // is displayed at screen size, so anything above the screen is
-            // pure memory + decode-time waste (logs showed 12MP photos being
-            // decoded at 4032px = ~46MB per bitmap during rapid switching).
-            // FILL/STRETCH keep a slightly higher floor so small sources stay
-            // sharp when magnified; sources larger than the screen are always
-            // downscaled by the GPU anyway, so the old 4096px ceiling bought
-            // nothing but memory.
+            // Decode at the power-of-two resolution CLOSEST to the display cap.
+            // The old rule (stop as soon as decoded <= cap) could land well
+            // BELOW the display size - e.g. a 4032px photo decoded to 2016px
+            // and then upscaled to a 3200px-tall FIT wallpaper, looking soft.
+            // Picking the nearest power of two keeps large photos sharp while
+            // still bounding memory (decoded size stays within ~2x the cap).
             var sample = 1
             val maxDim = maxOf(opts.outWidth, opts.outHeight)
             val screenMax = maxOf(
@@ -62,7 +60,15 @@ object BitmapUtils {
                     minOf(screenMax, 3200).coerceAtLeast(2560)
                 else -> minOf(screenMax, 3200).coerceAtLeast(1920)
             }
-            while (maxDim / sample > decodeCap) sample *= 2
+            while (sample * 2 <= maxDim) {
+                val cur = maxDim / sample
+                val next = maxDim / (sample * 2)
+                if (next >= 1 && kotlin.math.abs(next - decodeCap) < kotlin.math.abs(cur - decodeCap)) {
+                    sample *= 2
+                } else {
+                    break
+                }
+            }
 
             // Second pass: decode actual bitmap from a fresh stream
             val stream2 = context.contentResolver.openInputStream(uri)
