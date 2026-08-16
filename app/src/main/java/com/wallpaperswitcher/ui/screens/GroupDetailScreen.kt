@@ -356,8 +356,13 @@ fun GroupDetailScreen(
                 }
             }
 
-            // Load more trigger - outside grid to avoid recomposition
-            LaunchedEffect(shouldLoadMore) {
+            // Load more trigger - outside grid to avoid recomposition.
+            // Keyed on images.size + isLoadingMore (NOT the boolean
+            // shouldLoadMore): with a boolean key the effect only ran once and
+            // loading stopped after the second page. Each page append changes
+            // images.size, so the effect restarts and keeps loading until the
+            // list is complete or the loading guard is engaged.
+            LaunchedEffect(images.size, isLoadingMore) {
                 if (shouldLoadMore) viewModel.loadImages(groupId)
             }
         }

@@ -42,7 +42,19 @@ class WallpaperSwitchService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Always ensure foreground state first (required when started via startForegroundService)
-        startForeground(NOTIFICATION_ID, createNotification())
+        // Android 14+ (targetSdk 34) requires an explicit foreground service type:
+        // pass FOREGROUND_SERVICE_TYPE_SPECIAL_USE on API 29+ instead of relying on
+        // the manifest-declared type (avoids MissingForegroundServiceTypeException
+        // on strict/OEM builds).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                createNotification(),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, createNotification())
+        }
         running = true
         Log.d(TAG, "Service started (build 20260816-b1), action=${intent?.action}")
 
@@ -280,11 +292,22 @@ class WallpaperSwitchService : Service() {
                 }
                 context.sendBroadcast(intent)
             } else {
+                // Same concurrency guard as switchNow(): a manual target switch
+                // must never overlap a timed static apply (two concurrent
+                // WallpaperManager.setBitmap calls can corrupt the wallpaper).
+                if (!staticApplyInProgress.compareAndSet(false, true)) {
+                    Log.d(TAG, "Static wallpaper apply already in progress, skipping switchToTarget")
+                    return
+                }
                 CoroutineScope(Dispatchers.IO).launch {
-                    val image = AppDatabase.getInstance(context)
-                        .wallpaperImageDao()
-                        .getImageById(targetId) ?: return@launch
-                    WallpaperApplier.apply(context, image)
+                    try {
+                        val image = AppDatabase.getInstance(context)
+                            .wallpaperImageDao()
+                            .getImageById(targetId) ?: return@launch
+                        WallpaperApplier.apply(context, image)
+                    } finally {
+                        staticApplyInProgress.set(false)
+                    }
                 }
             }
         }

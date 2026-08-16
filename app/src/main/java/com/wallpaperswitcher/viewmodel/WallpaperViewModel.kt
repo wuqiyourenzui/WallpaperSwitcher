@@ -315,10 +315,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun addImages(groupId: Long, uris: List<Uri>, names: List<String>) {
         viewModelScope.launch {
             if (groupDao.getGroupById(groupId) == null) return@launch
-            val imagePairs = uris.zip(names).filter { (_, name) ->
-                if (!isSupportedMedia(name)) return@filter false
-                true
-            }
+            val imagePairs = uris.zip(names).filter { (_, name) -> isSupportedMedia(name) }
             val images = imagePairs.map { (uri, name) ->
                 WallpaperImage(groupId = groupId, uri = uri.toString(), displayName = name, mediaType = detectMediaType(name))
             }
@@ -514,6 +511,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                     // Guide the user to the live wallpaper setup instead, where
                     // the media is actually rendered.
                     launchLiveWallpaperPicker()
+                    _toastMessage.emit("静态壁纸无法播放视频/GIF，请在系统动态壁纸中选择本应用")
+                    return@launch
                 } else {
                     val ok = withContext(Dispatchers.IO) {
                         WallpaperApplier.apply(getApplication(), image)

@@ -173,6 +173,13 @@ object MediaScanner {
         }
     }
 
+    /**
+     * Escape SQL LIKE wildcards so a folder path is matched literally.
+     * Backslash must be escaped first (it is the ESCAPE character itself).
+     */
+    private fun escapeLike(s: String): String =
+        s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
     private fun queryByFolder(context: Context, folderPath: String, isVideo: Boolean): List<FolderMedia> {
         val contentResolver = context.contentResolver
         val collectionUri = if (isVideo) {
@@ -185,17 +192,19 @@ object MediaScanner {
             MediaStore.Images.Media.DISPLAY_NAME
         )
         val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.Images.Media.SIZE} > 0"
+            "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? ESCAPE '\\' AND ${MediaStore.Images.Media.SIZE} > 0"
         } else {
             @Suppress("DEPRECATION")
-            "${MediaStore.Images.Media.DATA} LIKE ? AND ${MediaStore.Images.Media.SIZE} > 0"
+            "${MediaStore.Images.Media.DATA} LIKE ? ESCAPE '\\' AND ${MediaStore.Images.Media.SIZE} > 0"
         }
         val result = mutableListOf<FolderMedia>()
         contentResolver.query(
             // "Folder/%" instead of "Folder%": the old prefix match also pulled
             // sibling folders whose names merely start with the same text
             // (e.g. importing "DCIM/Camera" also imported "DCIM/Camera2").
-            collectionUri, projection, selection, arrayOf("$folderPath/%"), null
+            // ESCAPE '\' + escapeLike() so a folder name containing LIKE
+            // wildcards ('_' or '%') cannot match unrelated folders.
+            collectionUri, projection, selection, arrayOf("${escapeLike(folderPath)}/%"), null
         )?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
