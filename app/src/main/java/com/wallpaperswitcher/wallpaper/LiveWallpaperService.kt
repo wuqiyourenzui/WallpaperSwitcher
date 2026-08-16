@@ -237,6 +237,10 @@ class LiveWallpaperService : WallpaperService() {
         override fun onSurfaceCreated(holder: SurfaceHolder?) {
             surfaceReady = true
             if (holder == null) return
+            // Some devices/launchers reset the wallpaper window's touchable
+            // flag when the surface is recreated; re-assert it so touch events
+            // keep flowing. Harmless no-op when the flag is already set.
+            setTouchEventsEnabled(true)
             if (!rendererInitialized) {
                 val sw = cachedScreenW.takeIf { it > 0 } ?: getMetrics().widthPixels.toFloat()
                 val sh = cachedScreenH.takeIf { it > 0 } ?: getMetrics().heightPixels.toFloat()
