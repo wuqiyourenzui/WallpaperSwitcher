@@ -90,5 +90,9 @@ class MainActivity : ComponentActivity() {
         // Hide the floating double-tap button the moment the app opens, so it
         // never lingers over the UI during the window transition.
         LiveWallpaperService.dismissFloatingButtonIfAny()
+        // Re-evaluate the floating button (e.g. right after the user granted
+        // the overlay permission in system settings) so it appears without
+        // having to leave and re-enter the desktop.
+        LiveWallpaperService.refreshFloatingButtonIfAny()
     }
 }

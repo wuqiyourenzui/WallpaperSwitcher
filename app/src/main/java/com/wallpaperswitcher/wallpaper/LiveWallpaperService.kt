@@ -69,8 +69,16 @@ class LiveWallpaperService : WallpaperService() {
          * Direct switch trigger for the floating button: bypasses the broadcast
          * round-trip so a double-tap feels instant.
          */
-        fun requestSwitchFromOutside(source: String) {
-            activeEngine?.requestSwitchFromOutside(source)
+        fun requestSwitchFromOutside(source: String): Boolean {
+            return activeEngine?.requestSwitchFromOutside(source) ?: false
+        }
+        /**
+         * Re-evaluate the floating button immediately (e.g. after the user
+         * returns from granting the overlay permission) instead of waiting for
+         * the next visibility change.
+         */
+        fun refreshFloatingButtonIfAny() {
+            activeEngine?.refreshFloatingButtonNow()
         }
         @Volatile
         private var activeEngine: LiveWallpaperEngine? = null
@@ -234,8 +242,11 @@ class LiveWallpaperService : WallpaperService() {
             val filter = IntentFilter(ACTION_SWITCH)
             try {
                 try { applicationContext.unregisterReceiver(switchReceiver) } catch (_: Exception) {}
-                if (Build.VERSION.SDK_INT >= 33) {
-                    applicationContext.registerReceiver(switchReceiver, filter, Context.RECEIVER_EXPORTED)
+            if (Build.VERSION.SDK_INT >= 33) {
+                    // NOT_EXPORTED: only this app may trigger a switch. An
+                    // exported receiver would let any other app spam
+                    // ACTION_SWITCH broadcasts and force wallpaper changes.
+                    applicationContext.registerReceiver(switchReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
                 } else {
                     applicationContext.registerReceiver(switchReceiver, filter)
                 }
@@ -449,8 +460,14 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        internal fun requestSwitchFromOutside(source: String) {
+        internal fun requestSwitchFromOutside(source: String): Boolean {
+            if (activeEngine !== this) return false
             requestSwitch(source)
+            return true
+        }
+
+        internal fun refreshFloatingButtonNow() {
+            updateFloatingButton()
         }
 
         override fun onVisibilityChanged(visible: Boolean) {

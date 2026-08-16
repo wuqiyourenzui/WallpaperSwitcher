@@ -688,17 +688,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun isSupportedMedia(name: String): Boolean {
-        val ext = name.lowercase().substringAfterLast('.', "")
-        return ext in listOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "mp4", "mkv", "webm", "avi", "mov", "3gp")
-    }
+    private fun isSupportedMedia(name: String): Boolean = MediaScanner.isSupportedMedia(name)
 
-    private fun detectMediaType(name: String): String {
-        val ext = name.lowercase().substringAfterLast('.', "")
-        return when (ext) {
-            "gif" -> "GIF"
-            "mp4", "mkv", "webm", "avi", "mov", "3gp" -> "VIDEO"
-            else -> "IMAGE"
-        }
-    }
+    private fun detectMediaType(name: String): String = MediaScanner.detectMediaType(name)
 }

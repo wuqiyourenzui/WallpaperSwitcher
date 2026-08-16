@@ -231,7 +231,12 @@ class FloatingSwitchButton(private val context: Context) {
         } catch (_: Exception) {}
         if (LiveWallpaperService.engineRunning) {
             // Direct engine trigger: no broadcast round-trip, snappier feel.
-            LiveWallpaperService.requestSwitchFromOutside("double-tap")
+            val dispatched = LiveWallpaperService.requestSwitchFromOutside("double-tap")
+            if (!dispatched) {
+                // Engine instance vanished mid-gesture (e.g. wallpaper being
+                // re-applied): fall back to the broadcast path.
+                WallpaperSwitchService.switchNow(context)
+            }
         } else {
             WallpaperSwitchService.switchNow(context)
         }
