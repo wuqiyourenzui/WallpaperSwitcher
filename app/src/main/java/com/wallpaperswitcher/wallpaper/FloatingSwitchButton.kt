@@ -37,6 +37,11 @@ class FloatingSwitchButton(private val context: Context) {
         private const val BUTTON_SIZE_DP = 48
         private const val VISUAL_SIZE_DP = 40
         private const val DRAG_SLOP_PX = 8f
+        private const val EDGE_MARGIN_DP = 24
+        private const val BOTTOM_MARGIN_DP = 120
+        private const val PREFS_NAME = "floating_button"
+        private const val KEY_POS_X = "pos_x"
+        private const val KEY_POS_Y = "pos_y"
         // 90% transparent at rest (10% opacity): a faint hint of the hotspot
         // without obstructing the wallpaper. A soft circle + haptic appears
         // while the finger is down so the hit area is clearly confirmed.
@@ -47,6 +52,7 @@ class FloatingSwitchButton(private val context: Context) {
     }
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private var button: View? = null
     private var layoutParams: WindowManager.LayoutParams? = null
     private var circleView: TextView? = null
@@ -97,8 +103,21 @@ class FloatingSwitchButton(private val context: Context) {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = context.resources.displayMetrics.widthPixels - sizePx - (24 * density).toInt()
-            y = (220 * density).toInt()
+            val displayMetrics = context.resources.displayMetrics
+            val maxX = (displayMetrics.widthPixels - sizePx).coerceAtLeast(0)
+            val maxY = (displayMetrics.heightPixels - sizePx).coerceAtLeast(0)
+            val savedX = prefs.getInt(KEY_POS_X, -1)
+            val savedY = prefs.getInt(KEY_POS_Y, -1)
+            if (savedX >= 0 && savedY >= 0) {
+                // Restore the position the user dragged the button to, so
+                // returning to the desktop never resets it.
+                x = savedX.coerceIn(0, maxX)
+                y = savedY.coerceIn(0, maxY)
+            } else {
+                // Default: bottom-right corner, above the dock/nav area.
+                x = displayMetrics.widthPixels - sizePx - (EDGE_MARGIN_DP * density).toInt()
+                y = displayMetrics.heightPixels - sizePx - (BOTTOM_MARGIN_DP * density).toInt()
+            }
         }
         view.setOnTouchListener { v, event -> handleTouch(v, event) }
         try {
@@ -113,6 +132,7 @@ class FloatingSwitchButton(private val context: Context) {
 
     fun dismiss() {
         val v = button ?: return
+        layoutParams?.let { persistPosition(it.x, it.y) }
         button = null
         layoutParams = null
         try {
@@ -153,6 +173,7 @@ class FloatingSwitchButton(private val context: Context) {
             }
             MotionEvent.ACTION_UP -> {
                 hideTouchFeedback()
+                layoutParams?.let { persistPosition(it.x, it.y) }
                 if (!dragging) {
                     val now = SystemClock.uptimeMillis()
                     val slop = 40f * context.resources.displayMetrics.density
@@ -199,5 +220,11 @@ class FloatingSwitchButton(private val context: Context) {
             v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         } catch (_: Exception) {}
         WallpaperSwitchService.switchNow(context)
+    }
+
+    private fun persistPosition(x: Int, y: Int) {
+        try {
+            prefs.edit().putInt(KEY_POS_X, x).putInt(KEY_POS_Y, y).apply()
+        } catch (_: Exception) {}
     }
 }
