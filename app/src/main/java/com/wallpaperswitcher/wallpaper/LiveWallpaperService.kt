@@ -598,7 +598,11 @@ class LiveWallpaperService : WallpaperService() {
             videoHealthJob?.cancel()
             videoHealthJob = null
             renderer?.stopVideo()
-            renderer?.waitForDecodeThread(500)
+            // Short grace only: startVideo() joins the old decode thread again
+            // internally, so waiting 500ms here would double the worst-case
+            // stall on rapid video switches. The generation guard keeps a
+            // late-exiting old thread from touching the new video's resources.
+            renderer?.waitForDecodeThread(120)
         }
 
         private fun pauseGif() {

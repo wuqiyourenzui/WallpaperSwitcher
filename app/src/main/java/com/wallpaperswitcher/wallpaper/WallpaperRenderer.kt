@@ -593,7 +593,10 @@ class WallpaperRenderer(
         // long black screen when the old thread is stuck in blocking I/O.
         val oldThread = videoDecodeThread
         if (oldThread != null && oldThread.isAlive) {
-            try { oldThread.join(500) } catch (_: InterruptedException) {}
+            // Halved from 500ms: a stuck old thread (blocking cloud I/O) would
+            // otherwise freeze the switch as a long black screen. The
+            // generation guard already makes late cleanup harmless.
+            try { oldThread.join(250) } catch (_: InterruptedException) {}
         }
         videoDecodeThread = null
 
