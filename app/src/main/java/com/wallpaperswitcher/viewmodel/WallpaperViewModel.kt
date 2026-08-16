@@ -59,6 +59,10 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         .map { it?.toBooleanStrictOrNull() ?: false }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
+    val floatingButtonEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.FLOATING_BUTTON_ENABLED)
+        .map { it?.toBooleanStrictOrNull() ?: false }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
     private val _selectedGroupId = MutableStateFlow<Long?>(null)
     val selectedGroupId: StateFlow<Long?> = _selectedGroupId
 
@@ -152,6 +156,30 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleUnlockSwitch(enabled: Boolean) {
         viewModelScope.launch { settingsDao.setBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, enabled) }
+    }
+
+    /**
+     * Floating double-tap button fallback. Needs the "display over other apps"
+     * permission; when it is missing, open the system permission screen first
+     * (the button appears once permission is granted and the wallpaper engine
+     * re-checks on the next visibility change).
+     */
+    fun toggleFloatingButton(enabled: Boolean) {
+        viewModelScope.launch {
+            val app = getApplication<Application>()
+            if (enabled) {
+                try {
+                    if (!android.provider.Settings.canDrawOverlays(app)) {
+                        val intent = android.content.Intent(
+                            android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                            Uri.parse("package:${app.packageName}")
+                        ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        app.startActivity(intent)
+                    }
+                } catch (_: Exception) {}
+            }
+            settingsDao.setBool(SettingsKeys.FLOATING_BUTTON_ENABLED, enabled)
+        }
     }
 
     /**

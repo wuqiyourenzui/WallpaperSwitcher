@@ -44,6 +44,7 @@ class WallpaperSwitchService : Service() {
         // Always ensure foreground state first (required when started via startForegroundService)
         startForeground(NOTIFICATION_ID, createNotification())
         running = true
+        Log.d(TAG, "Service started (build 20260816-b1), action=${intent?.action}")
 
         when (intent?.action) {
             ACTION_SWITCH_NOW -> {

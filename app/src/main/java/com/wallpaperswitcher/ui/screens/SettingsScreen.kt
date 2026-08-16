@@ -32,6 +32,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
     val serviceEnabled by viewModel.serviceEnabled.collectAsStateWithLifecycle()
     val doubleTapEnabled by viewModel.doubleTapEnabled.collectAsStateWithLifecycle()
     val unlockSwitchEnabled by viewModel.unlockSwitchEnabled.collectAsStateWithLifecycle()
+    val floatingButtonEnabled by viewModel.floatingButtonEnabled.collectAsStateWithLifecycle()
     val globalIntervalMs by viewModel.globalIntervalMs.collectAsStateWithLifecycle()
     val globalSwitchMode by viewModel.globalSwitchMode.collectAsStateWithLifecycle()
     val globalScaleMode by viewModel.globalScaleMode.collectAsStateWithLifecycle()
@@ -177,6 +178,16 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 subtitle = "双击屏幕切换壁纸（需设置动态壁纸）",
                 checked = doubleTapEnabled,
                 onCheckedChange = { viewModel.toggleDoubleTap(it) }
+            )
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            SettingsSwitchItem(
+                icon = Icons.Outlined.AdsClick,
+                title = "悬浮双击按钮",
+                subtitle = "Android 16/17 部分启动器不转发触摸给壁纸，用悬浮按钮双击切换壁纸",
+                checked = floatingButtonEnabled,
+                onCheckedChange = { viewModel.toggleFloatingButton(it) }
             )
 
             Divider(modifier = Modifier.padding(horizontal = 16.dp))

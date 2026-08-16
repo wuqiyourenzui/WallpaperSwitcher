@@ -10,12 +10,14 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.Settings
 import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
 import android.util.Log
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import com.wallpaperswitcher.data.*
+import com.wallpaperswitcher.service.WallpaperSwitchService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import java.util.concurrent.ConcurrentHashMap
@@ -160,6 +162,11 @@ class LiveWallpaperService : WallpaperService() {
         private var lastDownX = 0f
         private var lastDownY = 0f
         private var lastDownWasDouble = false
+        // Launcher-independent double-tap fallback (some Android 16/17
+        // launchers stop forwarding touches to the wallpaper window).
+        private var floatingButton: FloatingSwitchButton? = null
+        // Throttle the timer self-heal to once every 30s to avoid churn.
+        private var lastTimerSelfHealAt = 0L
         private val doubleTapSlopPx: Float by lazy {
             applicationContext.resources.displayMetrics.density * DOUBLE_TAP_SLOP_DP
         }
@@ -170,7 +177,7 @@ class LiveWallpaperService : WallpaperService() {
             activeEngine = this
             db = AppDatabase.getInstance(applicationContext)
             setTouchEventsEnabled(true)
-            Log.d(TAG, "Engine created, touch events enabled")
+            Log.d(TAG, "Engine created (build 20260816-b1), touch events enabled")
             // Apply the clarity setting live: toggling it in Settings updates
             // the currently displayed wallpaper immediately instead of waiting
             // for the next switch. The per-switch applyClarityMode() below
@@ -206,6 +213,19 @@ class LiveWallpaperService : WallpaperService() {
                 }
                 applicationContext.registerReceiver(screenStateReceiver, screenFilter)
             } catch (_: Exception) {}
+            // The wallpaper engine is alive whenever the wallpaper is applied,
+            // which makes it the most reliable watchdog for the timer service
+            // (Android 15+ can kill long-running foreground services) and for
+            // the floating double-tap button.
+            selfHealTimerService()
+            updateFloatingButton()
+            scope.launch {
+                try {
+                    db.settingsDao().getValueFlow(SettingsKeys.FLOATING_BUTTON_ENABLED).collect {
+                        updateFloatingButton()
+                    }
+                } catch (_: Exception) {}
+            }
         }
 
         override fun onSurfaceCreated(holder: SurfaceHolder?) {
@@ -386,6 +406,8 @@ class LiveWallpaperService : WallpaperService() {
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
             if (visible) {
+                selfHealTimerService()
+                updateFloatingButton()
                 setPowerSave(false, "visibility")
                 scope.launch {
                     if (!surfaceReady || renderer == null) return@launch
@@ -421,6 +443,8 @@ class LiveWallpaperService : WallpaperService() {
             switchInProgress = false
             switchStartedAt = 0L
             consumerStarted.set(false)
+            floatingButton?.dismiss()
+            floatingButton = null
             // Remove any pending delayed recovery / redraw callbacks so they
             // can never fire after the engine is destroyed.
             mainHandler.removeCallbacksAndMessages(null)
@@ -444,6 +468,59 @@ class LiveWallpaperService : WallpaperService() {
             videoHealthJob = null
             scope.cancel()
             super.onDestroy()
+        }
+
+        /**
+         * Android 15+ can stop a long-running foreground service while the app
+         * is in the background. Whenever the wallpaper becomes (or is kept)
+         * visible, restart the timer if it is enabled but dead.
+         */
+        private fun selfHealTimerService() {
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastTimerSelfHealAt < 30_000L) return
+            lastTimerSelfHealAt = now
+            scope.launch {
+                try {
+                    if (WallpaperSwitchService.running) return@launch
+                    val enabled = db.settingsDao().getBool(SettingsKeys.SERVICE_ENABLED, false)
+                    if (enabled) {
+                        Log.d(TAG, "Timer enabled but service not running, restarting (engine watchdog)")
+                        WallpaperSwitchService.start(applicationContext)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Timer self-heal blocked (background FGS start?)", e)
+                }
+            }
+        }
+
+        /**
+         * Show/hide the floating double-tap button according to the setting.
+         * WindowManager calls must run on the main thread, so the DB read
+         * happens off-main and the window ops are posted to the main handler.
+         */
+        private fun updateFloatingButton() {
+            scope.launch {
+                val enabled = try {
+                    db.settingsDao().getBool(SettingsKeys.FLOATING_BUTTON_ENABLED, false)
+                } catch (_: Exception) {
+                    false
+                }
+                val canOverlay = try {
+                    Settings.canDrawOverlays(applicationContext)
+                } catch (_: Exception) {
+                    false
+                }
+                mainHandler.post {
+                    if (enabled && canOverlay) {
+                        if (floatingButton == null) {
+                            floatingButton = FloatingSwitchButton(applicationContext).also { it.show() }
+                        }
+                    } else {
+                        floatingButton?.dismiss()
+                        floatingButton = null
+                    }
+                }
+            }
         }
 
         private fun flushShuffleState() {

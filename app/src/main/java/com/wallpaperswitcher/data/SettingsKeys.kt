@@ -4,6 +4,9 @@ object SettingsKeys {
     const val SERVICE_ENABLED = "service_enabled"
     const val DOUBLE_TAP_ENABLED = "double_tap_enabled"
     const val UNLOCK_SWITCH_ENABLED = "unlock_switch_enabled"
+    // Floating double-tap button fallback for launchers that do not forward
+    // touches to the live wallpaper window (Android 16/17 devices).
+    const val FLOATING_BUTTON_ENABLED = "floating_button_enabled"
     const val LAST_IMAGE_ID = "last_image_id"
     const val SEQUENTIAL_INDEX = "sequential_index"
     const val VIDEO_SEQ_INDEX = "video_seq_index"
