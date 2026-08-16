@@ -403,7 +403,13 @@ class WallpaperRenderer(
                     }
                 }
                 if (fadeAlpha > 0f) {
-                    renderHandler?.postDelayed(this, stepMs)
+                    try {
+                        renderHandler?.postDelayed(this, stepMs)
+                    } catch (_: Exception) {
+                        // The handler looper may be quitting during engine
+                        // release; stop the fade instead of crashing.
+                        fadeAlpha = 0f
+                    }
                 } else {
                     fadeAlpha = 0f
                 }
@@ -1388,6 +1394,9 @@ class WallpaperRenderer(
         if (blackTexId != 0) { GLES20.glDeleteTextures(1, intArrayOf(blackTexId), 0); blackTexId = 0 }
         vertexBuffer = null
         backgroundBuffer = null
+        // Drop the retained bitmap reference so release() frees it promptly.
+        lastImageBitmap = null
+        fadeAlpha = 0f
         glResourcesValid = false
     }
 
