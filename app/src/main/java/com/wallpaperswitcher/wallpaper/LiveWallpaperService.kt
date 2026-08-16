@@ -434,6 +434,7 @@ class LiveWallpaperService : WallpaperService() {
                 // another app covers it. Throttle decode/render so the engine
                 // stops burning power behind other apps. Playback never stops
                 // or restarts - it resumes full speed when visible again.
+                updateFloatingButton()
                 setPowerSave(true, "visibility")
             }
         }
@@ -526,7 +527,10 @@ class LiveWallpaperService : WallpaperService() {
                     mainHandler.post {
                         try {
                             if (engineDestroyed) return@post
-                            if (enabled && canOverlay) {
+                            // The floating button only lives on the desktop:
+                            // hide it whenever the wallpaper is covered (any
+                            // app open, lock screen, screen off).
+                            if (enabled && canOverlay && isVisible) {
                                 if (floatingButton == null) {
                                     floatingButton = FloatingSwitchButton(applicationContext).also { it.show() }
                                 }

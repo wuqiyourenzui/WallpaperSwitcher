@@ -37,15 +37,19 @@ class FloatingSwitchButton(private val context: Context) {
         private const val BUTTON_SIZE_DP = 48
         private const val VISUAL_SIZE_DP = 40
         private const val DRAG_SLOP_PX = 8f
-        // Semi-transparent blue (25% opacity) + bright white text: visible
-        // enough to find, but unobtrusive over the wallpaper.
-        private const val CIRCLE_COLOR = 0x401E88E5.toInt()
-        private const val TEXT_COLOR = 0xE6FFFFFF.toInt()
+        // Fully transparent at rest so the button never obstructs the
+        // wallpaper. A soft circle + haptic appears only while the finger is
+        // down, so the invisible hotspot still gives feedback when hit.
+        private const val CIRCLE_COLOR = 0x001E88E5.toInt()
+        private const val TEXT_COLOR = 0x00FFFFFF.toInt()
+        private const val FEEDBACK_CIRCLE_ALPHA = 96
+        private const val FEEDBACK_TEXT_COLOR = 0xE6FFFFFF.toInt()
     }
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private var button: View? = null
     private var layoutParams: WindowManager.LayoutParams? = null
+    private var circleView: TextView? = null
     private var lastTapTime = 0L
     private var lastTapX = 0f
     private var lastTapY = 0f
@@ -76,6 +80,7 @@ class FloatingSwitchButton(private val context: Context) {
                 setColor(CIRCLE_COLOR)
             }
         }
+        circleView = circle
         val view = FrameLayout(context).apply {
             addView(
                 circle,
@@ -124,6 +129,10 @@ class FloatingSwitchButton(private val context: Context) {
                 lastRawX = x
                 lastRawY = y
                 dragging = false
+                showTouchFeedback()
+                try {
+                    v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                } catch (_: Exception) {}
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
@@ -143,6 +152,7 @@ class FloatingSwitchButton(private val context: Context) {
                 return true
             }
             MotionEvent.ACTION_UP -> {
+                hideTouchFeedback()
                 if (!dragging) {
                     val now = SystemClock.uptimeMillis()
                     val slop = 40f * context.resources.displayMetrics.density
@@ -167,6 +177,20 @@ class FloatingSwitchButton(private val context: Context) {
             }
         }
         return true
+    }
+
+    private fun showTouchFeedback() {
+        try {
+            circleView?.background?.alpha = FEEDBACK_CIRCLE_ALPHA
+            circleView?.setTextColor(FEEDBACK_TEXT_COLOR)
+        } catch (_: Exception) {}
+    }
+
+    private fun hideTouchFeedback() {
+        try {
+            circleView?.background?.alpha = 0
+            circleView?.setTextColor(TEXT_COLOR)
+        } catch (_: Exception) {}
     }
 
     private fun performSwitch(v: View) {
