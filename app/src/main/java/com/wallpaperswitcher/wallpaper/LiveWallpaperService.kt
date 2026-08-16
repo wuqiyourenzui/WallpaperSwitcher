@@ -167,6 +167,12 @@ class LiveWallpaperService : WallpaperService() {
         private var floatingButton: FloatingSwitchButton? = null
         // Throttle the timer self-heal to once every 30s to avoid churn.
         private var lastTimerSelfHealAt = 0L
+        // Serialize floating-button state updates (DB read is async, so two
+        // overlapping calls could apply stale state in the wrong order).
+        private val floatingButtonUpdateLock = AtomicBoolean(false)
+        // Stops a queued floating-button update from re-showing the button
+        // after the engine was destroyed.
+        @Volatile private var engineDestroyed = false
         private val doubleTapSlopPx: Float by lazy {
             applicationContext.resources.displayMetrics.density * DOUBLE_TAP_SLOP_DP
         }
@@ -429,6 +435,7 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         override fun onDestroy() {
+            engineDestroyed = true
             // Only the active engine owns the static engineRunning flag. When
             // the wallpaper is re-applied, the OLD engine may receive its
             // onDestroy AFTER the new engine already started; clearing the flag
@@ -499,26 +506,36 @@ class LiveWallpaperService : WallpaperService() {
          * happens off-main and the window ops are posted to the main handler.
          */
         private fun updateFloatingButton() {
+            if (!floatingButtonUpdateLock.compareAndSet(false, true)) return
             scope.launch {
-                val enabled = try {
-                    db.settingsDao().getBool(SettingsKeys.FLOATING_BUTTON_ENABLED, false)
-                } catch (_: Exception) {
-                    false
-                }
-                val canOverlay = try {
-                    Settings.canDrawOverlays(applicationContext)
-                } catch (_: Exception) {
-                    false
-                }
-                mainHandler.post {
-                    if (enabled && canOverlay) {
-                        if (floatingButton == null) {
-                            floatingButton = FloatingSwitchButton(applicationContext).also { it.show() }
-                        }
-                    } else {
-                        floatingButton?.dismiss()
-                        floatingButton = null
+                try {
+                    val enabled = try {
+                        db.settingsDao().getBool(SettingsKeys.FLOATING_BUTTON_ENABLED, false)
+                    } catch (_: Exception) {
+                        false
                     }
+                    val canOverlay = try {
+                        Settings.canDrawOverlays(applicationContext)
+                    } catch (_: Exception) {
+                        false
+                    }
+                    mainHandler.post {
+                        try {
+                            if (engineDestroyed) return@post
+                            if (enabled && canOverlay) {
+                                if (floatingButton == null) {
+                                    floatingButton = FloatingSwitchButton(applicationContext).also { it.show() }
+                                }
+                            } else {
+                                floatingButton?.dismiss()
+                                floatingButton = null
+                            }
+                        } finally {
+                            floatingButtonUpdateLock.set(false)
+                        }
+                    }
+                } catch (_: Exception) {
+                    floatingButtonUpdateLock.set(false)
                 }
             }
         }

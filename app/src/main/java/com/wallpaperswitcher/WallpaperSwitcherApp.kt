@@ -4,6 +4,10 @@ import android.app.Application
 import android.content.ComponentCallbacks2
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.os.Build
 import android.util.Log
 import coil.Coil
 import coil.ImageLoader
@@ -11,6 +15,7 @@ import coil.request.CachePolicy
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.setBool
+import com.wallpaperswitcher.receiver.ScreenUnlockReceiver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -18,11 +23,13 @@ import kotlinx.coroutines.launch
 class WallpaperSwitcherApp : Application() {
 
     val database: AppDatabase by lazy { AppDatabase.getInstance(this) }
+    private var unlockReceiver: ScreenUnlockReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         initDefaultSettings()
+        registerUnlockReceiver()
         initCoil()
     }
 
@@ -89,6 +96,29 @@ class WallpaperSwitcherApp : Application() {
             }
         }
     }
+
+    /**
+     * ACTION_USER_PRESENT must be registered dynamically: it is an implicit
+     * broadcast, so a manifest-declared receiver for it is silently never
+     * delivered on Android 8+ (captured logs confirmed zero callbacks with a
+     * manifest registration). The wallpaper engine keeps this process alive,
+     * so the dynamic receiver is registered whenever the wallpaper is active.
+     */
+    private fun registerUnlockReceiver() {
+        unlockReceiver = ScreenUnlockReceiver()
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        val flags = if (Build.VERSION.SDK_INT >= 33) {
+            Context.RECEIVER_EXPORTED
+        } else {
+            0
+        }
+        registerReceiver(unlockReceiver, filter, flags)
+    }
+
+    // Note: onTerminate() is never called on real devices (only emulators).
+    // The OS automatically cleans up registered receivers when the process dies.
 
     companion object {
         private const val TAG = "WallpaperSwitcherApp"

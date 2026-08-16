@@ -28,6 +28,9 @@ class FloatingSwitchButton(private val context: Context) {
     companion object {
         private const val TAG = "FloatingSwitchButton"
         private const val DOUBLE_TAP_TIMEOUT_MS = 300L
+        // Debounce after a detected double-tap so a sloppy triple tap does not
+        // enqueue two back-to-back switches.
+        private const val POST_SWITCH_DEBOUNCE_MS = 400L
         private const val BUTTON_SIZE_DP = 56
         private const val DRAG_SLOP_PX = 8f
     }
@@ -38,6 +41,7 @@ class FloatingSwitchButton(private val context: Context) {
     private var lastTapTime = 0L
     private var lastTapX = 0f
     private var lastTapY = 0f
+    private var lastSwitchAt = 0L
     private var lastRawX = 0f
     private var lastRawY = 0f
     private var dragging = false
@@ -129,7 +133,12 @@ class FloatingSwitchButton(private val context: Context) {
                         hypot(x - lastTapX, y - lastTapY) <= slop
                     ) {
                         lastTapTime = 0L
-                        performSwitch(v)
+                        if (now - lastSwitchAt >= POST_SWITCH_DEBOUNCE_MS) {
+                            lastSwitchAt = now
+                            performSwitch(v)
+                        } else {
+                            Log.d(TAG, "Double-tap ignored (debounce)")
+                        }
                     } else {
                         lastTapTime = now
                         lastTapX = x
