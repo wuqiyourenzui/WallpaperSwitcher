@@ -35,7 +35,11 @@ class LiveWallpaperService : WallpaperService() {
         const val SOURCE_TIMER = "timer"
         const val SOURCE_UNLOCK = "unlock"
         const val SOURCE_MANUAL = "manual"
-        private const val SWITCH_SETTLE_DELAY_MS = 80L
+        private const val SWITCH_SETTLE_DELAY_MS = 30L
+        // When switches happen this quickly after the previous one (e.g. a
+        // rapid double-tap burst), skip the fade-in so repeated black flashes
+        // never make fast switching feel sluggish.
+        private const val RAPID_SWITCH_FADE_SKIP_MS = 1500L
         // 20fps cap instead of 30fps: GIF wallpapers look identical (most GIFs
         // are <=15fps) but cost ~1/3 less CPU/GPU for the frame upload + swap.
         private const val GIF_FRAME_INTERVAL_MS = 50L
@@ -52,6 +56,15 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile
         var engineRunning = false
             private set
+        /**
+         * Hide the floating double-tap button immediately. Called when the app
+         * opens so the hotspot vanishes before the engine's visibility
+         * callback catches up (which would otherwise lag during the window
+         * transition).
+         */
+        fun dismissFloatingButtonIfAny() {
+            activeEngine?.hideFloatingButtonNow()
+        }
         @Volatile
         private var activeEngine: LiveWallpaperEngine? = null
     }
@@ -78,6 +91,7 @@ class LiveWallpaperService : WallpaperService() {
         private val consumerStarted = AtomicBoolean(false)
         @Volatile private var switchInProgress = false
         @Volatile private var switchStartedAt = 0L
+        @Volatile private var lastSwitchCompletedAt = 0L
         private val redrawInProgress = AtomicBoolean(false)
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
@@ -413,6 +427,13 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
+        internal fun hideFloatingButtonNow() {
+            mainHandler.post {
+                floatingButton?.dismiss()
+                floatingButton = null
+            }
+        }
+
         override fun onVisibilityChanged(visible: Boolean) {
             isVisible = visible
             if (visible) {
@@ -642,6 +663,7 @@ class LiveWallpaperService : WallpaperService() {
                 try {
                     Log.d(TAG, "Switch start: ${req.source}")
                     executeSwitch(req.source, req.targetId)
+                    lastSwitchCompletedAt = SystemClock.elapsedRealtime()
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (t: Throwable) {
@@ -1015,6 +1037,12 @@ class LiveWallpaperService : WallpaperService() {
         private suspend fun maybeFade() {
             if (renderer?.powerSaveMode == true) return
             if (renderer?.isSurfaceReady() != true) return
+            // Rapid successive switches (double-tap bursts / quick taps) skip
+            // the fade so the wallpaper changes feel instant.
+            if (SystemClock.elapsedRealtime() - lastSwitchCompletedAt < RAPID_SWITCH_FADE_SKIP_MS) {
+                Log.d(TAG, "Rapid switch, skipping fade")
+                return
+            }
             val enabled = try {
                 db.settingsDao().getBool(SettingsKeys.SWITCH_FADE_ENABLED, true)
             } catch (_: Exception) {

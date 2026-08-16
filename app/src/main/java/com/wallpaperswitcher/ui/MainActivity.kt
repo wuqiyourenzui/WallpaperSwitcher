@@ -87,5 +87,8 @@ class MainActivity : ComponentActivity() {
         // background. Self-heal the timer whenever the app is brought back to
         // the foreground (and on every app launch).
         WallpaperSwitchService.ensureRunning(this)
+        // Hide the floating double-tap button the moment the app opens, so it
+        // never lingers over the UI during the window transition.
+        LiveWallpaperService.dismissFloatingButtonIfAny()
     }
 }

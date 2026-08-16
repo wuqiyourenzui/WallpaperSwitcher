@@ -384,8 +384,10 @@ class WallpaperRenderer(
         fadeGeneration++
         val gen = fadeGeneration
         fadeAlpha = 1f
-        val stepMs = 30L
-        val steps = 8
+        // Slightly shorter fade (150ms vs 240ms) so every switch feels snappier
+        // while keeping a smooth dim-in.
+        val stepMs = 25L
+        val steps = 6
         var step = 0
         val runnable = object : Runnable {
             override fun run() {
