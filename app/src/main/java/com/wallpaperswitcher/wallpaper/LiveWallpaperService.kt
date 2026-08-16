@@ -92,6 +92,14 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile private var switchInProgress = false
         @Volatile private var switchStartedAt = 0L
         @Volatile private var lastSwitchCompletedAt = 0L
+        // Next-image prefetch cache: after a switch, the engine decodes the
+        // next candidate image in the background so a follow-up switch (rapid
+        // double-tap burst, unlock, next timer tick) can display it with
+        // near-zero latency instead of decoding ~100-200ms on demand.
+        private val prefetchLock = Any()
+        private var prefetchedImageId = 0L
+        private var prefetchedBitmap: Bitmap? = null
+        private val prefetchInProgress = AtomicBoolean(false)
         private val redrawInProgress = AtomicBoolean(false)
         private var currentBitmap: Bitmap? = null
         private var currentScaleMode: ScaleMode = ScaleMode.FIT
@@ -478,6 +486,7 @@ class LiveWallpaperService : WallpaperService() {
             consumerStarted.set(false)
             floatingButton?.dismiss()
             floatingButton = null
+            clearPrefetchCache()
             // Remove any pending delayed recovery / redraw callbacks so they
             // can never fire after the engine is destroyed.
             mainHandler.removeCallbacksAndMessages(null)
@@ -668,6 +677,7 @@ class LiveWallpaperService : WallpaperService() {
                     Log.d(TAG, "Switch start: ${req.source}")
                     executeSwitch(req.source, req.targetId)
                     lastSwitchCompletedAt = SystemClock.elapsedRealtime()
+                    maybePrefetchNext()
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (t: Throwable) {
@@ -699,6 +709,7 @@ class LiveWallpaperService : WallpaperService() {
 
             // If target is already playing, skip restart (avoids video pause on "apply")
             if (targetId != null && targetId > 0 && targetId == lastDisplayedId) {
+                clearPrefetchCache()
                 if (videoMode && renderer?.isVideoPlaying == true) {
                     Log.d(TAG, "Target $targetId already playing, skip")
                     return
@@ -714,7 +725,10 @@ class LiveWallpaperService : WallpaperService() {
                 ScaleMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SCALE_MODE, ScaleMode.FIT.name))
             } catch (_: Exception) { ScaleMode.FIT }
 
+            var cachedBitmap: Bitmap? = null
             var nextImage = if (targetId != null && targetId > 0) {
+                // A manual selection supersedes any prefetched next image.
+                clearPrefetchCache()
                 val img = imageDao.getImageById(targetId)
                 if (img != null) {
                     val group = db.wallpaperGroupDao().getGroupById(img.groupId)
@@ -728,10 +742,31 @@ class LiveWallpaperService : WallpaperService() {
                 }
             } else {
                 val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
-                val switchMode = try {
-                    SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
-                } catch (_: Exception) { SwitchMode.RANDOM }
-                pickNextImage(switchMode, imageDao, lastId, dao)
+                // Auto switch: consume the prefetch cache when it is still
+                // valid, otherwise pick normally.
+                val (cachedId, cachedBmp) = takePrefetchCache()
+                var cached: WallpaperImage? = null
+                if (cachedId > 0L && cachedBmp != null) {
+                    val img = imageDao.getImageById(cachedId)
+                    if (img != null && img.mediaType != "VIDEO" && img.mediaType != "GIF" &&
+                        img.id !in failedMediaIds
+                    ) {
+                        val group = db.wallpaperGroupDao().getGroupById(img.groupId)
+                        if (group != null && group.isEnabled) cached = img
+                    }
+                    if (cached == null) {
+                        cachedBmp.recycle()
+                    }
+                }
+                if (cached != null) {
+                    cachedBitmap = cachedBmp
+                    cached
+                } else {
+                    val switchMode = try {
+                        SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
+                    } catch (_: Exception) { SwitchMode.RANDOM }
+                    pickNextImage(switchMode, imageDao, lastId, dao)
+                }
             }
 
             if (nextImage == null) {
@@ -787,8 +822,13 @@ class LiveWallpaperService : WallpaperService() {
                 else -> {
                     // Any → Image: load bitmap FIRST, then stop video + render atomically
                     videoMode = false
-                    Log.d(TAG, "Loading image bitmap: ${nextImage.uri}")
-                    val bitmap = loadBitmapWithTimeout(nextImage.uri)
+                    var bitmap = cachedBitmap
+                    if (bitmap == null || bitmap.isRecycled) {
+                        Log.d(TAG, "Loading image bitmap: ${nextImage.uri}")
+                        bitmap = loadBitmapWithTimeout(nextImage.uri)
+                    } else {
+                        Log.d(TAG, "Using prefetched bitmap: ${nextImage.displayName} id=${nextImage.id}")
+                    }
                     if (bitmap != null) {
                         Log.d(TAG, "Bitmap loaded: ${bitmap.width}x${bitmap.height}")
                         // Recycle old bitmap to avoid memory leak
@@ -824,6 +864,84 @@ class LiveWallpaperService : WallpaperService() {
                 recoveryFailCount = 0
             }
             if (lastDisplayedId == nextImage.id) maybeFade()
+        }
+
+        /**
+         * Atomically consume the prefetch cache. Returns (imageId, bitmap);
+         * both zero/null when nothing is cached. The caller owns the bitmap
+         * once returned.
+         */
+        private fun takePrefetchCache(): Pair<Long, Bitmap?> {
+            synchronized(prefetchLock) {
+                val id = prefetchedImageId
+                val bmp = prefetchedBitmap
+                prefetchedImageId = 0L
+                prefetchedBitmap = null
+                if (id <= 0L || bmp == null || bmp.isRecycled) {
+                    if (bmp != null && !bmp.isRecycled) bmp.recycle()
+                    return 0L to null
+                }
+                return id to bmp
+            }
+        }
+
+        private fun clearPrefetchCache() {
+            synchronized(prefetchLock) {
+                val b = prefetchedBitmap
+                prefetchedBitmap = null
+                prefetchedImageId = 0L
+                if (b != null && !b.isRecycled) b.recycle()
+            }
+        }
+
+        /**
+         * Decode the next candidate image in the background so the following
+         * auto-switch is near-instant. Only caches IMAGE media (never
+         * videos/GIFs), only while the wallpaper is visible and the screen is
+         * interactive, and never more than one image ahead. pickNextImage()
+         * advances the sequential/shuffle cursor exactly once at prefetch
+         * time, so the next auto-switch shows the prefetched item and order is
+         * preserved.
+         */
+        private fun maybePrefetchNext() {
+            if (!isVisible || !powerManager.isInteractive()) return
+            synchronized(prefetchLock) {
+                if (prefetchedImageId > 0L || prefetchedBitmap != null) return
+            }
+            if (!prefetchInProgress.compareAndSet(false, true)) return
+            scope.launch {
+                try {
+                    val dao = db.settingsDao()
+                    val imageDao = db.wallpaperImageDao()
+                    if (db.wallpaperGroupDao().getEnabledGroupsSync().isEmpty()) return@launch
+                    val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
+                    val switchMode = try {
+                        SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
+                    } catch (_: Exception) { SwitchMode.RANDOM }
+                    val next = pickNextImage(switchMode, imageDao, lastId, dao) ?: return@launch
+                    if (next.mediaType == "VIDEO" || next.mediaType == "GIF") return@launch
+                    if (next.id == lastDisplayedId || next.id in failedMediaIds) return@launch
+                    Log.d(TAG, "Prefetching next image: ${next.displayName} id=${next.id}")
+                    val bmp = loadBitmapWithTimeout(next.uri)
+                    if (bmp == null || bmp.isRecycled) return@launch
+                    if (engineDestroyed || next.id == lastDisplayedId || next.id in failedMediaIds) {
+                        bmp.recycle()
+                        return@launch
+                    }
+                    synchronized(prefetchLock) {
+                        if (engineDestroyed || prefetchedImageId > 0L) {
+                            bmp.recycle()
+                        } else {
+                            prefetchedImageId = next.id
+                            prefetchedBitmap = bmp
+                            Log.d(TAG, "Prefetch ready: ${next.displayName} id=${next.id}")
+                        }
+                    }
+                } catch (_: Exception) {
+                } finally {
+                    prefetchInProgress.set(false)
+                }
+            }
         }
 
         private suspend fun pickNextImage(
