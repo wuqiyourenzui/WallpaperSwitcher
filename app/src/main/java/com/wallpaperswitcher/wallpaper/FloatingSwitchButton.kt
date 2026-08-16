@@ -37,11 +37,11 @@ class FloatingSwitchButton(private val context: Context) {
         private const val BUTTON_SIZE_DP = 48
         private const val VISUAL_SIZE_DP = 40
         private const val DRAG_SLOP_PX = 8f
-        // Fully transparent at rest so the button never obstructs the
-        // wallpaper. A soft circle + haptic appears only while the finger is
-        // down, so the invisible hotspot still gives feedback when hit.
-        private const val CIRCLE_COLOR = 0x001E88E5.toInt()
-        private const val TEXT_COLOR = 0x00FFFFFF.toInt()
+        // 90% transparent at rest (10% opacity): a faint hint of the hotspot
+        // without obstructing the wallpaper. A soft circle + haptic appears
+        // while the finger is down so the hit area is clearly confirmed.
+        private const val CIRCLE_COLOR = 0x1A1E88E5.toInt()
+        private const val TEXT_COLOR = 0x1AFFFFFF.toInt()
         private const val FEEDBACK_CIRCLE_ALPHA = 96
         private const val FEEDBACK_TEXT_COLOR = 0xE6FFFFFF.toInt()
     }
