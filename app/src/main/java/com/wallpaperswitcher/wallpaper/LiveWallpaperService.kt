@@ -65,6 +65,13 @@ class LiveWallpaperService : WallpaperService() {
         fun dismissFloatingButtonIfAny() {
             activeEngine?.hideFloatingButtonNow()
         }
+        /**
+         * Direct switch trigger for the floating button: bypasses the broadcast
+         * round-trip so a double-tap feels instant.
+         */
+        fun requestSwitchFromOutside(source: String) {
+            activeEngine?.requestSwitchFromOutside(source)
+        }
         @Volatile
         private var activeEngine: LiveWallpaperEngine? = null
     }
@@ -440,6 +447,10 @@ class LiveWallpaperService : WallpaperService() {
                 floatingButton?.dismiss()
                 floatingButton = null
             }
+        }
+
+        internal fun requestSwitchFromOutside(source: String) {
+            requestSwitch(source)
         }
 
         override fun onVisibilityChanged(visible: Boolean) {

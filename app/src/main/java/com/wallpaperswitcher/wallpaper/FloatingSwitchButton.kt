@@ -30,8 +30,9 @@ class FloatingSwitchButton(private val context: Context) {
         private const val TAG = "FloatingSwitchButton"
         private const val DOUBLE_TAP_TIMEOUT_MS = 300L
         // Debounce after a detected double-tap so a sloppy triple tap does not
-        // enqueue two back-to-back switches.
-        private const val POST_SWITCH_DEBOUNCE_MS = 400L
+        // enqueue two back-to-back switches, while still allowing a deliberate
+        // second burst within a quick succession.
+        private const val POST_SWITCH_DEBOUNCE_MS = 250L
         // Touch target (48dp = Android's minimum comfortable target), while the
         // visible circle is smaller and sits inside it.
         private const val BUTTON_SIZE_DP = 48
@@ -153,6 +154,22 @@ class FloatingSwitchButton(private val context: Context) {
                 try {
                     v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
                 } catch (_: Exception) {}
+                // Fire on the second DOWN (not the second UP) so the switch
+                // feels instant and "follows the finger".
+                val now = SystemClock.uptimeMillis()
+                val slop = 40f * context.resources.displayMetrics.density
+                if (lastTapTime != 0L &&
+                    now - lastTapTime <= DOUBLE_TAP_TIMEOUT_MS &&
+                    hypot(x - lastTapX, y - lastTapY) <= slop
+                ) {
+                    lastTapTime = 0L
+                    if (now - lastSwitchAt >= POST_SWITCH_DEBOUNCE_MS) {
+                        lastSwitchAt = now
+                        performSwitch(v)
+                    } else {
+                        Log.d(TAG, "Double-tap ignored (debounce)")
+                    }
+                }
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
@@ -176,24 +193,17 @@ class FloatingSwitchButton(private val context: Context) {
                 layoutParams?.let { persistPosition(it.x, it.y) }
                 if (!dragging) {
                     val now = SystemClock.uptimeMillis()
-                    val slop = 40f * context.resources.displayMetrics.density
-                    if (lastTapTime != 0L &&
-                        now - lastTapTime <= DOUBLE_TAP_TIMEOUT_MS &&
-                        hypot(x - lastTapX, y - lastTapY) <= slop
-                    ) {
-                        lastTapTime = 0L
-                        if (now - lastSwitchAt >= POST_SWITCH_DEBOUNCE_MS) {
-                            lastSwitchAt = now
-                            performSwitch(v)
-                        } else {
-                            Log.d(TAG, "Double-tap ignored (debounce)")
-                        }
-                    } else {
-                        lastTapTime = now
-                        lastTapX = x
-                        lastTapY = y
-                    }
+                    // Record the tap so the next DOWN can be recognized as the
+                    // second tap of a double-tap.
+                    lastTapTime = now
+                    lastTapX = x
+                    lastTapY = y
                 }
+                return true
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                hideTouchFeedback()
+                lastTapTime = 0L
                 return true
             }
         }
@@ -219,7 +229,12 @@ class FloatingSwitchButton(private val context: Context) {
         try {
             v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         } catch (_: Exception) {}
-        WallpaperSwitchService.switchNow(context)
+        if (LiveWallpaperService.engineRunning) {
+            // Direct engine trigger: no broadcast round-trip, snappier feel.
+            LiveWallpaperService.requestSwitchFromOutside("double-tap")
+        } else {
+            WallpaperSwitchService.switchNow(context)
+        }
     }
 
     private fun persistPosition(x: Int, y: Int) {
