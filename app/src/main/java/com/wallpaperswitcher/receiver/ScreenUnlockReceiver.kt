@@ -48,9 +48,15 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
                         // USER_PRESENT fires while the keyguard is still clearing.
                         // Wait a moment so the wallpaper becomes visible again;
                         // otherwise the engine skips the switch as "not visible".
-                        delay(800L)
+                        // Also retry: right after a process restart the engine
+                        // may not have re-created itself yet.
+                        var attempts = 0
+                        while (!LiveWallpaperService.engineRunning && attempts < 3) {
+                            delay(400L)
+                            attempts++
+                        }
                         if (!LiveWallpaperService.engineRunning) {
-                            Log.d(TAG, "Engine not running, skip unlock switch")
+                            Log.d(TAG, "Engine not running after retries, skip unlock switch")
                             return@withTimeout
                         }
                         val switchIntent = Intent(LiveWallpaperService.ACTION_SWITCH).apply {
@@ -58,7 +64,7 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
                         }
                         switchIntent.setPackage(context.packageName)
                         context.sendBroadcast(switchIntent)
-                        Log.d(TAG, "Switch broadcast sent")
+                        Log.d(TAG, "Switch broadcast sent (unlock)")
                     }
                 }
             } catch (e: Exception) {

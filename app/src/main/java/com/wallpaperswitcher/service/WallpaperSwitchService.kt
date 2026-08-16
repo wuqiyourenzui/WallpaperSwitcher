@@ -35,10 +35,15 @@ class WallpaperSwitchService : Service() {
     // Throttle the screen-off skip log to once per minute: at a 10s interval
     // the old code logged ~720 lines/hour while the screen was dark.
     private var lastScreenOffLogAt = 0L
+    // A single transient empty read (e.g. while the DB is being migrated or a
+    // folder import replaced groups) must never kill the timer and flip the
+    // toggle off silently; only stop after several consecutive empty checks.
+    private var consecutiveEmptyGroupChecks = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Always ensure foreground state first (required when started via startForegroundService)
         startForeground(NOTIFICATION_ID, createNotification())
+        running = true
 
         when (intent?.action) {
             ACTION_SWITCH_NOW -> {
@@ -68,6 +73,7 @@ class WallpaperSwitchService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        running = false
         switchJob?.cancel()
         scope.cancel()
         super.onDestroy()
@@ -83,12 +89,18 @@ class WallpaperSwitchService : Service() {
                     val db = AppDatabase.getInstance(applicationContext)
                     val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
                     if (groups.isEmpty()) {
-                        // User can re-enable via toggle, which calls start() again.
-                        Log.d(TAG, "No enabled groups, stopping service")
-                        // Sync the toggle so the UI reflects the stopped state.
-                        db.settingsDao().setBool(SettingsKeys.SERVICE_ENABLED, false)
-                        stopSelf()
-                        return@launch
+                        consecutiveEmptyGroupChecks++
+                        if (consecutiveEmptyGroupChecks >= EMPTY_GROUP_STOP_THRESHOLD) {
+                            // User can re-enable via toggle, which calls start() again.
+                            Log.d(TAG, "No enabled groups for $consecutiveEmptyGroupChecks checks, stopping service")
+                            // Sync the toggle so the UI reflects the stopped state.
+                            db.settingsDao().setBool(SettingsKeys.SERVICE_ENABLED, false)
+                            stopSelf()
+                            return@launch
+                        }
+                        Log.d(TAG, "No enabled groups (check $consecutiveEmptyGroupChecks/$EMPTY_GROUP_STOP_THRESHOLD), keeping timer alive")
+                    } else {
+                        consecutiveEmptyGroupChecks = 0
                     }
                     // Get global interval
                     val interval = db.settingsDao().getLong(SettingsKeys.GLOBAL_INTERVAL_MS, 60_000L)
@@ -186,12 +198,21 @@ class WallpaperSwitchService : Service() {
         private const val NOTIFICATION_ID = 1001
         const val ACTION_SWITCH_NOW = "com.wallpaperswitcher.SWITCH_NOW"
         const val ACTION_STOP = "com.wallpaperswitcher.STOP"
+        // Require several consecutive empty-group reads before stopping, so a
+        // transient DB state can never kill the timer on its own.
+        private const val EMPTY_GROUP_STOP_THRESHOLD = 3
         // While the screen is off, re-check every 60s instead of the configured
         // interval (which can be as low as 10s) to avoid useless wakeups.
         private const val SCREEN_OFF_RECHECK_MS = 60_000L
         // Shared guard so the timer loop and a manual "switch now" can never
         // apply two static wallpapers at the same time.
         private val staticApplyInProgress = AtomicBoolean(false)
+        // True while this service is alive in the current process. Used by
+        // ensureRunning() to self-heal after Android 15+ kills a long-running
+        // foreground service in the background.
+        @Volatile
+        var running = false
+            private set
 
         fun start(context: Context) {
             val intent = Intent(context, WallpaperSwitchService::class.java)
@@ -204,6 +225,27 @@ class WallpaperSwitchService : Service() {
 
         fun stop(context: Context) {
             context.stopService(Intent(context, WallpaperSwitchService::class.java))
+        }
+
+        /**
+         * Cheap self-heal: Android 15+ can stop long-running foreground
+         * services while the app is in the background (6h timeout / OEM power
+         * killers). Any time the app returns to the foreground, restart the
+         * timer if it is enabled but no longer running.
+         */
+        fun ensureRunning(context: Context) {
+            if (running) return
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val enabled = AppDatabase.getInstance(context)
+                        .settingsDao()
+                        .getBool(SettingsKeys.SERVICE_ENABLED, false)
+                    if (enabled) {
+                        Log.d(TAG, "Timer enabled but service not running, restarting")
+                        start(context)
+                    }
+                } catch (_: Exception) {}
+            }
         }
 
         fun switchNow(context: Context) {

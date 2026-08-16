@@ -15,6 +15,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
+import com.wallpaperswitcher.service.WallpaperSwitchService
 import com.wallpaperswitcher.ui.theme.WallpaperSwitcherTheme
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
@@ -78,5 +79,13 @@ class MainActivity : ComponentActivity() {
         if (needed.isNotEmpty()) {
             requestPermissionLauncher.launch(needed.toTypedArray())
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Android 15+ can stop long-running foreground services in the
+        // background. Self-heal the timer whenever the app is brought back to
+        // the foreground (and on every app launch).
+        WallpaperSwitchService.ensureRunning(this)
     }
 }

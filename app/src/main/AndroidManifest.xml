@@ -67,7 +67,16 @@
             </intent-filter>
         </receiver>
 
-        <!-- Screen Unlock Receiver: registered programmatically in WallpaperSwitcherApp -->
+        <!-- Screen Unlock Receiver: manifest-registered so it still fires when
+             the process was killed (a dynamic receiver cannot receive the very
+             broadcast that starts the process). -->
+        <receiver
+            android:name=".receiver.ScreenUnlockReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.USER_PRESENT" />
+            </intent-filter>
+        </receiver>
 
     </application>
 </manifest>

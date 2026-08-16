@@ -13,7 +13,6 @@ import android.os.PowerManager
 import android.os.SystemClock
 import android.service.wallpaper.WallpaperService
 import android.util.Log
-import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import com.wallpaperswitcher.data.*
@@ -42,6 +41,11 @@ class LiveWallpaperService : WallpaperService() {
         // stuck cloud/SAF provider can never freeze the switch queue forever.
         private const val BITMAP_LOAD_TIMEOUT_MS = 15_000L
         private const val SHUFFLE_MAX_ATTEMPTS = 10
+        // Double-tap detection window and slop. Kept slightly more generous
+        // than ViewConfiguration's defaults because some launchers compress or
+        // jitter the events they forward to the wallpaper window.
+        private const val DOUBLE_TAP_TIMEOUT_MS = 300L
+        private const val DOUBLE_TAP_SLOP_DP = 40f
 
         @Volatile
         var engineRunning = false
@@ -143,26 +147,22 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        private val gestureDetector = GestureDetector(
-            applicationContext,
-            object : GestureDetector.SimpleOnGestureListener() {
-                override fun onDoubleTap(e: MotionEvent): Boolean {
-                    scope.launch {
-                        try {
-                            val enabled = db.settingsDao().getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
-                            if (enabled) {
-                                requestSwitch("double-tap")
-                            }
-                        } catch (_: Exception) {
-                            // A double tap is an explicit user action: switch even
-                            // if reading the setting fails.
-                            requestSwitch("double-tap")
-                        }
-                    }
-                    return true
-                }
-            }
-        )
+        // Manual double-tap detector. GestureDetector only reports a double
+        // tap on the second ACTION_DOWN and silently fails when the launcher /
+        // system delivers an incomplete event stream (Android 16/17 devices and
+        // some OEM launchers consume or drop one of the two taps). Tracking
+        // both DOWN and UP pairs lets the engine recognize a double tap from
+        // whatever subset of events actually reaches the wallpaper window.
+        private var lastTapUpTime = 0L
+        private var lastTapUpX = 0f
+        private var lastTapUpY = 0f
+        private var lastDownTime = 0L
+        private var lastDownX = 0f
+        private var lastDownY = 0f
+        private var lastDownWasDouble = false
+        private val doubleTapSlopPx: Float by lazy {
+            applicationContext.resources.displayMetrics.density * DOUBLE_TAP_SLOP_DP
+        }
 
         override fun onCreate(surfaceHolder: SurfaceHolder?) {
             super.onCreate(surfaceHolder)
@@ -170,6 +170,7 @@ class LiveWallpaperService : WallpaperService() {
             activeEngine = this
             db = AppDatabase.getInstance(applicationContext)
             setTouchEventsEnabled(true)
+            Log.d(TAG, "Engine created, touch events enabled")
             // Apply the clarity setting live: toggling it in Settings updates
             // the currently displayed wallpaper immediately instead of waiting
             // for the next switch. The per-switch applyClarityMode() below
@@ -300,8 +301,86 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         override fun onTouchEvent(event: MotionEvent) {
-            gestureDetector.onTouchEvent(event)
+            handleTouchEvent(event)
+        }
+
+        /**
+         * Robust double-tap detection that fires from either the second
+         * ACTION_DOWN (the classic case) or the second ACTION_UP (fallback for
+         * launchers that swallow one of the DOWN events). Every DOWN/UP is
+         * logged so a captured log can prove whether the system is delivering
+         * touches to the wallpaper window at all.
+         */
+        private fun handleTouchEvent(event: MotionEvent) {
+            val action = event.actionMasked
+            val x = event.x
+            val y = event.y
+            val now = SystemClock.uptimeMillis()
+            when (action) {
+                MotionEvent.ACTION_DOWN -> {
+                    val withinTime = lastTapUpTime != 0L && now - lastTapUpTime <= DOUBLE_TAP_TIMEOUT_MS
+                    val withinSlop = lastTapUpTime != 0L &&
+                        kotlin.math.hypot(x - lastTapUpX, y - lastTapUpY) <= doubleTapSlopPx
+                    lastDownWasDouble = withinTime && withinSlop
+                    if (lastDownWasDouble) {
+                        // Second tap recognized on the DOWN event. Clear the UP
+                        // marker so the UP fallback below cannot fire a second
+                        // switch for the same gesture.
+                        lastTapUpTime = 0L
+                        Log.d(TAG, "Touch DOWN ($x, $y): double-tap from DOWN")
+                        onDoubleTapDetected()
+                    } else {
+                        lastDownTime = now
+                        lastDownX = x
+                        lastDownY = y
+                        Log.d(TAG, "Touch DOWN ($x, $y)")
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (lastDownWasDouble) {
+                        // Already switched on the DOWN of this tap.
+                        lastDownWasDouble = false
+                        lastTapUpTime = 0L
+                    } else {
+                        val withinUpTime = lastTapUpTime != 0L && now - lastTapUpTime <= DOUBLE_TAP_TIMEOUT_MS
+                        val withinUpSlop = lastTapUpTime != 0L &&
+                            kotlin.math.hypot(x - lastTapUpX, y - lastTapUpY) <= doubleTapSlopPx
+                        if (withinUpTime && withinUpSlop) {
+                            // The launcher consumed one of the DOWN events but
+                            // still forwarded both UPs: count it as a double tap.
+                            lastTapUpTime = 0L
+                            Log.d(TAG, "Touch UP ($x, $y): double-tap from UP fallback")
+                            onDoubleTapDetected()
+                        } else {
+                            lastTapUpTime = now
+                            lastTapUpX = x
+                            lastTapUpY = y
+                            Log.d(TAG, "Touch UP ($x, $y)")
+                        }
+                    }
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    lastDownWasDouble = false
+                    lastTapUpTime = 0L
+                    Log.d(TAG, "Touch CANCEL")
+                }
+            }
             super.onTouchEvent(event)
+        }
+
+        private fun onDoubleTapDetected() {
+            // A double tap is an explicit user action: switch even if reading
+            // the setting fails.
+            scope.launch {
+                try {
+                    val enabled = db.settingsDao().getBool(SettingsKeys.DOUBLE_TAP_ENABLED, true)
+                    if (enabled) {
+                        requestSwitch("double-tap")
+                    }
+                } catch (_: Exception) {
+                    requestSwitch("double-tap")
+                }
+            }
         }
 
         override fun onVisibilityChanged(visible: Boolean) {

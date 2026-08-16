@@ -4,9 +4,6 @@ import android.app.Application
 import android.content.ComponentCallbacks2
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.util.Log
 import coil.Coil
 import coil.ImageLoader
@@ -14,7 +11,6 @@ import coil.request.CachePolicy
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.setBool
-import com.wallpaperswitcher.receiver.ScreenUnlockReceiver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -22,13 +18,11 @@ import kotlinx.coroutines.launch
 class WallpaperSwitcherApp : Application() {
 
     val database: AppDatabase by lazy { AppDatabase.getInstance(this) }
-    private var unlockReceiver: ScreenUnlockReceiver? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         initDefaultSettings()
-        registerUnlockReceiver()
         initCoil()
     }
 
@@ -95,26 +89,6 @@ class WallpaperSwitcherApp : Application() {
             }
         }
     }
-
-    /**
-     * Register unlock receiver programmatically (more reliable than manifest).
-     */
-    private fun registerUnlockReceiver() {
-        unlockReceiver = ScreenUnlockReceiver()
-        val filter = IntentFilter().apply {
-            addAction(Intent.ACTION_USER_PRESENT)
-            priority = IntentFilter.SYSTEM_HIGH_PRIORITY
-        }
-        val flags = if (android.os.Build.VERSION.SDK_INT >= 33) {
-            Context.RECEIVER_EXPORTED
-        } else {
-            0
-        }
-        registerReceiver(unlockReceiver, filter, flags)
-    }
-
-    // Note: onTerminate() is never called on real devices (only emulators).
-    // The OS automatically cleans up registered receivers when the process dies.
 
     companion object {
         private const val TAG = "WallpaperSwitcherApp"
