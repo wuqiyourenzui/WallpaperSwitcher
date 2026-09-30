@@ -2304,6 +2304,51 @@ ON/OFF 常常属于**两个不同实例**（实测同一时刻出现 `ON(visibil
 **回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、**143 单测全绿** ✓、`lintDebug` 0 error ✓、
 括号余量 0 ✓、dex 字符串 oracle 与修复前一致（无文案丢失）✓。
 
+#### 4.9.48 悬浮按钮进入应用不消失（两条独立的原因）
+
+用户报"悬浮按钮进入应用无法立即消失"。真机复现 + 日志定位后发现是**两层**问题叠加：
+
+**原因一：Activity 的隐藏请求依赖引擎实例**
+
+`MainActivity.onResume()` 走的是 `LiveWallpaperService.dismissFloatingButtonIfAny()` → `activeEngine?.hideFloatingButtonNow()`。
+**引擎实例为 null 时（被系统回收、或还没注册）这行是空操作** —— 在 4.9.45 把按钮改成"进程级单例"之前这不致命：
+旧实现里每个引擎各持一份按钮，引擎销毁时会把窗口一起 `dismiss()`；改成单例后按钮能跨引擎存活，于是
+"上一个引擎创建的按钮"就留在了屏幕上 ✗。
+
+**原因二：MIUI 会继续绘制"视图 GONE"的覆盖窗口**
+
+即使隐藏逻辑执行了（实测 `hideShared → Floating button hidden` 只相隔 **1 ms**），
+`dumpsys window` 里窗口依旧存在、按钮依旧可见 ✗ —— 视图 `GONE` 并不足以让这个 ROM 停止绘制覆盖窗口的
+最后一帧缓冲。
+
+**修法**
+
+| 改动 | 位置 |
+|---|---|
+| 新增 `FloatingSwitchButton.hideShared()`（进程级、任意线程）+ 实例 `hideNow()`，Activity **直接**隐藏，不再依赖引擎 | `FloatingSwitchButton.kt` |
+| `MainActivity.onStart()`（窗口绘制之前，最早时机）与 `onResume()` 都调用它；引擎路径保留（它还负责自身记账） | `MainActivity.kt` |
+| `hideOverlay()` 除视图 `GONE` 外，**把窗口本身也设为不可见**：`alpha = 0f` + 移出屏幕上方 + `updateViewLayout` 强制事务 | `FloatingSwitchButton.kt` |
+| `showOnDesktop()` 对应恢复 `alpha = 1f` 与移出前的位置 | `FloatingSwitchButton.kt` |
+
+**真机验证（手机 25102RKBEC）**
+
+```
+23:35:57.107 MainActivity: onStart: hiding the floating button
+23:35:57.107 FloatingSwitchButton: hideShared: hiding (id=70791749)
+23:35:57.108 FloatingSwitchButton: Floating button hidden (id=70791749)      ← 1 ms
+23:35:57.108 LiveWallpaperService: App UI foreground: mute audio + hide floating button
+23:35:57.118 VideoAudio: Video audio paused (wallpaper not visible)
+```
+
+* 应用内截图：**没有浮钮覆盖** ✓
+* 回桌面：日志 `Floating button shown (id=70791749)`（同一实例）+ 窗口仍在 ✓，**点击两次都成功切换**
+  （`Switch done: floating-tap` ×2，第二次日志 `Not a rapid switch (3855ms)` 说明节流也在工作）✓
+
+**测量陷阱（记下来避免下次误判）**：用"`dumpsys window` 里覆盖窗口的数量"判断按钮是否可见**不可靠** ✗ ——
+隐藏后窗口对象仍会留在列表里（alpha=0、不再绘制），真正的判据是**截图**和 `isVisible`/alpha 字段。
+
+**回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、143 单测 ✓、lint 0 error ✓。
+
 ## 五、服务与后台组件
 
 ### 5.1 WallpaperSwitchService (定时切换服务)
