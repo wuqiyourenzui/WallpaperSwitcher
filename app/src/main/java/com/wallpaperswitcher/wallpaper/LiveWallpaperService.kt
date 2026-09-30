@@ -165,12 +165,20 @@ class LiveWallpaperService : WallpaperService() {
          * button removing/adding its overlay every ~2s while the desktop was in
          * use: the ROM reports "wallpaper covered" for 250-400ms in those
          * moments, 400ms was just below that, so the button vanished (a visible
-         * blink) and each add/remove fed the ROM another visibility flip. With
-         * 1500ms those blips never reach the overlay at all; a genuine cover
-         * (another app in front) still hides the button, up to 1.5s later, and
-         * our own UI's opening hides it immediately (hideFloatingButtonNow).
+         * blink) and each add/remove fed the ROM another visibility flip.
+         *
+         * Lowered back to 150ms once the overlay stopped churning: the button is a
+         * process-wide window that is only made invisible (see
+         * FloatingSwitchButton), so hiding no longer removes/re-adds the window and
+         * cannot feed the ROM another flip - which was the actual reason for the
+         * long settle. The measured cost of 1500ms was that a *genuine* cover (the
+         * user switches to another app) left the button visible for 1.5s (device
+         * log 09-30 23:37: covered at .389, hidden at .947 = 1.56s; user report
+         * "进入其他应用还是没有立即消失"). 150ms is below perception and still
+         * swallows very short flips; our own UI's opening hides it immediately
+         * (MainActivity -> FloatingSwitchButton.hideShared).
          */
-        private const val FLOATING_BUTTON_HIDE_SETTLE_MS = 1_500L
+        private const val FLOATING_BUTTON_HIDE_SETTLE_MS = 150L
         /**
          * How often the GIF ticker re-checks the visibility while it is paused.
          * Only a safety net - [nudgeGifTicker] resumes it immediately when the
