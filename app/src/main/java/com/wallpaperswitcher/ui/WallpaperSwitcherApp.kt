@@ -13,6 +13,8 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.ui.screens.*
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
@@ -36,20 +38,49 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
         }
     }
 
+    // Long instructions (e.g. which button to tap in the system live-wallpaper
+    // dialog). A normal toast is gone in ~2s - and the system dialog covers the
+    // app immediately afterwards - so these are shown as a non-touchable
+    // floating bubble for several seconds, with a repeated toast as fallback
+    // when the overlay permission is not granted.
+    LaunchedEffect(Unit) {
+        viewModel.hintMessage.collectLatest { msg ->
+            if (!com.wallpaperswitcher.wallpaper.HintOverlay.show(context, msg)) {
+                com.wallpaperswitcher.wallpaper.HintOverlay.showLongToast(context, msg)
+            }
+        }
+    }
+
+    // Drop the hint the moment we come back to the foreground: leaving the
+    // system live-wallpaper dialog (after tapping 设为壁纸, or by cancelling)
+    // resumes this activity, and the instruction is no longer useful then.
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                com.wallpaperswitcher.wallpaper.HintOverlay.dismiss()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // Show the actual group name in the detail page's top bar instead of a
     // generic "分组详情" label.
     val selectedGroup by viewModel.selectedGroup.collectAsStateWithLifecycle()
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
+            CenterAlignedTopAppBar(
                 title = {
                     Text(
                         when (currentScreen) {
                             is Screen.Home -> "壁纸切换"
                             is Screen.GroupDetail -> selectedGroup?.name ?: "分组详情"
                             is Screen.Settings -> "设置"
-                        }
+                        },
+                        fontWeight = FontWeight.Bold
                     )
                 },
                 navigationIcon = {
@@ -59,14 +90,25 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                         }
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
+                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                    titleContentColor = MaterialTheme.colorScheme.onSurface,
+                    navigationIconContentColor = MaterialTheme.colorScheme.onSurface
                 )
             )
         },
         bottomBar = {
-            NavigationBar {
+            NavigationBar(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                tonalElevation = 0.dp
+            ) {
+                val navColors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    selectedTextColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    indicatorColor = MaterialTheme.colorScheme.secondaryContainer,
+                    unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 NavigationBarItem(
                     selected = currentScreen is Screen.Home,
                     onClick = { currentScreen = Screen.Home },
@@ -76,7 +118,8 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                             else Icons.Outlined.Home, "首页"
                         )
                     },
-                    label = { Text("首页") }
+                    label = { Text("首页") },
+                    colors = navColors
                 )
                 NavigationBarItem(
                     selected = currentScreen is Screen.Settings,
@@ -87,7 +130,8 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                             else Icons.Outlined.Settings, "设置"
                         )
                     },
-                    label = { Text("设置") }
+                    label = { Text("设置") },
+                    colors = navColors
                 )
             }
         }
@@ -98,6 +142,11 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
         }
 
         Box(modifier = Modifier.padding(padding)) {
+            // No transition animation at all: switching screens (tab flips AND
+            // group navigation) swaps instantly. The animated crossfade/slide
+            // kept both full screens composed and animated during the switch,
+            // which stuttered on some devices; an instant swap renders only
+            // the target screen for the first frame.
             when (val screen = currentScreen) {
                 is Screen.Home -> HomeScreen(
                     viewModel = viewModel,
@@ -106,11 +155,21 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                         currentScreen = Screen.GroupDetail(groupId)
                     }
                 )
-                is Screen.GroupDetail -> GroupDetailScreen(
-                    viewModel = viewModel,
-                    groupId = screen.groupId,
-                    onBack = { currentScreen = Screen.Home }
-                )
+                is Screen.GroupDetail -> {
+                    // Leaving the group screen releases its full media list: the
+                    // detail screen loads EVERY media of the group (no paging, by
+                    // design - the fast scroller needs the whole list), and until
+                    // now that list stayed in memory until the process died or
+                    // another group was opened.
+                    DisposableEffect(screen.groupId) {
+                        onDispose { viewModel.selectGroup(null) }
+                    }
+                    GroupDetailScreen(
+                        viewModel = viewModel,
+                        groupId = screen.groupId,
+                        onBack = { currentScreen = Screen.Home }
+                    )
+                }
                 is Screen.Settings -> SettingsScreen(viewModel = viewModel)
             }
         }

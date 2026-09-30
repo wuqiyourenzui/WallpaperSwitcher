@@ -8,3 +8,25 @@ build/
 .externalNativeBuild
 .cxx
 local.properties
+
+# --- 调试残留（真机/模拟器取证产物、临时探针），不入版本库 ---
+# .repair 里有损坏前的快照与 dex（600MB+），.recover 是更早一次修复的档案
+/.repair/
+/.recover/
+/kt_probe/
+/dsh-fix/
+# 设备日志 / UI dump / 截图 / 探针输出
+/emu_*
+/tablet_*.log
+/tablet_log_new.txt
+/set_dump*.xml
+/lp_tablet.xml
+/mr_block_old.txt
+/tab_now.png
+/wallpaper_switcher_log_*.txt
+/cpu_*.txt
+/kt_cp.txt
+/kotlin_info.log
+/exif_*.jpg
+# 空的散落文件
+/MediaPickTest.kt

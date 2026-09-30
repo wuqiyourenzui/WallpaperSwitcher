@@ -12,8 +12,8 @@ android {
         applicationId = "com.wallpaperswitcher"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildTypes {
@@ -24,6 +24,17 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Signed with the same (original) debug key so the optimized build
+            // installs **over** the debug build on the tablet and keeps updating
+            // in place (no uninstall, no data loss). Swap in a real release
+            // keystore before handing this APK to anyone else.
+            signingConfig = signingConfigs.getByName("debug")
+            // Kept debuggable on purpose: the runtime log (cache/logs/runtime.log)
+            // and the database stay readable through `adb run-as`, which is how
+            // OEM-specific issues are diagnosed on the tablet. R8 minification,
+            // shrinking and optimization all still apply. Flip to false before
+            // distributing the APK outside this machine.
+            isDebuggable = true
         }
     }
 
@@ -85,4 +96,7 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.0.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation(kotlin("test-junit"))
 }

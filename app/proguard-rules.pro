@@ -10,5 +10,5 @@
 # Compose
 -dontwarn androidx.compose.**
 
-# Coil
--keep class coil.** { *; }
+# Coil needs no keep rules (its public API is used directly, no reflection).
+-dontwarn coil.**

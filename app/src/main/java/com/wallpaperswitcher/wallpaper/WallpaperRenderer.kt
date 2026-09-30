@@ -1,25 +1,51 @@
 package com.wallpaperswitcher.wallpaper
 
+import com.wallpaperswitcher.util.AppLog
+
+import com.wallpaperswitcher.util.LogText
+
 import android.content.Context
+
 import android.content.res.AssetFileDescriptor
+
 import android.graphics.*
+
 import android.media.*
+
 import android.net.Uri
+
 import android.opengl.*
+
 import android.os.Handler
+
 import android.os.HandlerThread
+
 import android.os.SystemClock
-import android.util.Log
+
 import android.view.Surface
+
 import android.view.SurfaceHolder
+
 import com.wallpaperswitcher.data.ScaleMode
+
+import com.wallpaperswitcher.engine.WallpaperGeometry
+
+import com.wallpaperswitcher.engine.VideoSound
+
 import java.nio.ByteBuffer
+
 import java.nio.ByteOrder
+
 import java.nio.FloatBuffer
+
 import java.util.concurrent.CountDownLatch
+
 import java.util.concurrent.TimeUnit
+
 import java.util.concurrent.atomic.AtomicBoolean
+
 import java.util.concurrent.atomic.AtomicInteger
+
 
 /**
  * Unified EGL renderer with MediaCodec + SurfaceTexture for video.
@@ -41,6 +67,36 @@ class WallpaperRenderer(
 ) {
     companion object {
         private const val TAG = "WallpaperRenderer"
+        /**
+         * Minimum minification (texture pixels per screen pixel, on one axis)
+         * before the mip chain is worth generating for a static image.
+         *
+         * A 1.2-1.5x downscale samples mip level 0 anyway, so building the whole
+         * chain costs a full extra GPU pass per switch for no visible gain. On a
+         * 3200x2136 tablet that pass lands exactly when the system dialog is
+         * closing and the wallpaper is being re-composed - the "点击设置壁纸后
+         * 卡顿" report. Real minification (≥1.6x) still gets mipmaps.
+         */
+        private const val MIPMAP_MIN_DOWNSCALE = 1.6f
+        /** Codec-specific-data keys re-submitted after a codec flush. */
+        private val CODEC_CONFIG_KEYS = arrayOf("csd-0", "csd-1", "csd-2")
+
+        // Column-major GL matrices for the FILL/STRETCH auto-rotation, matching
+        // the static-image direction for each user-selectable direction.
+        // clockwise:     x' = y,      y' = 1 - x
+        // counter-cw:    x' = 1 - y,  y' = x
+        private val EXTRA_ROTATE_90_CW_MATRIX = floatArrayOf(
+            0f, -1f, 0f, 0f,
+            1f, 0f, 0f, 0f,
+            0f, 0f, 1f, 0f,
+            0f, 1f, 0f, 1f
+        )
+        private val EXTRA_ROTATE_90_CCW_MATRIX = floatArrayOf(
+            0f, 1f, 0f, 0f,
+            -1f, 0f, 0f, 0f,
+            0f, 0f, 1f, 0f,
+            1f, 0f, 0f, 1f
+        )
 
         private const val VERTEX_SHADER = """
             attribute vec4 aPosition;
@@ -132,27 +188,68 @@ class WallpaperRenderer(
     private var imageAlphaLoc = -1
     private var videoTexelLoc = -1
     private var videoSharpLoc = -1
-    // Engine-controlled clarity strength multiplier: 0 = off, 1 = default
+    // Engine-controlled clarity strength multiplier: 0 = off, 1.25 = default
     // curve, >1 = stronger. Written from the engine thread on each switch,
-    // read on the render thread.
-    @Volatile var sharpnessScale: Float = 1f
+    // read on the render thread. Default matches the "auto" clarity mode so
+    // the very first frame is already rendered with the improved sharpening.
+    @Volatile var sharpnessScale: Float = 1.25f
     // Screen-off low-power mode: while true the decode loop throttles to
     // ~10fps instead of the source rate. Playback is never stopped/restarted;
     // the position simply advances slowly while the screen is off and resumes
     // full speed on the next screen-on. Written from the engine thread.
-    @Volatile var powerSaveMode = false
+    /**
+     * Screen-off / covered power save: the video and audio loops stop feeding
+     * their decoders and WAIT (instead of polling) until this flips back.
+     *
+     * The setter notifies [pauseLock], so a hidden wallpaper costs **zero**
+     * periodic wakeups - the old 250ms poll was 4 wakeups/second per loop (8/s
+     * with audio + video) for the whole time the screen was off - while a resume
+     * is still immediate.
+     */
+    @Volatile
+    var powerSaveMode: Boolean = false
+        set(value) {
+            if (field == value) return
+            field = value
+            if (value) {
+                // Silence the video's audio in the same instant the wallpaper is
+                // hidden (screen off, another app, our own app opening). The
+                // audio loop would otherwise notice on its next PCM buffer, and
+                // with the app-open path the visibility callback itself can lag
+                // behind the window animation - the "声音无法立刻关闭" report.
+                // AudioTrack.pause() is thread-safe and drops nothing buffered.
+                audioSession.pause()
+            } else {
+                synchronized(pauseLock) { pauseLock.notifyAll() }
+            }
+        }
+    /** See [powerSaveMode]; guards the pause waits of the video/audio loops. */
+    private val pauseLock = Object()
+    /** Safety net for those waits: re-check the state at least this often. */
+    private val PAUSE_WAIT_MAX_MS = 5_000L
     // Switch fade-in state (render thread only): a black overlay whose alpha
     // decays over ~250ms after a switch, drawn on top of every presented frame.
     private var fadeAlpha = 0f
     private var fadeGeneration = 0
     private var lastImageBitmap: Bitmap? = null
     private var lastImageScaleMode: ScaleMode = ScaleMode.FIT
+    /** GPU quarter turn applied to the image currently uploaded (see computeQuad). */
+    private var lastImageRotateCw: Boolean? = null
     private var lastRenderWasImage = false
     private var vertexBuffer: FloatBuffer? = null
     private var imageTexId = 0
     private var imageTexMatrix = FloatArray(16)
     // Reused on the render thread to avoid allocating a matrix per video frame.
     private val videoTexMatrix = FloatArray(16)
+    // Reused by renderVideoFrame when the auto-rotate feature rotates the quad:
+    // allocating a FloatArray per frame (30-60/s) was pure garbage.
+    private val rotatedTexMatrix = FloatArray(16)
+    // Screen-pixel UV steps, computed per draw into fields instead of a Pair
+    // (see updateImageScreenTexelDelta). Render thread only.
+    private var imageTexelX = 1f
+    private var imageTexelY = 1f
+    private var videoTexelX = 1f
+    private var videoTexelY = 1f
     // 1x1 opaque black texture + full-screen quad: drawn under every media so
     // the FIT/letterbox area always contains freshly presented black pixels
     // instead of whatever was left in the framebuffer (e.g. the previous
@@ -169,16 +266,31 @@ class WallpaperRenderer(
     private var videoTexId = 0
     private var surfaceTexture: SurfaceTexture? = null
     private var codecSurface: Surface? = null
-    // Source size + scale mode of the current video (render thread only),
+    // On-screen size + scale mode of the current video (render thread only),
     // used to sharpen the picture when a low-res video is magnified.
-    // videoSourceW/H are the decoded texture size (for texel offsets);
     // videoDisplayW/H are the on-screen orientation (90/270°-rotated phone
-    // recordings swap the axes), which is what the upscale factor needs.
-    private var videoSourceW = 0f
-    private var videoSourceH = 0f
+    // recordings swap the axes), which is what the upscale factor needs; the
+    // screen-space kernel reads the quad extents from videoQuadHalfW/H.
     private var videoDisplayW = 0f
     private var videoDisplayH = 0f
     private var videoScaleMode: ScaleMode = ScaleMode.FIT
+    // Quad half-extents of the current video (render thread only). The texture
+    // footprint on screen is (halfW*screenW, halfH*screenH) pixels, which the
+    // screen-space sharpening kernel needs regardless of up/downscale.
+    private var videoQuadHalfW = 1f
+    private var videoQuadHalfH = 1f
+    // FILL/STRETCH rotates orientation-mismatched video content 90° (same rule
+    // as static images/GIFs) so more of the frame is visible. Render thread.
+    private var videoExtraRotate = false
+    // Mirrors the app's "自动旋转适配" setting; written by the engine, read on
+    // the render thread when (re)computing the video quad.
+    @Volatile var autoRotateMismatch = true
+    // Direction used when autoRotateMismatch is on.
+    @Volatile var autoRotateClockwise = true
+    // True when the current video's quad covers the whole viewport (FILL /
+    // STRETCH, or FIT with a matching aspect). Only read/written on the render
+    // thread; when false the letterbox needs the black backing quad.
+    private var videoQuadFullscreen = false
     private var extractor: MediaExtractor? = null
     private var decoder: MediaCodec? = null
     private var videoDecodeThread: Thread? = null
@@ -188,9 +300,64 @@ class WallpaperRenderer(
     // cloud file whose stream read blocks forever) and recover automatically.
     @Volatile var lastVideoFrameAt = 0L
         private set
+
+    /**
+     * Reset the "last presented video frame" clock. The engine calls this while
+     * the screen is off and again on screen-on: a frozen screen-off window has
+     * no frames by definition and must never be mistaken for a stalled video.
+     */
+    fun resetVideoFrameClock() {
+        lastVideoFrameAt = SystemClock.elapsedRealtime()
+    }
     private val videoGeneration = AtomicInteger(0)
     // Flag to prevent double-cleanup: stopVideoInternal sets this, decodeLoop checks it.
     private val videoCleanupDone = AtomicBoolean(false)
+
+    // --- Video audio (optional: SettingsKeys.VIDEO_SOUND_ENABLED) ---
+    //
+    // The audio runs on its OWN thread with its own MediaExtractor/MediaCodec/
+    // AudioTrack, because the video decode thread must never block: it paces
+    // frames against the presentation clock and a blocking PCM write would stall
+    // playback. Audio and video are re-anchored at every playback pass (the
+    // video increments videoPassCounter when a pass starts; the audio thread
+    // waits for it), which keeps the two from drifting apart across loops.
+    @Volatile var videoSoundEnabled = false
+    private var audioThread: Thread? = null
+    private val videoPassCounter = AtomicInteger(0)
+    /**
+     * Where the next `decodeLoop` pass 1 must start (µs). Set by [startVideo] and
+     * consumed by the first round of the decode loop; later rounds always rewind
+     * to 0 so the clip still loops from the beginning.
+     */
+    @Volatile private var pendingStartPositionUs = 0L
+    /**
+     * Presentation time (µs) of the last frame handed to the surface.
+     *
+     * Used by "接着上次位置继续播放": when the engine releases the decoder while
+     * the device is locked it remembers this value and starts the rebuilt video
+     * (and its audio) there instead of at 0, so a long clip does not jump back to
+     * the beginning after every lock.
+     */
+    @Volatile var lastVideoPositionUs: Long = 0L
+        private set
+    // Monitor for the pass handshake (wait/notify, not a lock around state).
+    private val audioPassLock = Object()
+    // The video currently playing, and the cache copy if the video path had to
+    // make one (the cache file is seekable, so prefer it for the audio too).
+    @Volatile private var currentVideoUri: String? = null
+    @Volatile private var currentVideoCachePath: String? = null
+    // Generation for which "this video has no audio track" was already logged.
+    @Volatile private var audioNoTrackLoggedFor = -1
+    /**
+     * One AudioTrack for the whole renderer, reused by every video switch and
+     * every playback pass. Creating a track per pass/switch (the first version)
+     * cost an audible click each time: the framework tears the old mix down and
+     * ramps the new one up.
+     */
+    private val audioSession = AudioSession()
+    /** PCM a pause forced us to hold back, written as soon as we are visible. */
+    @Volatile
+    private var audioPending: ByteBuffer? = null
     // Coalescing flag: at most one render post is queued at a time, so a decode
     // thread that outruns the render thread (rapid switching, heavy load) can
     // never grow the handler queue without bound.
@@ -200,6 +367,10 @@ class WallpaperRenderer(
     // must not pile up. GIF frames are disposable - the newest one wins, so
     // skipping an intermediate frame costs nothing visually.
     private val imageRenderPostQueued = AtomicBoolean(false)
+    // Diagnostics: log the first GIF frame that had to be skipped because the
+    // EGL surface was not ready (helps identify black-GIF reports on devices
+    // where surface creation lags).
+    @Volatile private var gifSkipLogged = false
 
     // Render thread (persists across surface recreations)
     private var renderThread: HandlerThread? = null
@@ -216,7 +387,7 @@ class WallpaperRenderer(
             try {
                 block()
             } catch (t: Throwable) {
-                Log.e(TAG, "Render thread task failed", t)
+                AppLog.e(TAG, "Render thread task failed", t)
             }
         }
     }
@@ -230,13 +401,76 @@ class WallpaperRenderer(
      */
     @Volatile
     var onVideoStartFailed: (() -> Unit)? = null
+    /**
+     * Invoked (once per video, on the render thread) when the first frame of the
+     * video has actually been presented.
+     *
+     * The engine used to start the fade-in the moment `startVideo()` returned,
+     * which is 200-400ms BEFORE the first frame reaches the screen: the fade
+     * faded the OLD frame to black and the video then appeared at the end of it,
+     * so switching to a video looked like "black, then a pop". Fading from the
+     * first real frame makes the transition continuous.
+     */
+    @Volatile
+    var onFirstVideoFrame: (() -> Unit)? = null
+    // Set by startVideo, cleared when the first frame has been reported.
+    private val videoFirstFramePending = AtomicBoolean(false)
     @Volatile
     private var lastRenderLogAt = 0L
-    // Render-side presentation throttle (~30fps max). The decoder keeps
-    // running at the source frame rate, so playback speed, duration and
-    // picture quality are unchanged; 50/60fps sources simply skip every other
-    // present, which roughly halves rendering/composition power for them.
+    /**
+     * Throttle for the two per-frame warning paths (missing GL program/texture,
+     * failed eglSwapBuffers). Rendering happens 30-60 times a second and AppLog
+     * flushes every important line to disk, so an unthrottled warning here would
+     * turn a rendering fault into hundreds of write syscalls per second.
+     */
+    private var lastFrameWarnAt = 0L
+    private val FRAME_WARN_INTERVAL_MS = 5_000L
+    // Render-side presentation floor. It used to be 33ms (~30fps), which threw
+    // away every other frame of a 50/60fps video - the wallpaper then visibly
+    // ran at half the source frame rate. The floor is now 16ms (60fps): a
+    // normal 30/60fps clip is presented at exactly its own rate, while an
+    // unusually fast source cannot spin the render thread. Screen-off /
+    // not-visible power saving is handled by the decode loop (~1fps), not here.
+    private val minVideoSwapGapMs = 16L
     private var lastVideoFrameSwappedAt = 0L
+    /**
+     * How far behind its own presentation time a frame may be before the
+     * playback clock is re-anchored instead of "catching up".
+     *
+     * While the wallpaper is hidden/throttled (screen off, another app open,
+     * the system live-wallpaper dialog) the decode loop keeps presenting ~1
+     * frame per second, so the wall clock runs away from the playback clock.
+     * Without this bound every frame is "late" when the desktop comes back and
+     * the clip is presented back-to-back (the render floor allows ~60fps) to
+     * catch up - the reported "video plays fast at first, then normal again".
+     */
+    private val maxPlaybackLagNs = 500_000_000L
+    /**
+     * Audio-side sleeps: the audio thread must notice a pause/switch/sound
+     * toggle within a few milliseconds, so it never sleeps as long as the video
+     * pause poll above.
+     *
+     * [AUDIO_WRITE_RETRY_MS] paces a full AudioTrack buffer (a blocking write is
+     * deliberately avoided - see [writePcm]). [AUDIO_OUTPUT_WAIT_US] is the
+     * timeout of the output dequeue when the decoder has nothing to chew on: it
+     * replaces the old "poll with timeout 0, then sleep 5ms" pair, which burned
+     * up to 200 wakeups/s while merely waiting for the codec.
+     */
+    private val AUDIO_WRITE_RETRY_MS = 5L
+    private val AUDIO_OUTPUT_WAIT_US = 10_000L
+    /** Bound for opening the audio source (same idea as the video's 15s). */
+    private val AUDIO_OPEN_TIMEOUT_MS = 12_000L
+    // Throttle for the "re-anchored" diagnostic line (render/decode thread).
+    @Volatile private var lastReanchorLogAt = 0L
+    // Logged-once flag for the throttled episode (see the re-anchor below).
+    @Volatile private var powerSavePauseLogged = false
+    /**
+     * Whether the current "wallpaper not visible" episode has already been
+     * announced. Cleared as soon as a frame is presented again (see the pacing
+     * block), so every hide/show cycle produces exactly one pause/resume pair
+     * even when the timer restarts the video while it is hidden.
+     */
+    @Volatile private var videoPauseAnnounced = false
     // Rolling render-rate statistics (diagnostics only, ~1 log line/minute).
     private var renderFpsWindowStart = 0L
     private var renderFpsCount = 0
@@ -249,7 +483,11 @@ class WallpaperRenderer(
         renderThread = thread
         renderHandler = Handler(thread.looper)
 
-        val latch = CountDownLatch(1)
+        // Never block the caller (the engine's surface-created callback runs
+        // on the MAIN thread): a busy render thread must not ANR the process.
+        // The engine already polls isSurfaceReady() before drawing, and the
+        // subsequent surfaceCreated() post is queued behind this task (FIFO),
+        // so asynchronous initialization is safe.
         postToRenderThread {
             screenW = initW
             screenH = initH
@@ -257,21 +495,19 @@ class WallpaperRenderer(
             if (contextReady) {
                 setupGlResources()
                 glResourcesValid = true
-                Log.d(TAG, "EGL initialized")
+                AppLog.d(TAG, "EGL initialized")
             }
-            latch.countDown()
-        }
-        try {
-            latch.await(3, TimeUnit.SECONDS)
-        } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-        }
-        if (!contextReady) {
-            Log.w(TAG, "EGL initialization did not complete; will retry on surface creation")
         }
     }
 
     fun surfaceCreated() {
+        // Synchronously drop the stale "ready" flag from the PREVIOUS surface.
+        // During a recreation (e.g. tablet rotation) the destroy task may still
+        // be queued on the render thread, so a stale true would make the
+        // engine's redraw poll draw into the old/dead EGL surface (or skip the
+        // wait for the new one). Clearing here makes isSurfaceReady() honest
+        // until the posted create actually completes.
+        surfaceReady = false
         postToRenderThread {
             if (!contextReady) {
                 // EGL initialization may have failed earlier (transient driver
@@ -288,17 +524,155 @@ class WallpaperRenderer(
     }
 
     /**
+     * Re-attempt the EGL setup only when the surface is not yet ready (e.g.
+     * the first attempt failed on a particular device/driver, leaving the
+     * wallpaper black). No-op when the surface is healthy, so calling this on
+     * every visibility change never causes a flicker.
+     */
+    fun retrySurfaceIfNeeded() {
+        if (surfaceReady) return
+        surfaceCreated()
+    }
+
+    /**
      * True once the EGL surface is ready to be drawn on. surfaceCreated() is
      * asynchronous (posted to the render thread), so drawing must wait for
      * this flag before calling showImage/renderImage.
      */
     fun isSurfaceReady(): Boolean = surfaceReady
 
+    /**
+     * True when [uriStr] is the clip this renderer holds a session for - it is
+     * playing, parked while the wallpaper is hidden, or was just torn down
+     * because the surface was recreated by a rotation (see stopVideoInternal(),
+     * which deliberately keeps the URI + last position so the engine can
+     * continue the same clip instead of restarting it from 0:00).
+     *
+     * Cleared when the session is replaced by an image/GIF (stopVideoAndRender)
+     * or when the renderer is released.
+     */
+    fun isCurrentVideo(uriStr: String): Boolean = currentVideoUri == uriStr
+
     fun surfaceChanged(width: Int, height: Int) {
         postToRenderThread {
-            screenW = width.toFloat()
-            screenH = height.toFloat()
-            if (surfaceReady) GLES20.glViewport(0, 0, width, height)
+            val sizeChanged = !surfaceReady ||
+                screenW != width.toFloat() || screenH != height.toFloat()
+            if (sizeChanged) {
+                // Some OEM surfaces (HyperOS tablets) do NOT resize the EGL
+                // window buffer just because glViewport changed; rendering with
+                // a stale buffer leaves part of the wallpaper black. Recreate
+                // the EGL surface so the buffer dimensions match the new
+                // surface before drawing.
+                destroyEglSurface()
+                createEglSurface()
+                if (!surfaceReady) return@postToRenderThread
+            } else {
+                if (surfaceReady) GLES20.glViewport(0, 0, width, height)
+            }
+            // The viewport changed (rotation / resize): re-present the current
+            // static image and recompute the current video quad against the new
+            // aspect. Without this, a letterboxed FIT media stays rendered for
+            // the old dimensions (distorted / misplaced) until the next switch.
+            val bmp = lastImageBitmap
+            if (surfaceReady && bmp != null && !bmp.isRecycled && lastRenderWasImage) {
+                renderImageFromTexture()
+            }
+            if (surfaceReady && videoTexId != 0) {
+                refreshVideoQuad(videoDisplayW, videoDisplayH, videoScaleMode)
+            }
+        }
+    }
+
+    /**
+     * Live scale-mode change from the Settings screen: re-fit the currently
+     * displayed media without restarting it. A static image (or the last GIF
+     * frame) is re-presented from the existing texture with the new quad; a
+     * video's quad + sharpening mode are recomputed so the next decoded frame
+     * (~≤100ms away) renders with the new fit. No-op while the surface is not
+     * ready — the next switch/redraw picks the new mode up anyway.
+     */
+    fun applyScaleMode(scaleMode: ScaleMode) {
+        postToRenderThread {
+            lastImageScaleMode = scaleMode
+            videoScaleMode = scaleMode
+            if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return@postToRenderThread
+            val bmp = lastImageBitmap
+            if (lastRenderWasImage && bmp != null && !bmp.isRecycled) {
+                renderImageFromTexture()
+            } else if (videoTexId != 0 && videoDisplayW > 0f && videoDisplayH > 0f) {
+                refreshVideoQuad(videoDisplayW, videoDisplayH, videoScaleMode)
+            }
+        }
+    }
+
+    /**
+     * Recompute the video quad, applying the extra 90° rotation when the video
+     * orientation mismatches the screen orientation. Runs on the render thread.
+     *
+     * Every scale mode rotates (FIT included): a mismatched orientation fitted
+     * into the screen is limited by the screen's short side, so the turned video
+     * is displayed much larger while staying fully visible.
+     */
+    private fun refreshVideoQuad(displayW: Float, displayH: Float, scaleMode: ScaleMode) {
+        val screenLandscape = screenW > screenH
+        val mediaLandscape = displayW > displayH
+        videoExtraRotate = autoRotateMismatch &&
+            screenW > 0f && screenH > 0f && displayW > 0f && displayH > 0f &&
+            displayW != displayH && mediaLandscape != screenLandscape
+        val effW = if (videoExtraRotate) displayH else displayW
+        val effH = if (videoExtraRotate) displayW else displayH
+        val quad = WallpaperGeometry.computeVideoQuad(effW, effH, screenW, screenH, scaleMode)
+        vertexBuffer?.clear()
+        vertexBuffer?.put(quad)?.position(0)
+        videoQuadFullscreen = WallpaperGeometry.quadCoversScreen(quad)
+        videoQuadHalfW = quad[4]
+        videoQuadHalfH = kotlin.math.abs(quad[5])
+    }
+
+    /**
+     * Live clarity change from Settings: update the sharpening strength and
+     * re-present a displayed static image (or GIF frame) right away, so the
+     * toggle is visible immediately instead of only after the next switch.
+     * Videos pick the new strength up on the next decoded frame.
+     */
+    fun applyClarity(scale: Float) {
+        postToRenderThread {
+            sharpnessScale = scale
+            if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return@postToRenderThread
+            val bmp = lastImageBitmap
+            if (lastRenderWasImage && bmp != null && !bmp.isRecycled) {
+                renderImageFromTexture()
+            }
+        }
+    }
+
+    /**
+     * Re-evaluate the current video after the auto-rotation setting changes
+     * (images/GIFs are re-decoded by the engine; videos only need the quad +
+     * UV rotation refreshed here).
+     */
+    fun refreshAfterAutoRotateChange() {
+        postToRenderThread {
+            if (!surfaceReady || videoTexId == 0) return@postToRenderThread
+            refreshVideoQuad(videoDisplayW, videoDisplayH, videoScaleMode)
+        }
+    }
+
+    /**
+     * Re-present the image that is already uploaded with a re-computed quad.
+     *
+     * Used when the wallpaper surface changed orientation but the decoded
+     * bitmap is still big enough for the new size (see the engine's rotation
+     * redraw): the texture content is unchanged, so only the 90° decision and
+     * the fit have to be re-applied. Re-decoding there cost 150-500ms plus a
+     * fresh full-size upload exactly when the user is looking at the screen
+     * ("横屏设置动态壁纸卡顿").
+     */
+    fun refreshImageQuad(rotateCw: Boolean?) {
+        postToRenderThread {
+            if (!surfaceReady || !lastRenderWasImage) return@postToRenderThread
+            lastImageRotateCw = rotateCw
+            renderImageFromTexture()
         }
     }
 
@@ -312,6 +686,10 @@ class WallpaperRenderer(
 
     fun release() {
         stopVideoInternal()
+        currentVideoUri = null
+        currentVideoCachePath = null
+        audioPending = null
+        audioSession.release()
         val handler = renderHandler
         val thread = renderThread
         if (handler != null && thread != null) {
@@ -322,12 +700,14 @@ class WallpaperRenderer(
                     contextReady = false
                     cleanupAll()
                 } catch (t: Throwable) {
-                    Log.e(TAG, "Release task failed", t)
+                    AppLog.e(TAG, "Release task failed", t)
                 } finally {
                     latch.countDown()
                 }
             }
-            try { latch.await(2, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
+            // Bound the wait: release() runs on the engine's (main) thread
+            // during onDestroy and must never block it for long.
+            try { latch.await(500, TimeUnit.MILLISECONDS) } catch (_: InterruptedException) {}
             thread.quitSafely()
         }
         renderHandler = null
@@ -357,7 +737,14 @@ class WallpaperRenderer(
         if (!imageRenderPostQueued.compareAndSet(false, true)) return
         postToRenderThread {
             imageRenderPostQueued.set(false)
-            if (!surfaceReady || !contextReady) return@postToRenderThread
+            if (!surfaceReady || !contextReady) {
+                if (!gifSkipLogged) {
+                    gifSkipLogged = true
+                    AppLog.w(TAG, "GIF frame skipped: surfaceReady=$surfaceReady contextReady=$contextReady")
+                }
+                return@postToRenderThread
+            }
+            gifSkipLogged = false
             renderImage(bitmap, scaleMode, useMipmap = false)
         }
     }
@@ -384,25 +771,34 @@ class WallpaperRenderer(
         fadeGeneration++
         val gen = fadeGeneration
         fadeAlpha = 1f
-        // Slightly shorter fade (150ms vs 240ms) so every switch feels snappier
-        // while keeping a smooth dim-in.
+        // ~200ms fade-in. The first presented frame is full black, then the
+        // alpha decays every 25ms so the transition is clearly visible instead
+        // of being over before the eye notices it.
         val stepMs = 25L
-        val steps = 6
-        var step = 0
+        val steps = 8
+        var step = 1
+        // Draw the fully-black frame immediately. For a static image this
+        // re-presents the texture with the overlay; video/GIF frames pick the
+        // overlay up automatically when they arrive.
+        if (lastRenderWasImage) {
+            val bmp = lastImageBitmap
+            if (bmp != null && !bmp.isRecycled) {
+                renderImageFromTexture()
+            }
+        }
         val runnable = object : Runnable {
             override fun run() {
                 if (gen != fadeGeneration) return
-                step++
                 fadeAlpha = (1f - step.toFloat() / steps).coerceAtLeast(0f)
                 if (lastRenderWasImage) {
                     // Force a redraw so the static image is re-presented with
-                    // the current overlay alpha.
+                    // the current overlay alpha. The texture is re-drawn from
+                    // the already-uploaded image (no texImage2D re-upload):
+                    // the bitmap is unchanged between fade steps, so the old
+                    // per-step upload wasted a full screen-size GPU transfer
+                    // (and a mipmap regen) up to 5 extra times per switch.
                     val bmp = lastImageBitmap
-                    if (bmp != null && !bmp.isRecycled) {
-                        renderImage(bmp, lastImageScaleMode, useMipmap = true)
-                    } else {
-                        fadeAlpha = 0f
-                    }
+                    if (bmp != null && !bmp.isRecycled) renderImageFromTexture()
                 }
                 if (fadeAlpha > 0f) {
                     try {
@@ -415,6 +811,7 @@ class WallpaperRenderer(
                 } else {
                     fadeAlpha = 0f
                 }
+                step++
             }
         }
         renderHandler?.post(runnable)
@@ -454,11 +851,16 @@ class WallpaperRenderer(
         }
     }
 
-    private fun renderImage(bitmap: Bitmap, scaleMode: ScaleMode, useMipmap: Boolean) {
+    private fun renderImage(
+        bitmap: Bitmap,
+        scaleMode: ScaleMode,
+        useMipmap: Boolean,
+        rotateCw: Boolean? = null
+    ) {
         try {
             if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
             if (imageProgram == 0 || imageTexId == 0) {
-                Log.w(TAG, "renderImage skipped: program=$imageProgram tex=$imageTexId")
+                AppLog.w(TAG, "renderImage skipped: program=$imageProgram tex=$imageTexId")
                 return
             }
             // A concurrent switch may recycle the bitmap before this queued
@@ -467,7 +869,31 @@ class WallpaperRenderer(
 
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
-            if (useMipmap) {
+            // One quad for both decisions below: where the image lands on screen
+            // (drawnW/drawnH, in pixels) decides whether mipmaps are worth a
+            // full-texture GPU pass.
+            val quad = WallpaperGeometry.computeQuad(
+                bitmap.width.toFloat(), bitmap.height.toFloat(), screenW, screenH, scaleMode,
+                rotateCw
+            )
+            val drawnW = kotlin.math.abs(quad[4]) * screenW
+            val drawnH = kotlin.math.abs(quad[5]) * screenH
+            // Mipmaps only help when the texture is DOWNSCALED on screen (the
+            // minification filter is never used when the image is magnified).
+            // With the display-aware decode, many images are shown at ~1:1 or
+            // upscaled, so skipping glGenerateMipmap saves a full-texture GPU
+            // pass on every switch (a real win under rapid switching).
+            //
+            // The comparison axes follow the quad, not the bitmap: with a 90°
+            // turn the on-screen width comes from the bitmap's HEIGHT (see
+            // WallpaperGeometry.computeQuad), so a naive
+            // `bitmap.width > screenW * k` test skips mipmaps for an image that
+            // IS being downscaled.
+            val srcW = if (rotateCw != null) bitmap.height.toFloat() else bitmap.width.toFloat()
+            val srcH = if (rotateCw != null) bitmap.width.toFloat() else bitmap.height.toFloat()
+            val doMipmap = useMipmap &&
+                (srcW > drawnW * MIPMAP_MIN_DOWNSCALE || srcH > drawnH * MIPMAP_MIN_DOWNSCALE)
+            if (doMipmap) {
                 // Trilinear mipmapping removes aliasing/shimmer when a large
                 // image is downscaled (FIT mode). Not used for GIF frames,
                 // where regenerating mipmaps every frame would cost power.
@@ -484,12 +910,16 @@ class WallpaperRenderer(
                     GLES20.GL_LINEAR
                 )
             }
-            val quad = computeQuad(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
             vertexBuffer?.clear()
             vertexBuffer?.put(quad)?.position(0)
 
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-            drawBlackBackground()
+            // The black backing quad is only needed when the media quad leaves
+            // letterbox areas uncovered (FIT). FILL/STRETCH and fullscreen
+            // media overwrite every framebuffer pixel with an opaque quad, so
+            // skipping this pass saves one program switch + texture bind +
+            // full-screen draw per presented frame (e.g. 30x/sec on video).
+            if (!WallpaperGeometry.quadCoversScreen(quad)) drawBlackBackground()
             GLES20.glUseProgram(imageProgram)
             val texMatLoc = imageTexMatLoc
             val texLoc = imageTexLoc
@@ -500,11 +930,8 @@ class WallpaperRenderer(
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLES20.glUniform1i(texLoc, 0)
-            GLES20.glUniform2f(
-                imageTexelLoc,
-                1f / bitmap.width.coerceAtLeast(1),
-                1f / bitmap.height.coerceAtLeast(1)
-            )
+            updateImageScreenTexelDelta(quad)
+            GLES20.glUniform2f(imageTexelLoc, imageTexelX, imageTexelY)
             GLES20.glUniform1f(
                 imageSharpLoc,
                 sharpnessFor(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
@@ -522,36 +949,78 @@ class WallpaperRenderer(
             if (fadeAlpha > 0f) drawFadeOverlayNoSwap(fadeAlpha)
             val swapped = EGL14.eglSwapBuffers(eglDisplay, eglSurface)
             if (!swapped) {
-                Log.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
+                AppLog.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
             }
             // Remember the last presented image so the fade steps can force
             // redraws of static images with the decaying overlay.
             lastImageBitmap = bitmap
             lastImageScaleMode = scaleMode
+            lastImageRotateCw = rotateCw
             lastRenderWasImage = true
         } catch (t: Throwable) {
-            Log.e(TAG, "renderImage failed", t)
+            AppLog.e(TAG, "renderImage failed", t)
         }
-    }
-
-    private fun computeQuad(imgW: Float, imgH: Float, scaleMode: ScaleMode): FloatArray {
-        if (imgW <= 0 || imgH <= 0 || screenW <= 0 || screenH <= 0) {
-            return floatArrayOf(-1f,-1f,0f,1f, 1f,-1f,1f,1f, -1f,1f,0f,0f, 1f,1f,1f,0f)
-        }
-        val va = imgW / imgH; val sa = screenW / screenH
-        val (dw, dh) = when (scaleMode) {
-            ScaleMode.FIT -> if (va > sa) Pair(1f, sa / va) else Pair(va / sa, 1f)
-            ScaleMode.FILL -> if (va > sa) Pair(va / sa, 1f) else Pair(1f, sa / va)
-            ScaleMode.STRETCH -> Pair(1f, 1f)
-        }
-        return floatArrayOf(-dw,-dh,0f,1f, dw,-dh,1f,1f, -dw,dh,0f,0f, dw,dh,1f,0f)
     }
 
     /**
-     * How strongly to sharpen an upscaled source. 0.0 when the media is
-     * displayed at or below its native size (downscaled sources are already
-     * smooth), rising gently when a low-res image/video is magnified to fill
-     * the screen. uSharp == 0.0 reproduces the original sampling exactly.
+     * Re-present the image currently uploaded to [imageTexId] WITHOUT
+     * re-uploading the bitmap (the fade-overlay steps). The texture content is
+     * unchanged between fade steps, so the previous code re-uploaded a full
+     * screen-size bitmap and regenerated mipmaps on every step for no visual
+     * difference. Runs on the render thread; the texture is guaranteed to be
+     * this bitmap's because fade steps are queued behind the switch's render.
+     */
+    private fun renderImageFromTexture() {
+        try {
+            if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
+            if (imageProgram == 0 || imageTexId == 0) return
+            val bmp = lastImageBitmap ?: return
+            if (bmp.isRecycled) return
+            val quad = WallpaperGeometry.computeQuad(
+                bmp.width.toFloat(), bmp.height.toFloat(), screenW, screenH, lastImageScaleMode,
+                lastImageRotateCw
+            )
+            vertexBuffer?.clear()
+            vertexBuffer?.put(quad)?.position(0)
+
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            if (!WallpaperGeometry.quadCoversScreen(quad)) drawBlackBackground()
+            GLES20.glUseProgram(imageProgram)
+
+            GLES20.glUniformMatrix4fv(imageTexMatLoc, 1, false, imageTexMatrix, 0)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
+            GLES20.glUniform1i(imageTexLoc, 0)
+            updateImageScreenTexelDelta(quad)
+            GLES20.glUniform2f(imageTexelLoc, imageTexelX, imageTexelY)
+            GLES20.glUniform1f(
+                imageSharpLoc,
+                sharpnessFor(bmp.width.toFloat(), bmp.height.toFloat(), lastImageScaleMode)
+            )
+            GLES20.glUniform1f(imageAlphaLoc, 1f)
+
+            vertexBuffer?.position(0)
+            GLES20.glEnableVertexAttribArray(imagePosLoc)
+            GLES20.glVertexAttribPointer(imagePosLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
+            vertexBuffer?.position(2)
+            GLES20.glEnableVertexAttribArray(imageTcLoc)
+            GLES20.glVertexAttribPointer(imageTcLoc, 2, GLES20.GL_FLOAT, false, 16, vertexBuffer)
+
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+            if (fadeAlpha > 0f) drawFadeOverlayNoSwap(fadeAlpha)
+            EGL14.eglSwapBuffers(eglDisplay, eglSurface)
+        } catch (t: Throwable) {
+            AppLog.e(TAG, "renderImageFromTexture failed", t)
+        }
+    }
+
+    /**
+     * Strength for the screen-space unsharp mask. The kernel samples neighbors
+     * ~1 SCREEN pixel away (see [imageScreenTexelDelta]), so it works on
+     * native, upscaled AND downscaled media — which is what makes the clarity
+     * option perceptible instead of only firing on rare magnified sources.
+     * Returns 0 for the "off" mode (sharpnessScale == 0), which reproduces the
+     * original sampling exactly.
      */
     private fun sharpnessFor(sourceW: Float, sourceH: Float, scaleMode: ScaleMode): Float {
         if (sourceW <= 0f || sourceH <= 0f || screenW <= 0f || screenH <= 0f) return 0f
@@ -561,11 +1030,36 @@ class WallpaperRenderer(
             ScaleMode.FIT -> minOf(scaleX, scaleY)
             ScaleMode.FILL, ScaleMode.STRETCH -> maxOf(scaleX, scaleY)
         }
-        return if (upscale > 1f) {
-            ((upscale - 1f) * 0.3f).coerceIn(0f, 0.55f) * sharpnessScale.coerceIn(0f, 2f)
-        } else {
-            0f
-        }
+        val strength = sharpnessScale.coerceIn(0f, 2f)
+        if (strength <= 0f) return 0f
+        // Gentle always-on base (visible on every wallpaper) plus a boost when
+        // a low-res source is magnified to fill the screen.
+        val magnifyBoost = if (upscale > 1f) minOf(upscale - 1f, 3f) * 0.10f else 0f
+        return strength * (0.13f + magnifyBoost)
+    }
+
+    /**
+     * UV step that equals ~1 screen pixel for a quad whose half-extents are
+     * [halfW]/[halfH] (the texture footprint is halfW*screenW pixels wide).
+     * Used by the screen-space sharpening kernel.
+     *
+     * Results land in [imageTexelX]/[imageTexelY] instead of a Pair: the image is
+     * drawn on every fade frame too, and returning a Pair allocated one small
+     * object per draw for no reason.
+     */
+    private fun updateImageScreenTexelDelta(quad: FloatArray) {
+        val w = (quad[4] * screenW).coerceAtLeast(1f)
+        val h = (kotlin.math.abs(quad[5]) * screenH).coerceAtLeast(1f)
+        imageTexelX = 1f / w
+        imageTexelY = 1f / h
+    }
+
+    /** Video counterpart of [updateImageScreenTexelDelta] (once per frame). */
+    private fun updateVideoScreenTexelDelta() {
+        val w = (videoQuadHalfW * screenW).coerceAtLeast(1f)
+        val h = (videoQuadHalfH * screenH).coerceAtLeast(1f)
+        videoTexelX = 1f / w
+        videoTexelY = 1f / h
     }
 
     // ======== Video: MediaCodec + SurfaceTexture ========
@@ -582,7 +1076,19 @@ class WallpaperRenderer(
      *    c. Creates MediaCodec on decode thread
      *    d. Runs decode loop
      */
-    fun startVideo(uriStr: String, scaleMode: ScaleMode) {
+    /**
+     * @param startPositionUs where playback should begin (µs, 0 = the file's
+     *   start). Non-zero is only passed by the lock-release resume path.
+     */
+    fun startVideo(uriStr: String, scaleMode: ScaleMode, startPositionUs: Long = 0L) {
+        // A fresh start (or one at the very beginning) must not inherit the
+        // previous clip's position.
+        pendingStartPositionUs = startPositionUs.coerceAtLeast(0L)
+        if (pendingStartPositionUs == 0L) lastVideoPositionUs = 0L
+        videoFirstFramePending.set(true)
+        // A stale cache path from the previous video would make the audio thread
+        // open the wrong file.
+        currentVideoCachePath = null
         // First stop any existing video
         stopVideoInternal()
 
@@ -604,6 +1110,12 @@ class WallpaperRenderer(
         videoCleanupDone.set(false)
         val gen = videoGeneration.incrementAndGet()
         isVideoPlaying = true
+        // Playback passes are counted per video: the audio thread waits for the
+        // FIRST pass of this video before it makes any sound. Without the reset
+        // it saw the previous video's (higher) counter, started playing into a
+        // picture that was still setting up, and then had to restart as soon as
+        // the real first pass arrived - an audible stutter right after a switch.
+        videoPassCounter.set(0)
 
         val handler = renderHandler ?: run { isVideoPlaying = false; return }
 
@@ -614,7 +1126,19 @@ class WallpaperRenderer(
             // full speed.
             android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND)
             decodeLoop(uriStr, scaleMode, gen, handler)
-        }, "VideoDecode").also { it.start() }
+        }, "VideoDecode").apply {
+            // Daemon like every other helper thread here: a decode stuck in
+            // un-interruptible cloud/SAF I/O must never outlive the process's
+            // usefulness (release() can only interrupt(), not unblock it).
+            isDaemon = true
+            start()
+        }
+
+        // Audio: same generation guard as the video, started only when the user
+        // asked for sound. It waits for the first playback pass of THIS video
+        // (see signalVideoPassStart), so a video that never starts stays silent.
+        currentVideoUri = uriStr
+        if (videoSoundEnabled) startAudio(uriStr, gen, startPositionUs.coerceAtLeast(0L))
     }
 
     /**
@@ -645,10 +1169,16 @@ class WallpaperRenderer(
      *
      * Call from ANY thread (typically IO coroutine thread).
      */
-    fun stopVideoAndRender(bitmap: Bitmap, scaleMode: ScaleMode) {
+    fun stopVideoAndRender(bitmap: Bitmap, scaleMode: ScaleMode, rotateCw: Boolean? = null) {
         videoGeneration.incrementAndGet()
         isVideoPlaying = false
+        // The video is no longer the displayed media: forget which clip the
+        // session belonged to, so a later rotation redraw of an image/GIF can
+        // never mistake the old clip for "the one that is on screen" and
+        // resume it at a stale position (see isCurrentVideo()).
+        currentVideoUri = null
         videoCleanupDone.set(true)
+        stopAudio()
 
         // Interrupt decode thread (don't null — caller may need to join)
         videoDecodeThread?.interrupt()
@@ -657,7 +1187,7 @@ class WallpaperRenderer(
         postToRenderThread {
             cleanupVideoResourcesOnRenderThread()
             if (surfaceReady && contextReady) {
-                renderImage(bitmap, scaleMode, useMipmap = true)
+                renderImage(bitmap, scaleMode, useMipmap = true, rotateCw = rotateCw)
             }
         }
     }
@@ -673,11 +1203,714 @@ class WallpaperRenderer(
         videoGeneration.incrementAndGet()
         isVideoPlaying = false
         videoCleanupDone.set(true)
+        stopAudio()
 
         videoDecodeThread?.interrupt()
 
         postToRenderThread {
             cleanupVideoResourcesOnRenderThread()
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Video audio (optional, see videoSoundEnabled / SettingsKeys.VIDEO_SOUND_ENABLED)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Turn the video's audio on or off, live.
+     *
+     * Enabling starts the sound for the video that is playing right now (it joins
+     * the current playback pass); disabling stops it immediately. Nothing else
+     * about playback changes - the video keeps its own clock either way.
+     */
+    fun applyVideoSound(enabled: Boolean) {
+        if (videoSoundEnabled == enabled) return
+        videoSoundEnabled = enabled
+        if (!enabled) {
+            stopAudio()
+            AppLog.d(TAG, "Video sound OFF")
+            return
+        }
+        val uri = currentVideoUri
+        if (uri != null && isVideoPlaying) {
+            // Start the sound where the picture IS, not at 0: switching the
+            // setting on mid-playback used to play the audio from the file's
+            // start while the picture stayed at its position (the two only met
+            // again at the next loop boundary, which can be minutes away for a
+            // long clip).
+            startAudio(uri, videoGeneration.get(), lastVideoPositionUs)
+            AppLog.d(TAG, "Video sound ON (from ${lastVideoPositionUs / 1000}ms)")
+        } else {
+            // Enabled while an image/GIF is showing: the next video starts with
+            // sound (startVideo checks this flag).
+            AppLog.d(TAG, "Video sound ON (no video playing right now)")
+        }
+    }
+
+    /** Start the audio thread for [uriStr]; only called when sound is enabled. */
+    private fun startAudio(uriStr: String, gen: Int, startPositionUs: Long = 0L) {
+        stopAudio()
+        val thread = Thread({
+            // AUDIO priority, not BACKGROUND: the audio must not be starved by
+            // the video decode + GL work that runs at the same time (a starved
+            // writer is the classic cause of crackling on a busy device).
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_AUDIO)
+            audioLoop(uriStr, gen, startPositionUs)
+        }, "VideoAudio").apply {
+            // Never keep the process alive for a wallpaper's sound.
+            isDaemon = true
+        }
+        audioThread = thread
+        thread.start()
+    }
+
+    /**
+     * Ask the audio thread to stop. Deliberately non-blocking and without join():
+     * the thread may be inside a codec call, and it releases its own
+     * AudioTrack/MediaCodec in its finally block. Sound stops as soon as the
+     * thread notices (it never blocks on a PCM write - see [writePcm]).
+     */
+    private fun stopAudio() {
+        val thread = audioThread
+        audioThread = null
+        // Silence immediately: the thread may be inside a codec call and takes a
+        // few ms to exit, and the buffered AudioTrack would keep playing until
+        // then. The track itself is kept for the next video (see audioSession).
+        audioSession.pause()
+        if (thread != null) {
+            thread.interrupt()
+            synchronized(audioPassLock) { audioPassLock.notifyAll() }
+        }
+    }
+
+    /**
+     * Called by the video decode thread every time a playback pass is ready to
+     * present. The audio thread waits for this, so both start a pass together and
+     * cannot drift apart across loops.
+     */
+    private fun signalVideoPassStart(gen: Int) {
+        // A late-exiting decode thread of a superseded video must not look like
+        // the new video's first pass (the audio would start early and stutter).
+        if (videoGeneration.get() != gen) return
+        videoPassCounter.incrementAndGet()
+        synchronized(audioPassLock) { audioPassLock.notifyAll() }
+    }
+
+    /** Wait until a playback pass newer than [lastPass] has started. */
+    private fun awaitNextVideoPass(lastPass: Int, gen: Int): Int? {
+        while (videoGeneration.get() == gen && videoSoundEnabled &&
+            !Thread.currentThread().isInterrupted
+        ) {
+            val current = videoPassCounter.get()
+            if (current > lastPass) return current
+            synchronized(audioPassLock) {
+                if (videoPassCounter.get() <= lastPass) {
+                    try {
+                        audioPassLock.wait(250L)
+                    } catch (_: InterruptedException) {
+                        return null
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun audioLoop(uriStr: String, gen: Int, startPositionUs: Long = 0L) {
+        // The decoder/extractor stay open for the WHOLE video (they are only
+        // rewound at each playback pass). Rebuilding them - and the AudioTrack -
+        // on every loop is what produced the short gaps and clicks.
+        val extractor = MediaExtractor()
+        val session = audioSession
+        var decoder: MediaCodec? = null
+        var afd: AssetFileDescriptor? = null
+        // Why this thread ended, for the diagnostic line in `finally`. An audio
+        // thread that stops between two passes used to leave nothing in the log
+        // beyond "thread finished", which made a silent video impossible to
+        // diagnose (see the power-review notes).
+        var exitReason = "loop condition"
+        AppLog.d(TAG, "Video audio: thread started (gen=$gen)")
+        try {
+            val cached = currentVideoCachePath
+            if (cached != null) {
+                // The video decode fell back to a local copy: it is seekable and
+                // never blocks on the (possibly cloud) provider again.
+                extractor.setDataSource(cached)
+            } else {
+                afd = openAudioDescriptor(uriStr) ?: run {
+                    exitReason = "no audio source"
+                    return
+                }
+                extractor.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+            }
+            val trackIdx = (0 until extractor.trackCount).firstOrNull { i ->
+                extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)
+                    ?.startsWith("audio/") == true
+            } ?: run {
+                if (audioNoTrackLoggedFor != gen) {
+                    audioNoTrackLoggedFor = gen
+                    AppLog.d(TAG, "Video has no audio track: ${LogText.short(uriStr)}")
+                }
+                exitReason = "no audio track"
+                return
+            }
+            extractor.selectTrack(trackIdx)
+            val format = extractor.getTrackFormat(trackIdx)
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: run {
+                exitReason = "audio track without MIME"
+                return
+            }
+            var sampleRate =
+                VideoSound.sampleRateFor(format.getIntegerSafe(MediaFormat.KEY_SAMPLE_RATE))
+            var channels =
+                VideoSound.playbackChannelsFor(format.getIntegerSafe(MediaFormat.KEY_CHANNEL_COUNT))
+            // What the container declares is a hint; the decoder's real output
+            // format arrives with INFO_OUTPUT_FORMAT_CHANGED and is applied below.
+            var encoding = VideoSound.PCM_ENCODING
+            decoder = MediaCodec.createDecoderByType(mime)
+            decoder.configure(format, null, null, 0)
+            decoder.start()
+            // Create the track up front from the container's declared format; the
+            // handler below retunes it if the decoder turns out to output
+            // something else (HE-AAC, downmix). Skipped while the wallpaper is
+            // hidden: allocating an AudioTrack only to pause it a millisecond
+            // later (tablet log) achieves nothing, the loop below creates it on
+            // the first visible frame instead.
+            if (!powerSaveMode &&
+                session.trackFor(sampleRate, channels, encoding) == null
+            ) {
+                exitReason = "no AudioTrack while hidden"
+                return
+            }
+
+            val info = MediaCodec.BufferInfo()
+            var pass = 0
+            var firstPass = true
+            var announcedStart = false
+            while (videoGeneration.get() == gen && videoSoundEnabled &&
+                !Thread.currentThread().isInterrupted
+            ) {
+                val nextPass = awaitNextVideoPass(pass, gen) ?: break
+                pass = nextPass
+                // Rewind for the new pass instead of rebuilding anything. The
+                // video restarts its own codec right now; the audio already
+                // buffered in the AudioTrack covers that restart, so playback
+                // stays gapless and the two stay in lockstep (no drift, because
+                // the audio waits for the video at every pass).
+                // The first pass starts where the video resumed (lock-release
+                // position); later passes rewind to 0 so the audio loops with the
+                // picture.
+                extractor.seekTo(
+                    if (firstPass) startPositionUs.coerceAtLeast(0L) else 0L,
+                    MediaExtractor.SEEK_TO_CLOSEST_SYNC
+                )
+                decoder.flush()
+                audioPending = null
+                if (firstPass) {
+                    // New media: drop whatever the previous video left buffered.
+                    if (session.track != null) {
+                        session.restart()
+                    } else {
+                        // Hidden: no track was allocated yet (see below). The
+                        // "started" line comes once it really exists, so a
+                        // "buffer=0ms" can never appear in the log again.
+                        AppLog.d(TAG, "Video audio: waiting for the wallpaper to become visible")
+                    }
+                    firstPass = false
+                } else {
+                    session.ensurePlaying()
+                }
+                var paused = false
+                var passDone = false
+                var inputDone = false
+                while (!passDone && videoGeneration.get() == gen &&
+                    videoPassCounter.get() == pass && videoSoundEnabled &&
+                    !Thread.currentThread().isInterrupted
+                ) {
+                    if (powerSaveMode) {
+                        // Same rule as the picture: hidden means paused, not
+                        // muted - playback continues where it stopped.
+                        if (!paused) {
+                            paused = true
+                            session.pause()
+                            AppLog.d(TAG, "Video audio paused (wallpaper not visible)")
+                        }
+                        // Same event-based wait as the picture: no wakeups while
+                        // the wallpaper is hidden, instant resume once it is back.
+                        synchronized(pauseLock) {
+                            if (powerSaveMode) {
+                                try {
+                                    pauseLock.wait(PAUSE_WAIT_MAX_MS)
+                                } catch (_: InterruptedException) {
+                                    Thread.currentThread().interrupt()
+                                }
+                            }
+                        }
+                        continue
+                    } else if (paused) {
+                        paused = false
+                        session.resume()
+                        AppLog.d(TAG, "Video audio resumed (wallpaper visible again)")
+                    }
+                    if (session.track == null) {
+                        // First visible frame of this video: create the track now
+                        // (see the note at the pipeline setup).
+                        if (session.trackFor(sampleRate, channels, encoding) == null) {
+                            exitReason = "AudioTrack allocation failed (pass=$pass)"
+                            return
+                        }
+                        session.ensurePlaying()
+                    }
+                    if (!announcedStart) {
+                        announcedStart = true
+                        AppLog.d(
+                            TAG,
+                            "Video audio started: ${sampleRate}Hz ${channels}ch " +
+                                "pcm=${if (encoding == VideoSound.PCM_ENCODING_FLOAT) "float" else "16bit"} " +
+                                "buffer=${session.bufferMillis}ms mime=$mime"
+                        )
+                    }
+                    // Samples held back by a pause are written first, so a
+                    // hide/show cycle does not cut a chunk in half (a click).
+                    if (!writePendingPcm(session, gen, pass)) continue
+                    // Did this iteration hand the decoder new input? When it did
+                    // not, the output dequeue below is the only thing left to
+                    // wait for and may block (see AUDIO_OUTPUT_WAIT_US).
+                    var fedInput = false
+                    if (!inputDone) {
+                        val inIdx = decoder.dequeueInputBuffer(0)
+                        if (inIdx >= 0) {
+                            val inBuf = decoder.getInputBuffer(inIdx)
+                            if (inBuf == null) {
+                                decoder.queueInputBuffer(inIdx, 0, 0, 0, 0)
+                                fedInput = true
+                            } else {
+                                val size = extractor.readSampleData(inBuf, 0)
+                                if (size < 0) {
+                                    decoder.queueInputBuffer(
+                                        inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM
+                                    )
+                                    inputDone = true
+                                    fedInput = true
+                                } else {
+                                    decoder.queueInputBuffer(inIdx, 0, size, extractor.sampleTime, 0)
+                                    extractor.advance()
+                                    fedInput = true
+                                }
+                            }
+                        }
+                    }
+                    // Blocking wait when nothing was fed: the old loop polled
+                    // with timeout 0 and only slept once the input was already
+                    // exhausted, so a slow codec whose input queue was full
+                    // (nothing to feed, no output ready yet) could spin here at
+                    // 200Hz. Waiting for the codec costs no latency - it
+                    // returns as soon as a frame is ready - and cuts the idle
+                    // wakeups from one per 5ms to one per produced frame.
+                    val outIdx = decoder.dequeueOutputBuffer(
+                        info, if (fedInput) 0L else AUDIO_OUTPUT_WAIT_US
+                    )
+                    if (outIdx >= 0) {
+                        try {
+                            if (info.size > 0 &&
+                                (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0
+                            ) {
+                                val outBuf = decoder.getOutputBuffer(outIdx)
+                                if (outBuf != null &&
+                                    !writePcm(session, outBuf, info.offset, info.size, gen, pass)
+                                ) {
+                                    if (powerSaveMode) {
+                                        paused = true
+                                        session.pause()
+                                        AppLog.d(
+                                            TAG,
+                                            "Video audio paused (wallpaper not visible)"
+                                        )
+                                    } else if (videoGeneration.get() == gen && videoSoundEnabled) {
+                                        // The video reached its next playback pass
+                                        // while this chunk was being written - a
+                                        // normal loop boundary, not a reason to
+                                        // stop making sound. Dropping the rest of
+                                        // THIS pass and waiting for the next one
+                                        // keeps the audio alive across loops; the
+                                        // old code killed the whole thread here,
+                                        // which is why looping videos could fall
+                                        // silent after their first pass (the
+                                        // context line in the crash-free log said
+                                        // "PCM write refused (pass=1)" while the
+                                        // counter had already moved to 2).
+                                        passDone = true
+                                        exitReason = "pass boundary (pass=$pass)"
+                                    } else {
+                                        exitReason = "PCM write refused (pass=$pass)"
+                                        return
+                                    }
+                                }
+                            }
+                            if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                                passDone = true
+                            }
+                        } finally {
+                            try { decoder.releaseOutputBuffer(outIdx, false) } catch (_: Throwable) {}
+                        }
+                    } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        // The decoder may output a different rate/channel count
+                        // than the container declares (HE-AAC, downmixes): trust
+                        // the output format, otherwise the PCM is reinterpreted
+                        // at the wrong speed and sounds broken.
+                        val outFormat = try { decoder.outputFormat } catch (_: Throwable) { null }
+                        if (outFormat != null) {
+                            val rate = VideoSound.sampleRateFor(
+                                outFormat.getIntegerSafe(MediaFormat.KEY_SAMPLE_RATE)
+                            )
+                            val ch = VideoSound.playbackChannelsFor(
+                                outFormat.getIntegerSafe(MediaFormat.KEY_CHANNEL_COUNT)
+                            )
+                            // Missing KEY_PCM_ENCODING means 16-bit PCM.
+                            val enc = VideoSound.playbackEncodingFor(
+                                outFormat.getIntegerSafe(MediaFormat.KEY_PCM_ENCODING)
+                            )
+                            if (rate != sampleRate || ch != channels || enc != encoding) {
+                                AppLog.d(
+                                    TAG,
+                                    "Video audio format: ${rate}Hz ${ch}ch " +
+                                        "pcm=${if (enc == VideoSound.PCM_ENCODING_FLOAT) "float" else "16bit"}"
+                                )
+                                sampleRate = rate
+                                channels = ch
+                                encoding = enc
+                                session.trackFor(rate, ch, enc)
+                                session.ensurePlaying()
+                            }
+                        }
+                    }
+                }
+                if (videoGeneration.get() != gen) break
+            }
+        } catch (t: Throwable) {
+            AppLog.d(TAG, "Video audio pass ended: ${t.message}")
+        } finally {
+            try { decoder?.stop() } catch (_: Throwable) {}
+            try { decoder?.release() } catch (_: Throwable) {}
+            try { extractor.release() } catch (_: Throwable) {}
+            try { afd?.close() } catch (_: Throwable) {}
+            audioPending = null
+            // Reason on the same line: "why did the sound stop" was guesswork in
+            // the logs whenever the thread ended between two passes.
+            AppLog.d(
+                TAG,
+                "Video audio: thread finished ($exitReason; gen=$gen interrupted=" +
+                    "${Thread.currentThread().isInterrupted} sound=$videoSoundEnabled " +
+                    "currentGen=${videoGeneration.get()} passes=${videoPassCounter.get()})"
+            )
+        }
+    }
+
+    /**
+     * Write decoded PCM without ever blocking.
+     *
+     * A blocking write would be fatal here: while the wallpaper is hidden the
+     * AudioTrack is paused, so the buffer never drains and the audio thread would
+     * hang until the screen came back. Non-blocking writes plus a short retry
+     * sleep keep the thread responsive to pauses and switches.
+     *
+     * A chunk that is interrupted by a pause is NOT thrown away: the tail is
+     * copied into [audioPending] and written again after the pause, so a
+     * hide/show cycle does not clip a chunk in half (audible as a tick).
+     *
+     * @return true when the whole chunk was written or safely held back, false
+     *   when the pass is no longer current (the audio is going away anyway).
+     */
+    private fun writePcm(
+        session: AudioSession,
+        buf: ByteBuffer,
+        offset: Int,
+        size: Int,
+        gen: Int,
+        pass: Int
+    ): Boolean {
+        val track = session.track
+        buf.position(offset)
+        buf.limit(offset + size)
+        var written = 0
+        while (written < size) {
+            if (!audioWriteStillWanted(gen, pass)) return false
+            if (powerSaveMode || track == null) {
+                holdBackPcm(buf)
+                return true
+            }
+            val n = writeToTrack(track, buf, size - written)
+            if (n < 0) return false
+            if (n == 0) {
+                // Buffer full: the track is draining it in real time.
+                Thread.sleep(AUDIO_WRITE_RETRY_MS)
+            } else {
+                written += n
+            }
+        }
+        return true
+    }
+
+    /**
+     * Write PCM that a pause forced us to hold back, before the next chunk.
+     *
+     * @return false when the caller should re-evaluate (paused again/stopped).
+     */
+    private fun writePendingPcm(session: AudioSession, gen: Int, pass: Int): Boolean {
+        val pending = audioPending ?: return true
+        if (powerSaveMode) return false
+        val track = session.track ?: return true
+        val remaining = pending.remaining()
+        if (remaining <= 0) {
+            audioPending = null
+            return true
+        }
+        val n = writeToTrack(track, pending, remaining)
+        if (n < 0) {
+            audioPending = null
+            return false
+        }
+        if (pending.remaining() <= 0) {
+            audioPending = null
+            return true
+        }
+        // Buffer full again: keep the rest for the next iteration.
+        Thread.sleep(AUDIO_WRITE_RETRY_MS)
+        return !powerSaveMode && audioWriteStillWanted(gen, pass)
+    }
+
+    /**
+     * Write [size] bytes from [buf] to [track], leaving [buf]'s position exactly
+     * [n] bytes further along.
+     *
+     * The framework advances the position itself when it accepts bytes, but that
+     * is an implementation detail of the write mode; normalising it here keeps
+     * the streaming loop correct either way (a position that did not advance
+     * would re-send the same samples forever - which sounds like a distorted,
+     * stuttering loop).
+     *
+     * @return bytes accepted, or -1 when the track refused the call.
+     */
+    private fun writeToTrack(track: AudioTrack, buf: ByteBuffer, size: Int): Int {
+        if (size <= 0) return 0
+        val before = buf.position()
+        val n = try {
+            track.write(buf, size, AudioTrack.WRITE_NON_BLOCKING)
+        } catch (_: Throwable) {
+            return -1
+        }
+        val advanced = when {
+            buf.position() != before -> buf.position() - before
+            n > 0 -> n
+            else -> 0
+        }
+        buf.position(before + advanced)
+        return advanced
+    }
+
+    /** Copy the not-yet-written tail of [buf] into [audioPending]. */
+    private fun holdBackPcm(buf: ByteBuffer) {
+        val remaining = buf.remaining()
+        if (remaining <= 0) return
+        val existing = audioPending
+        val dst = if (existing != null && existing.capacity() >= remaining) {
+            existing
+        } else {
+            ByteBuffer.allocate(remaining)
+        }
+        dst.clear()
+        dst.put(buf)
+        dst.flip()
+        audioPending = dst
+    }
+
+    private fun audioWriteStillWanted(gen: Int, pass: Int): Boolean =
+        videoGeneration.get() == gen && videoPassCounter.get() == pass &&
+            videoSoundEnabled && !Thread.currentThread().isInterrupted
+
+    /**
+     * Open the media descriptor for the audio pass on a helper thread with a
+     * timeout, mirroring the video path: a cloud SAF provider can block for
+     * dozens of seconds and the audio thread must stay interruptible.
+     */
+    private fun openAudioDescriptor(uriStr: String): AssetFileDescriptor? {
+        val result = java.util.concurrent.atomic.AtomicReference<AssetFileDescriptor?>(null)
+        val abandon = AtomicBoolean(false)
+        val helper = Thread({
+            try {
+                val afd = context.contentResolver.openAssetFileDescriptor(Uri.parse(uriStr), "r")
+                if (abandon.get()) {
+                    try { afd?.close() } catch (_: Exception) {}
+                } else {
+                    result.set(afd)
+                }
+            } catch (t: Throwable) {
+                AppLog.d(TAG, "Video audio source open failed: ${t.message}")
+            }
+        }, "VideoAudioOpen").apply {
+            isDaemon = true
+            start()
+        }
+        try {
+            helper.join(AUDIO_OPEN_TIMEOUT_MS)
+        } catch (_: InterruptedException) {
+            abandon.set(true)
+            helper.interrupt()
+            Thread.currentThread().interrupt()
+            return null
+        }
+        if (helper.isAlive) {
+            abandon.set(true)
+            helper.interrupt()
+            AppLog.d(TAG, "Timed out opening the video's audio stream")
+            return null
+        }
+        return result.get()
+    }
+
+    /**
+     * One AudioTrack, reused across playback passes (and across the pause/resume
+     * pairs) so looping does not re-allocate a track every time.
+     */
+    private class AudioSession {
+        // Written by the audio thread, read/paused/released from the engine thread
+        // (stopAudio(), release()). Without @Volatile the engine could keep acting
+        // on a stale track - i.e. fail to silence the old video, or write into a
+        // released AudioTrack.
+        @Volatile
+        var track: AudioTrack? = null
+            private set
+        /** Buffer length in ms, for the start-up log (diagnostics). */
+        @Volatile
+        var bufferMillis = 0
+            private set
+        private var sampleRate = 0
+        private var channels = 0
+        private var encoding = VideoSound.PCM_ENCODING
+        @Volatile
+        private var playing = false
+
+        fun trackFor(
+            wantedSampleRate: Int,
+            wantedChannels: Int,
+            wantedEncoding: Int = VideoSound.PCM_ENCODING
+        ): AudioTrack? {
+            val existing = track
+            if (existing != null && wantedSampleRate == sampleRate &&
+                wantedChannels == channels && wantedEncoding == encoding
+            ) {
+                return existing
+            }
+            release()
+            val created = create(wantedSampleRate, wantedChannels, wantedEncoding) ?: return null
+            track = created
+            sampleRate = wantedSampleRate
+            channels = wantedChannels
+            encoding = wantedEncoding
+            return created
+        }
+
+        /**
+         * Start (or restart) playback with an empty buffer. Only for a NEW media:
+         * flushing between playback passes would cut the music every loop.
+         */
+        fun restart() {
+            val t = track ?: return
+            try {
+                t.pause()
+                t.flush()
+                t.play()
+                playing = true
+            } catch (_: Throwable) {
+            }
+        }
+
+        /** Make sure a (possibly paused) track is playing again. */
+        fun ensurePlaying() {
+            if (playing) return
+            resume()
+        }
+
+        fun pause() {
+            if (!playing) return
+            playing = false
+            try { track?.pause() } catch (_: Throwable) {}
+        }
+
+        fun resume() {
+            val t = track ?: return
+            try { t.play() } catch (_: Throwable) {}
+            playing = true
+        }
+
+        fun release() {
+            val t = track ?: return
+            track = null
+            playing = false
+            try { t.pause() } catch (_: Throwable) {}
+            try { t.flush() } catch (_: Throwable) {}
+            try { t.release() } catch (_: Throwable) {}
+            sampleRate = 0
+            channels = 0
+        }
+
+        private fun create(
+            wantedSampleRate: Int,
+            wantedChannels: Int,
+            wantedEncoding: Int
+        ): AudioTrack? {
+            return try {
+                val mask = VideoSound.channelMaskFor(wantedChannels)
+                val bytesPerSample = VideoSound.bytesPerSampleFor(wantedEncoding)
+                val minBytes = AudioTrack.getMinBufferSize(
+                    wantedSampleRate, mask, wantedEncoding
+                )
+                val bufferBytes = VideoSound.bufferBytesFor(
+                    if (minBytes > 0) minBytes else 0,
+                    wantedSampleRate,
+                    wantedChannels,
+                    bytesPerSample
+                )
+                bufferMillis = (bufferBytes.toLong() * 1_000L /
+                    (wantedSampleRate.toLong() * wantedChannels.coerceAtLeast(1) *
+                        bytesPerSample).coerceAtLeast(1L)).toInt()
+                val attrs = AudioAttributes.Builder()
+                    // USAGE_MEDIA + CONTENT_TYPE_MOVIE: the system media volume
+                    // (and mute) applies, exactly like any other video sound.
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MOVIE)
+                    .build()
+                val format = AudioFormat.Builder()
+                    .setEncoding(wantedEncoding)
+                    .setSampleRate(wantedSampleRate)
+                    .setChannelMask(mask)
+                    .build()
+                val created = AudioTrack.Builder()
+                    .setAudioAttributes(attrs)
+                    .setAudioFormat(format)
+                    .setBufferSizeInBytes(bufferBytes)
+                    .setTransferMode(AudioTrack.MODE_STREAM)
+                    .build()
+                if (created.state != AudioTrack.STATE_INITIALIZED) {
+                    try { created.release() } catch (_: Throwable) {}
+                    AppLog.e(TAG, "AudioTrack was not initialized (video sound off)")
+                    return null
+                }
+                // Report the buffer the framework really allocated, not just the
+                // one requested: that is what tells crackling apart from silence.
+                try {
+                    val frames = created.bufferSizeInFrames
+                    if (frames > 0 && wantedSampleRate > 0) {
+                        bufferMillis = (frames.toLong() * 1_000L / wantedSampleRate).toInt()
+                    }
+                } catch (_: Throwable) {
+                }
+                created.setVolume(1f)
+                created
+            } catch (t: Throwable) {
+                AppLog.e(TAG, "AudioTrack create failed: ${t.message}")
+                null
+            }
         }
     }
 
@@ -741,7 +1974,7 @@ class WallpaperRenderer(
             if (openThread.isAlive) {
                 abandonOpen.set(true)
                 openThread.interrupt()
-                Log.e(TAG, "Timed out opening video stream: $uriStr")
+                AppLog.e(TAG, "Timed out opening video stream: ${LogText.short(uriStr)}")
                 if (videoGeneration.get() == gen) {
                     isVideoPlaying = false
                     onVideoStartFailed?.invoke()
@@ -750,7 +1983,7 @@ class WallpaperRenderer(
             }
             val openErr = openError.get()
             if (openErr != null) {
-                Log.e(TAG, "Failed to open video stream: $uriStr", openErr)
+                AppLog.e(TAG, "Failed to open video stream: ${LogText.short(uriStr)}", openErr)
                 if (videoGeneration.get() == gen) {
                     isVideoPlaying = false
                     onVideoStartFailed?.invoke()
@@ -759,7 +1992,7 @@ class WallpaperRenderer(
             }
             val afd = openResult.get()
             if (afd == null) {
-                Log.e(TAG, "Cannot open video stream: $uriStr")
+                AppLog.e(TAG, "Cannot open video stream: ${LogText.short(uriStr)}")
                 if (videoGeneration.get() == gen) {
                     isVideoPlaying = false
                     onVideoStartFailed?.invoke()
@@ -767,21 +2000,81 @@ class WallpaperRenderer(
                 return
             }
             localAfd = afd
+            // Some pickers (Google Photos / third-party SAF providers on
+            // non-Xiaomi devices) hand out descriptors with UNKNOWN length or
+            // that are not seekable; MediaExtractor then fails and the video
+            // stays black. Fall back to copying the stream into the app cache
+            // and decoding from that seekable file.
+            var copiedVideoPath: String? = null
             var errorPasses = 0
             var giveUp = false
+            // ---- Warm session, reused across loop passes of the SAME file ----
+            //
+            // The old code created a MediaCodec + MediaExtractor + a fresh
+            // SurfaceTexture on EVERY playback pass, so a 5s clip paid a full
+            // codec create/configure/start (~30-80ms) and a GL rebuild at every
+            // loop point - visible as a hitch (and, with the old framebuffer
+            // clear, a black flash). A loop restart now only flushes the codec
+            // and rewinds the extractor; a switch to a DIFFERENT file still
+            // rebuilds everything (a codec cannot change format).
+            var sessionExtractor: MediaExtractor? = null
+            var sessionDecoder: MediaCodec? = null
+            var reuseSession = false
             while (videoGeneration.get() == gen && !Thread.interrupted() && !giveUp) {
                 // --- Setup MediaExtractor ---
-                val ext = MediaExtractor()
+                // On a loop restart the warm extractor is kept AS IS: the source
+                // is already attached and only needs a rewind, which the codec
+                // block below does with seekTo(0). Re-calling setDataSource on an
+                // extractor that already reached EOF threw
+                // `IOException: Failed to instantiate extractor` on the tablet,
+                // which turned every loop point into a first-frame fallback +
+                // recovery switch - i.e. the clip never looped.
+                val ext = sessionExtractor ?: MediaExtractor()
                 localExtractor = ext
-                // Use the descriptor's offset/length: cloud-hosted or
-                // container-backed documents can expose a non-zero start
-                // offset, and decoding from the beginning would fail or read
-                // the wrong bytes.
-                ext.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+                if (sessionExtractor !== ext) {
+                    // Fresh session: attach the source. Use the descriptor's
+                    // offset/length - cloud-hosted or container-backed documents
+                    // can expose a non-zero start offset, and decoding from the
+                    // beginning would fail or read the wrong bytes.
+                    try {
+                        val existingCopy = copiedVideoPath
+                        if (existingCopy != null) {
+                            // A previous attempt already copied this stream into
+                            // the cache (the descriptor is not seekable): use that
+                            // file instead of copying it again.
+                            ext.setDataSource(existingCopy)
+                        } else if (afd.length > 0L) {
+                            ext.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+                        } else {
+                            // length == UNKNOWN_LENGTH: let the framework fstat()
+                            // the descriptor instead of passing -1 as the length.
+                            ext.setDataSource(afd.fileDescriptor)
+                        }
+                    } catch (t: Throwable) {
+                        AppLog.w(TAG, "Video source not seekable, copying to cache: ${LogText.short(uriStr)}", t)
+                        val cached = copyVideoToCache(uriStr)
+                        if (cached == null) {
+                            AppLog.e(TAG, "Video cache fallback failed: ${LogText.short(uriStr)}")
+                            if (videoGeneration.get() == gen) {
+                                isVideoPlaying = false
+                                onVideoStartFailed?.invoke()
+                            }
+                            return
+                        }
+                        copiedVideoPath = cached.absolutePath
+                        if (videoGeneration.get() == gen) {
+                            // The audio path prefers this copy: it is a seekable
+                            // local file, so the sound never re-opens a cloud
+                            // provider (which could block for seconds).
+                            currentVideoCachePath = cached.absolutePath
+                        }
+                        ext.setDataSource(cached.absolutePath)
+                    }
+                }
                 val trackIdx = (0 until ext.trackCount).firstOrNull { i ->
                     ext.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("video/") == true
                 } ?: run {
-                    Log.e(TAG, "No video track")
+                    AppLog.e(TAG, "No video track")
                     if (videoGeneration.get() == gen) {
                         isVideoPlaying = false
                         onVideoStartFailed?.invoke()
@@ -789,96 +2082,216 @@ class WallpaperRenderer(
                     return
                 }
                 ext.selectTrack(trackIdx)
+                // "接着上次位置继续播放": the FIRST round of a startVideo() that
+                // carried a remembered position begins there instead of at 0.
+                // Later rounds fall into the warm-session branch below and rewind
+                // to 0, so the clip still loops from the beginning.
+                val resumeUs = pendingStartPositionUs
+                if (resumeUs > 0L) {
+                    pendingStartPositionUs = 0L
+                    try {
+                        ext.seekTo(resumeUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                        AppLog.d(
+                            TAG,
+                            "Video resumes at ${resumeUs / 1000}ms (kept position, not the start)"
+                        )
+                    } catch (t: Throwable) {
+                        // A source that refuses the seek simply plays from the
+                        // start (the old behaviour) instead of failing.
+                        AppLog.w(TAG, "Video resume seek failed: ${t.message}")
+                    }
+                }
                 val format = ext.getTrackFormat(trackIdx)
-                val mime = format.getString(MediaFormat.KEY_MIME)!!
+                val mime = format.getString(MediaFormat.KEY_MIME)
+                if (mime == null) {
+                    AppLog.e(TAG, "Video track has no MIME type")
+                    if (videoGeneration.get() == gen) {
+                        isVideoPlaying = false
+                        onVideoStartFailed?.invoke()
+                    }
+                    return
+                }
                 var videoW = format.getIntegerSafe(MediaFormat.KEY_WIDTH)
                 var videoH = format.getIntegerSafe(MediaFormat.KEY_HEIGHT)
+                // Videos with a 90/270 degree rotation (e.g. portrait phone
+                // recordings) display with swapped width/height — needed up
+                // front to compute the FIT decode cap below.
+                val rotation = format.getIntegerSafe(MediaFormat.KEY_ROTATION)
+                val isRotated = rotation == 90 || rotation == 270
+                val quadW = if (isRotated) videoH else videoW
+                val quadH = if (isRotated) videoW else videoH
                 val maxDim = maxOf(videoW, videoH)
                 // Decode to at most the screen resolution. This keeps the
                 // rendered picture pixel-identical to the source on the actual
                 // display (the old fixed 1280px cap made large videos blurry)
                 // while avoiding the wasted power/memory of decoding far
                 // larger sources (4K/8K videos) at full size.
-                val screenMax = maxOf(
-                    context.resources.displayMetrics.widthPixels,
-                    context.resources.displayMetrics.heightPixels
-                )
+                val screenWpx = context.resources.displayMetrics.widthPixels
+                val screenHpx = context.resources.displayMetrics.heightPixels
+                // The engine may turn the video another 90° (auto rotate
+                // mismatch, see refreshVideoQuad): what lands on screen is then
+                // the swapped rect, so the FIT size - and the decode cap derived
+                // from it - has to use those dims. Without this a 4K landscape
+                // clip shown rotated on a portrait screen was decoded at
+                // 1500x842 (fitted WITHOUT the turn) and then magnified 1.7x by
+                // the GPU - the "适应模式下视频发虚" case.
+                val willTurn = autoRotateMismatch && quadW > 0 && quadH > 0 &&
+                    quadW != quadH && ((quadW > quadH) != (screenWpx > screenHpx))
+                // One shared rule with the image decode (see displaySpan): what
+                // lands on screen after the engine's own quarter turn.
+                val (fitW, fitH) = com.wallpaperswitcher.engine.BitmapUtils
+                    .displaySpan(quadW, quadH, willTurn)
+                val screenMax = maxOf(screenWpx, screenHpx)
                 val baseCap = minOf(screenMax, 3200).coerceAtLeast(1280)
-                // FIT never enlarges the media beyond the screen, so the screen
-                // cap keeps quality identical. FILL/STRETCH keep a 1920 floor
-                // so small sources stay sharp when magnified; sources larger
-                // than the screen are downscaled by the GPU anyway, so the old
-                // 4096 ceiling only wasted decode power on 4K videos.
-                val decodeCap = when (scaleMode) {
-                    ScaleMode.FIT -> baseCap
+                // FIT letterboxes the video: it is displayed at the fitted
+                // size, so capping to the raw screen max over-decodes
+                // aspect-mismatched videos (e.g. a landscape video on a
+                // portrait phone is shown ~1080 wide but used to decode up to
+                // 2400, ~5x the pixels). Cap to the fitted size with a 1.25x
+                // quality headroom — the GPU then only downscales, never
+                // magnifies. FILL/STRETCH keep the full-screen cap (with a
+                // 1920 floor so small sources stay sharp when magnified).
+                val decodeCapBase = when (scaleMode) {
+                    ScaleMode.FIT -> {
+                        val fitScale = if (fitW > 0 && fitH > 0) {
+                            minOf(screenWpx.toFloat() / fitW, screenHpx.toFloat() / fitH)
+                        } else 1f
+                        val fittedLong =
+                            maxOf(fitW * fitScale, fitH * fitScale).toInt().coerceAtLeast(1)
+                        (fittedLong * 1.25f).toInt().coerceIn(1280, baseCap)
+                    }
                     ScaleMode.FILL, ScaleMode.STRETCH ->
                         minOf(screenMax, 3200).coerceAtLeast(1920)
                 }
+                // Frame rate does NOT change the decode resolution: 50/60fps
+                // sources are decoded exactly like any other media, i.e. by the
+                // screen-pixel rule above (FIT fits the screen, FILL/STRETCH
+                // uses the screen max). A 60fps source therefore keeps full
+                // sharpness; on a device whose GPU cannot fill the screen at
+                // 60fps the presentation rate simply follows the GPU, the
+                // playback speed stays 1:1 (pacing follows the frame
+                // timestamps).
+                val decodeCap = decodeCapBase
                 if (maxDim > decodeCap) {
                     val scale = decodeCap.toFloat() / maxDim
-                    videoW = (videoW * scale).toInt().and(0xFFFFFFFE.toInt())
-                    videoH = (videoH * scale).toInt().and(0xFFFFFFFE.toInt())
+                    // Even dimensions keep codec/SurfaceTexture happy, but the
+                    // even-bit mask must never produce 0 (a 1px result would
+                    // become 0 and break setDefaultBufferSize/decode).
+                    videoW = (videoW * scale).toInt().and(0xFFFFFFFE.toInt()).coerceAtLeast(2)
+                    videoH = (videoH * scale).toInt().and(0xFFFFFFFE.toInt()).coerceAtLeast(2)
                 }
-                // Videos with a 90/270 degree rotation (e.g. portrait phone
-                // recordings) display with swapped width/height.
-                val rotation = format.getIntegerSafe(MediaFormat.KEY_ROTATION)
-                val isRotated = rotation == 90 || rotation == 270
-                val quadW = if (isRotated) videoH else videoW
-                val quadH = if (isRotated) videoW else videoH
-                val fps = format.getIntegerSafe(MediaFormat.KEY_FRAME_RATE).coerceIn(15, 60)
-                val intervalNs = (1_000_000_000L / fps).coerceAtLeast(16_000_000L)
+                // Playback pacing follows the source frame timestamps (see the
+                // decode loop below); this is only a floor so a very high-fps
+                // source cannot spin the loop. KEY_FRAME_RATE is missing on
+                // plenty of containers (SAF/ffmpeg files, variable-rate
+                // recordings) and guessing 15fps for them made a 30fps clip play
+                // in slow motion while a 1.5fps clip raced through its loop
+                // every ~0.8s (a repeating "Video started" in the logs).
+                val minFrameGapNs = 16_000_000L
 
                 // --- Setup GL texture + SurfaceTexture on render thread ---
                 val setupLatch = CountDownLatch(1)
                 var setupOk = false
-                handler.post {
-                    try {
-                        if (videoGeneration.get() != gen) {
-                            setupLatch.countDown()
-                            return@post
-                        }
-                        if (!surfaceReady || !contextReady) {
-                            setupLatch.countDown()
-                            return@post
-                        }
-                        if (videoTexId == 0) {
-                            val texIds = IntArray(1)
-                            GLES20.glGenTextures(1, texIds, 0)
-                            videoTexId = texIds[0]
-                        }
-                        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTexId)
-                        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
-                        GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
-
-                        val st = SurfaceTexture(videoTexId)
-                        st.setDefaultBufferSize(videoW, videoH)
-                        surfaceTexture = st
-                        codecSurface = Surface(st)
-                        // Remember the source size + scale mode so the frame
-                        // renderer can sharpen low-res videos that are
-                        // magnified to fill the screen.
-                        videoSourceW = videoW.toFloat()
-                        videoSourceH = videoH.toFloat()
-                        videoDisplayW = quadW.toFloat()
-                        videoDisplayH = quadH.toFloat()
-                        videoScaleMode = scaleMode
-                        // Clear immediately so the previous video's frame cannot
-                        // linger around/behind the new video while its first frame
-                        // is being decoded.
-                        if (eglSurface != EGL14.EGL_NO_SURFACE) {
-                            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-                            EGL14.eglSwapBuffers(eglDisplay, eglSurface)
-                        }
+                var setupAttempts = 0
+                // A warm session already owns a SurfaceTexture + texture bound
+                // to its codec, so a loop restart has nothing to rebuild here.
+                val reuseGl = reuseSession && sessionDecoder != null &&
+                    surfaceTexture != null && codecSurface != null && videoTexId != 0
+                lateinit var attemptVideoSetup: () -> Unit
+                attemptVideoSetup = {
+                    if (reuseGl) {
                         setupOk = true
                         setupLatch.countDown()
-                    } catch (t: Throwable) {
-                        Log.e(TAG, "Video GL setup failed", t)
-                        setupLatch.countDown()
+                    } else {
+                        handler.post {
+                            try {
+                                if (videoGeneration.get() != gen) {
+                                    setupLatch.countDown()
+                                    return@post
+                                }
+                                if (!surfaceReady || !contextReady) {
+                                    // The EGL surface is recreated on rotation (and can
+                                    // briefly be unavailable). Retry for ~1.6s instead
+                                    // of failing the whole video: on non-Xiaomi devices
+                                    // failing here left the wallpaper black for
+                                    // seconds until the recovery switch.
+                                    setupAttempts++
+                                    if (setupAttempts <= 8) {
+                                        AppLog.d(TAG, "Video GL setup waiting for surface (attempt $setupAttempts)")
+                                        handler.postDelayed(attemptVideoSetup, 200L)
+                                    } else {
+                                        AppLog.e(TAG, "Video GL setup failed: surface never became ready")
+                                        setupLatch.countDown()
+                                    }
+                                    return@post
+                                }
+                                if (videoTexId == 0) {
+                                    val texIds = IntArray(1)
+                                    GLES20.glGenTextures(1, texIds, 0)
+                                    videoTexId = texIds[0]
+                                }
+                                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTexId)
+                                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        
+                                // Some non-Xiaomi devices/drivers fail to compile the
+                                // external-texture shader or lose the program after a
+                                // context loss. Without this guard the decoder keeps
+                                // running while renderVideoFrame() skips every frame,
+                                // leaving the wallpaper black for the health monitor's
+                                // 15s window. Fail fast so the engine recovers with a
+                                // different media (usually a static image) instead.
+                                if (videoProgram == 0) {
+                                    AppLog.e(TAG, "Video shader program unavailable; aborting video setup")
+                                    setupLatch.countDown()
+                                    return@post
+                                }
+        
+                                val st = SurfaceTexture(videoTexId)
+                                st.setDefaultBufferSize(videoW, videoH)
+                                surfaceTexture = st
+                                codecSurface = Surface(st)
+                                // Remember the on-screen size + scale mode so the frame
+                                // renderer can sharpen low-res videos that are magnified
+                                // to fill the screen.
+                                videoDisplayW = quadW.toFloat()
+                                videoDisplayH = quadH.toFloat()
+                                videoScaleMode = scaleMode
+                                // Do NOT clear the framebuffer here.
+                                //
+                                // This used to swap a fully black frame "so the previous
+                                // video's frame cannot linger", which showed up as a
+                                // black flash on every image→video switch and on every
+                                // loop restart (the codec is recreated per pass, so the
+                                // flash happened every few seconds for short clips).
+                                // Keeping the previous frame on screen until the new
+                                // video's first frame is presented is both seamless
+                                // (looping) and less jarring (a switch keeps the old
+                                // wallpaper visible instead of flashing black).
+                                // A video that never produces a frame is handled by the
+                                // engine's recovery (first-frame fallback + media switch)
+                                // rather than by painting black over it.
+                                setupOk = true
+                                setupLatch.countDown()
+                            } catch (t: Throwable) {
+                                AppLog.e(TAG, "Video GL setup failed", t)
+                                setupLatch.countDown()
+                            }
+                        }
                     }
                 }
-                try { setupLatch.await(3, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
+                attemptVideoSetup()
+                try { setupLatch.await(6, TimeUnit.SECONDS) } catch (_: InterruptedException) {}
                 if (!setupOk || videoGeneration.get() != gen) {
-                    Log.e(TAG, "Video GL setup failed")
+                    // Being superseded by a newer video (switch/rotation right
+                    // after this one started) is the normal teardown path, not a
+                    // failure: logging it as an error buried the real ones in the
+                    // tablet log.
+                    if (videoGeneration.get() != gen) {
+                        AppLog.d(TAG, "Video GL setup abandoned (superseded)")
+                    } else {
+                        AppLog.e(TAG, "Video GL setup failed")
+                    }
                     // Only reset engine state when THIS video is still the
                     // current one. A superseded setup must not stop a newer
                     // video that is already decoding/playing.
@@ -897,7 +2310,7 @@ class WallpaperRenderer(
                 val st = surfaceTexture
                 val cs = codecSurface
                 if (st == null || cs == null || videoGeneration.get() != gen) {
-                    Log.e(TAG, "Video resources torn down during setup")
+                    AppLog.e(TAG, "Video resources torn down during setup")
                     if (videoGeneration.get() == gen) {
                         isVideoPlaying = false
                         onVideoStartFailed?.invoke()
@@ -906,37 +2319,147 @@ class WallpaperRenderer(
                 }
 
                 // --- Setup MediaCodec on THIS thread (decode thread) ---
-                val dec = MediaCodec.createDecoderByType(mime)
+                val warm = if (reuseSession) sessionDecoder else null
+                val dec: MediaCodec
+                if (warm != null) {
+                    // Loop restart of the same file: keep the warmed codec and
+                    // rewind it instead of re-creating the decoder + surface.
+                    dec = try {
+                        warm.flush()
+                        // Some vendor decoders want the SPS/PPS again after a
+                        // flush (the same workaround ExoPlayer applies).
+                        requeueCodecSpecificData(warm, format)
+                        ext.seekTo(0, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
+                        AppLog.d(TAG, "Video loop restart (codec + GL reused, no re-init)")
+                        warm
+                    } catch (t: Throwable) {
+                        // A codec that refuses a flush must not be used again:
+                        // drop the whole warm session (codec + extractor + the
+                        // GL resources bound to it) and rebuild from scratch on
+                        // the next iteration - the same path a new video takes.
+                        AppLog.w(
+                            TAG,
+                            "Codec reuse failed (${t.javaClass.simpleName}: ${t.message}); " +
+                                "rebuilding the video session"
+                        )
+                        try { warm.stop() } catch (_: Exception) {}
+                        try { warm.release() } catch (_: Exception) {}
+                        if (decoder === warm) decoder = null
+                        if (localDecoder === warm) localDecoder = null
+                        sessionExtractor?.let { e -> try { e.release() } catch (_: Exception) {} }
+                        if (localExtractor === sessionExtractor) localExtractor = null
+                        sessionDecoder = null
+                        sessionExtractor = null
+                        reuseSession = false
+                        handler.post {
+                            try {
+                                if (videoGeneration.get() == gen) {
+                                    cleanupVideoResourcesOnRenderThread()
+                                }
+                            } catch (_: Throwable) {
+                            }
+                        }
+                        continue
+                    }
+                } else {
+                    dec = MediaCodec.createDecoderByType(mime)
+                    dec.configure(format, cs, null, 0)
+                    dec.start()
+                }
                 localDecoder = dec
                 decoder = dec
-                dec.configure(format, cs, null, 0)
-                dec.start()
+                // Audio/video re-anchor: a new playback pass starts here, so the
+                // audio thread may start (or restart) its own pass. Kept after
+                // dec.start() so a pass that fails to set up never makes noise.
+                signalVideoPassStart(gen)
 
                 // Cache render quad on render thread
                 handler.post {
                     try {
                         if (videoGeneration.get() != gen) return@post
-                        val quad = computeVideoQuad(quadW.toFloat(), quadH.toFloat(), scaleMode)
-                        vertexBuffer?.clear()
-                        vertexBuffer?.put(quad)?.position(0)
-                        Log.d(TAG, "Video quad set: video=${quadW}x${quadH} mode=$scaleMode " +
-                                "screen=${screenW.toInt()}x${screenH.toInt()} quad=${quad.toList()}")
+                        refreshVideoQuad(quadW.toFloat(), quadH.toFloat(), scaleMode)
+                        AppLog.d(TAG, "Video quad set: video=${quadW}x${quadH} mode=$scaleMode " +
+                                "screen=${screenW.toInt()}x${screenH.toInt()} rotate=$videoExtraRotate")
                     } catch (t: Throwable) {
-                        Log.e(TAG, "Video quad computation failed", t)
+                        AppLog.e(TAG, "Video quad computation failed", t)
                     }
                 }
 
                 val codecName = try { dec.name } catch (_: Exception) { "unknown" }
-                Log.d(TAG, "Video started: ${videoW}x${videoH} @ ${fps}fps codec=$codecName")
+                // KEY_FRAME_RATE is informational only now (pacing uses the
+                // frame timestamps), and it is missing on some containers.
+                val declaredFps = format.getIntegerSafe(MediaFormat.KEY_FRAME_RATE)
+                AppLog.d(
+                    TAG,
+                    "Video started: ${videoW}x${videoH} @ " +
+                        "${if (declaredFps > 0) "${declaredFps}fps" else "unspecified fps"} codec=$codecName"
+                )
 
                 // --- Inner decode loop (one playback pass) ---
                 val bufferInfo = MediaCodec.BufferInfo()
                 var inputDone = false
                 var eof = false
+                // Frames presented during THIS pass; a reused pass that presents
+                // nothing drops the session so the next pass rebuilds it (see the
+                // safety net after the decode loop).
+                var passFramesPresented = 0L
+                // Presentation clock for this playback pass: frames are paced
+                // against their own presentation timestamps so the clip plays
+                // at its real speed regardless of the container metadata.
+                var passStartNs = -1L
+                var firstPtsUs = -1L
+                var lastPresentNs = 0L
+                // Paused on purpose while the wallpaper is not visible (see
+                // below). Tracked so the pause/resume pair is logged once.
+                var pausedForVisibility = false
                 while (videoGeneration.get() == gen && !Thread.interrupted() && !eof) {
                     try {
-                        val startNs = System.nanoTime()
-
+                        // Not visible (screen off / another app in front / the
+                        // system live-wallpaper dialog): pause COMPLETELY.
+                        //
+                        // The old behaviour kept a ~1fps slideshow running,
+                        // which meant the decoder, the GL upload and the power
+                        // all kept working for a wallpaper nobody could see.
+                        // Nothing is dequeued here, so the codec stalls by
+                        // itself (its output queue fills up and it stops
+                        // decoding) and playback resumes from the exact frame
+                        // it stopped on - the pacing clock is re-anchored on
+                        // the first frame after the pause, so the clip never
+                        // fast-forwards to "catch up" either.
+                        if (powerSaveMode) {
+                            if (!pausedForVisibility) {
+                                pausedForVisibility = true
+                                // One line per hidden episode, not per playback
+                                // pass (the timer may restart the video while it
+                                // is hidden).
+                                if (!videoPauseAnnounced) {
+                                    videoPauseAnnounced = true
+                                    AppLog.d(TAG, "Video paused (wallpaper not visible)")
+                                }
+                            }
+                            // Wait for the visibility change to wake us instead
+                            // of polling: a screen-off wallpaper then costs no
+                            // wakeups at all (see powerSaveMode).
+                            synchronized(pauseLock) {
+                                if (powerSaveMode) {
+                                    try {
+                                        pauseLock.wait(PAUSE_WAIT_MAX_MS)
+                                    } catch (_: InterruptedException) {
+                                        // stopVideo()/engine teardown interrupts
+                                        // this thread: restore the flag so the
+                                        // loop conditions see it and exit.
+                                        Thread.currentThread().interrupt()
+                                    }
+                                }
+                            }
+                            continue
+                        }
+                        if (pausedForVisibility) {
+                            pausedForVisibility = false
+                            if (videoPauseAnnounced) {
+                                AppLog.d(TAG, "Video resumed (wallpaper visible again)")
+                            }
+                        }
                         if (!inputDone) {
                             // Pre-fill a few input buffers: on cloud-hosted
                             // files each readSampleData can block on the
@@ -973,7 +2496,13 @@ class WallpaperRenderer(
                                 continue
                             }
 
-                            dec.releaseOutputBuffer(outIdx, true)
+                           dec.releaseOutputBuffer(outIdx, true)
+                           passFramesPresented++
+                           // Remember the position for "接着上次位置继续播放"
+                           // (read by the engine when it releases the session
+                           // while the device is locked).
+                           lastVideoPositionUs =
+                               bufferInfo.presentationTimeUs.coerceAtLeast(0L)
 
                             // Only one pending render post at a time; if the
                             // render thread is busy, the newest frame simply
@@ -989,28 +2518,73 @@ class WallpaperRenderer(
                                         st.getTransformMatrix(videoTexMatrix)
                                         renderVideoFrame(videoTexMatrix)
                                     } catch (t: Throwable) {
-                                        Log.e(TAG, "renderVideoFrame failed", t)
+                                        AppLog.e(TAG, "renderVideoFrame failed", t)
                                     }
                                 }
                             }
 
-                            val elapsedNs = System.nanoTime() - startNs
-                            // Screen-off power save: decode at ~2fps instead of
-                            // the source rate. No restart, no visual jump - the
-                            // engine just resumes full speed when the screen
-                            // comes back on.
-                            val effectiveInterval = if (powerSaveMode) {
-                                intervalNs.coerceAtLeast(500_000_000L)
-                            } else {
-                                intervalNs
+                            // Pace against the frame's own timestamp: the clip
+                            // plays at its true speed even when the container
+                            // does not report a frame rate. The floor keeps a
+                            // 60fps+ source from spinning the loop. While the
+                            // wallpaper is not visible the loop pauses before it
+                            // ever gets here (see above), so this floor only
+                            // ever applies to visible playback.
+                            val nowNs = System.nanoTime()
+                            if (passStartNs < 0L) {
+                                passStartNs = nowNs
+                                firstPtsUs = bufferInfo.presentationTimeUs
                             }
-                            val sleepNs = effectiveInterval - elapsedNs
+                            val ptsOffsetNs =
+                                ((bufferInfo.presentationTimeUs - firstPtsUs) * 1000L)
+                                    .coerceAtLeast(0L)
+                            // Playback clock vs. wall clock: while throttled
+                            // (power save) the frames are ~1s late by design, and
+                            // after a freeze they can be seconds late. Re-anchor
+                            // so the clip continues at its normal speed from the
+                            // frame that is due now instead of fast-forwarding to
+                            // catch up the time nobody could see.
+                            val lagNs = nowNs - (passStartNs + ptsOffsetNs)
+                            if (!powerSaveMode) powerSavePauseLogged = false
+                            // Visible playback again: the next hidden episode
+                            // announces itself.
+                            if (!powerSaveMode) videoPauseAnnounced = false
+                            if (lagNs > maxPlaybackLagNs) {
+                                passStartNs = nowNs - ptsOffsetNs
+                                if (powerSaveMode) {
+                                    // One line per throttled episode instead of
+                                    // one per frame (screen-off logs must stay
+                                    // quiet).
+                                    if (!powerSavePauseLogged) {
+                                        powerSavePauseLogged = true
+                                        AppLog.d(
+                                            TAG,
+                                            "Playback clock paused for power save " +
+                                                "(${lagNs / 1_000_000}ms behind)"
+                                        )
+                                    }
+                                } else {
+                                    val elapsed = SystemClock.elapsedRealtime()
+                                    if (elapsed - lastReanchorLogAt > 5_000L) {
+                                        lastReanchorLogAt = elapsed
+                                        AppLog.d(
+                                            TAG,
+                                            "Playback was ${lagNs / 1_000_000}ms behind; " +
+                                            "re-anchored instead of fast-forwarding"
+                                        )
+                                    }
+                                }
+                            }
+                            val floorNs = if (powerSaveMode) 1_000_000_000L else minFrameGapNs
+                            val targetNs = maxOf(passStartNs + ptsOffsetNs, lastPresentNs + floorNs)
+                            val sleepNs = targetNs - System.nanoTime()
                             if (sleepNs > 0) {
                                 // InterruptedException is the normal "stop" signal.
                                 try {
                                     Thread.sleep(sleepNs / 1_000_000, (sleepNs % 1_000_000).toInt())
                                 } catch (_: InterruptedException) {}
                             }
+                            lastPresentNs = targetNs
                         } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) {
                             // 5ms poll interval instead of 1ms: with slow /
                             // cloud-hosted decoders this cuts idle CPU wakeups
@@ -1028,30 +2602,85 @@ class WallpaperRenderer(
                             giveUp = true
                             if (videoGeneration.get() == gen) onVideoStartFailed?.invoke()
                         }
-                        Log.e(TAG, "Decode pass interrupted", t)
+                        // A superseded video's decoder is torn down under it; that
+                        // is expected during a switch and must not look like an
+                        // error (only a pass that failed while still current is).
+                        if (videoGeneration.get() != gen) {
+                            AppLog.d(TAG, "Decode pass ended (superseded)")
+                        } else {
+                            AppLog.e(TAG, "Decode pass interrupted", t)
+                        }
                         eof = true
                     }
                 }
 
-                // Release this round's codec cleanly.
-                try { dec.stop() } catch (_: Exception) {}
-                try { dec.release() } catch (_: Exception) {}
-                if (decoder === dec) decoder = null
-                // Release this round's extractor too: it holds a file
-                // descriptor, and looping videos would otherwise accumulate an
-                // extractor + fd per playback pass until the thread exits.
-                try { ext.release() } catch (_: Exception) {}
-                if (localExtractor === ext) localExtractor = null
+                // Keep this pass's codec + extractor + SurfaceTexture alive when
+                // the same file is about to loop again: the next pass then only
+                // pays a flush + seek instead of a full rebuild. Everything is
+                // released by the thread's own teardown (finally) once the video
+                // is switched away, rotated, or the engine is destroyed.
+                val keepWarm = eof && passFramesPresented > 0L &&
+                    videoGeneration.get() == gen && !Thread.interrupted() && !giveUp
+                reuseSession = keepWarm
+                if (keepWarm) {
+                    sessionExtractor = ext
+                    sessionDecoder = dec
+                } else {
+                    // Release this round's codec cleanly.
+                    try { dec.stop() } catch (_: Exception) {}
+                    try { dec.release() } catch (_: Exception) {}
+                    if (decoder === dec) decoder = null
+                    if (localDecoder === dec) localDecoder = null
+                    sessionDecoder = null
+                    // Release this round's extractor too: it holds a file
+                    // descriptor, and looping videos would otherwise accumulate an
+                    // extractor + fd per playback pass until the thread exits.
+                    try { ext.release() } catch (_: Exception) {}
+                    if (localExtractor === ext) localExtractor = null
+                    sessionExtractor = null
+                    // The cache copy (if any) is only needed while decoding.
+                    copiedVideoPath?.let { path ->
+                        try { java.io.File(path).delete() } catch (_: Exception) {}
+                        copiedVideoPath = null
+                    }
+                }
 
                 if (videoGeneration.get() != gen || Thread.interrupted()) break
+                if (keepWarm) {
+                    // The warm session already has its GL resources; cleaning
+                    // them here would also break the codec's surface, and the
+                    // on-screen frame is kept until the next pass presents its
+                    // own first frame (no black flash at the loop point).
+                    // Only the per-pass frame-rate line is still emitted, so a
+                    // looping video keeps the same diagnostics as before.
+                    handler.post {
+                        if (videoGeneration.get() == gen) logPassFrameRate()
+                    }
+                    continue
+                }
                 if (eof) {
+                    // A pass that presented nothing (codec reuse rejected the
+                    // rewound stream): drop the session so the next iteration
+                    // rebuilds the decoder from scratch instead of looping
+                    // forever without a frame.
+                    if (warm != null && passFramesPresented == 0L) {
+                        AppLog.w(
+                            TAG,
+                            "Reused video codec produced no frame; rebuilding the session"
+                        )
+                    }
                     // Loop: clean this round's GL resources, then the outer
                     // loop recreates the extractor + codec + SurfaceTexture.
                     handler.post {
+                        // Re-check the generation when this actually runs: a
+                        // newer video may have started since this EOF cleanup
+                        // was queued, and destroying "its" shared GL resources
+                        // would corrupt the new video's rendering.
+                        if (videoGeneration.get() != gen) return@post
                         try {
                             cleanupVideoResourcesOnRenderThread()
                         } catch (t: Throwable) {
-                            Log.e(TAG, "Video cleanup failed", t)
+                            AppLog.e(TAG, "Video cleanup failed", t)
                         }
                     }
                     continue
@@ -1065,14 +2694,14 @@ class WallpaperRenderer(
                 // The CURRENT video failed (e.g. codec configure raced a
                 // cleanup). Tell the engine to reset lastDisplayedId and retry,
                 // otherwise the previous frame stays frozen on screen forever.
-                Log.e(TAG, "Decode error", t)
+                AppLog.e(TAG, "Decode error", t)
                 isVideoPlaying = false
                 onVideoStartFailed?.invoke()
             } else {
                 // Superseded by a newer switch: expected during rapid
                 // double-tap switching. The new video owns the screen, so this
                 // is not an error.
-                Log.d(TAG, "Decode thread superseded during setup", t)
+                AppLog.d(TAG, "Decode thread superseded during setup", t)
             }
         } finally {
             // Only clear the playing flag when THIS thread is still the current
@@ -1095,24 +2724,11 @@ class WallpaperRenderer(
                     try {
                         cleanupVideoResourcesOnRenderThread()
                     } catch (t: Throwable) {
-                        Log.e(TAG, "Video cleanup failed", t)
+                        AppLog.e(TAG, "Video cleanup failed", t)
                     }
                 }
             }
         }
-    }
-
-    private fun computeVideoQuad(vidW: Float, vidH: Float, scaleMode: ScaleMode): FloatArray {
-        if (vidW <= 0 || vidH <= 0 || screenW <= 0 || screenH <= 0) {
-            return floatArrayOf(-1f,-1f,0f,0f, 1f,-1f,1f,0f, -1f,1f,0f,1f, 1f,1f,1f,1f)
-        }
-        val va = vidW / vidH; val sa = screenW / screenH
-        val (dw, dh) = when (scaleMode) {
-            ScaleMode.FIT -> if (va > sa) Pair(1f, sa / va) else Pair(va / sa, 1f)
-            ScaleMode.FILL -> if (va > sa) Pair(va / sa, 1f) else Pair(1f, sa / va)
-            ScaleMode.STRETCH -> Pair(1f, 1f)
-        }
-        return floatArrayOf(-dw,-dh,0f,0f, dw,-dh,1f,0f, -dw,dh,0f,1f, dw,dh,1f,1f)
     }
 
     /**
@@ -1147,7 +2763,7 @@ class WallpaperRenderer(
             GLES20.glVertexAttribPointer(tcLoc, 2, GLES20.GL_FLOAT, false, 16, bg)
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         } catch (t: Throwable) {
-            Log.e(TAG, "drawBlackBackground failed", t)
+            AppLog.e(TAG, "drawBlackBackground failed", t)
         }
     }
 
@@ -1159,26 +2775,44 @@ class WallpaperRenderer(
     private fun renderVideoFrame(texMatrix: FloatArray) {
         try {
             if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
+            val effectiveMatrix = if (videoExtraRotate) {
+                // Reused buffer: this used to allocate a FloatArray per frame.
+                val rotated = rotatedTexMatrix
+                android.opengl.Matrix.multiplyMM(
+                    rotated, 0,
+                    if (autoRotateClockwise) EXTRA_ROTATE_90_CW_MATRIX else EXTRA_ROTATE_90_CCW_MATRIX,
+                    0, texMatrix, 0
+                )
+                rotated
+            } else {
+                texMatrix
+            }
+            val now = SystemClock.elapsedRealtime()
             if (videoProgram == 0 || videoTexId == 0) {
-                Log.w(TAG, "renderVideoFrame skipped: program=$videoProgram tex=$videoTexId")
+                // Throttled: this runs once per frame, and an unthrottled line
+                // here (plus AppLog's per-line flush) would turn a rendering
+                // fault into a disk-writing storm at 30-60 lines/second.
+                if (now - lastFrameWarnAt > FRAME_WARN_INTERVAL_MS) {
+                    lastFrameWarnAt = now
+                    AppLog.w(TAG, "renderVideoFrame skipped: program=$videoProgram tex=$videoTexId")
+                }
                 return
             }
 
-            val now = SystemClock.elapsedRealtime()
-            if (now - lastVideoFrameSwappedAt < 33L) return
+            if (now - lastVideoFrameSwappedAt < minVideoSwapGapMs) return
             lastVideoFrameSwappedAt = now
             if (renderFpsWindowStart == 0L) renderFpsWindowStart = now
             renderFpsCount++
             if (now - renderFpsWindowStart >= 60_000L) {
                 val elapsed = (now - renderFpsWindowStart).coerceAtLeast(1L)
                 val fps = renderFpsCount * 1000f / elapsed
-                Log.d(TAG, "Video render rate: %.1f fps over %ds".format(fps, elapsed / 1000))
+                AppLog.d(TAG, "Video render rate: %.1f fps over %ds".format(fps, elapsed / 1000))
                 renderFpsWindowStart = now
                 renderFpsCount = 0
             }
             if (now - lastRenderLogAt > 5000L) {
                 lastRenderLogAt = now
-                Log.d(TAG, "Video frame rendered: tex=$videoTexId screen=${screenW.toInt()}x${screenH.toInt()} last=$lastVideoFrameAt")
+                AppLog.d(TAG, "Video frame rendered: tex=$videoTexId screen=${screenW.toInt()}x${screenH.toInt()} last=$lastVideoFrameAt")
             }
             // Screen-off power save: the texture was already updated above, so
             // playback state keeps advancing; just skip the invisible draw +
@@ -1189,16 +2823,21 @@ class WallpaperRenderer(
                 lastVideoFrameAt = now
                 return
             }
-            // Clear the whole framebuffer first. In FIT/STRETCH-less modes the
-            // video quad does not cover the full screen; without clearing, the
-            // letterbox area keeps showing the PREVIOUS video's last frame
-            // (user-visible as "the old video stays on screen after switching").
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-            // Belt-and-suspenders: draw real black pixels over the whole
-            // surface. Some devices/drivers do not fully invalidate preserved
-            // window buffers on glClear alone, which left the previous video
-            // visible in the FIT letterbox even after the clear was added.
-            drawBlackBackground()
+            // Only wipe the framebuffer when the video quad leaves part of the
+            // window uncovered (FIT letterbox): there the previous frame would
+            // otherwise stay visible ("the old video stays on screen after
+            // switching"). When the quad covers every pixel (FILL/STRETCH and
+            // fullscreen FIT) the clear is pure extra fill rate - it writes the
+            // whole 1440x3200 buffer just to have the opaque quad overwrite it
+            // again, which is a measurable share of the per-frame GPU cost for
+            // 60fps sources.
+            if (!videoQuadFullscreen) GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            // Belt-and-suspenders for the letterbox area: some devices/drivers
+            // do not fully invalidate preserved window buffers on glClear alone,
+            // so draw real black pixels there as well. Only for the letterbox
+            // case: FILL/STRETCH (and a fullscreen FIT) already overwrite every
+            // pixel, so this would be a wasted pass per video frame.
+            if (!videoQuadFullscreen) drawBlackBackground()
             GLES20.glUseProgram(videoProgram)
 
             val texMatLoc = videoTexMatLoc
@@ -1206,15 +2845,12 @@ class WallpaperRenderer(
             val posLoc = videoPosLoc
             val tcLoc = videoTcLoc
 
-            GLES20.glUniformMatrix4fv(texMatLoc, 1, false, texMatrix, 0)
+            GLES20.glUniformMatrix4fv(texMatLoc, 1, false, effectiveMatrix, 0)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, videoTexId)
             GLES20.glUniform1i(texLoc, 0)
-            GLES20.glUniform2f(
-                videoTexelLoc,
-                if (videoSourceW > 0f) 1f / videoSourceW else 1f,
-                if (videoSourceH > 0f) 1f / videoSourceH else 1f
-            )
+            updateVideoScreenTexelDelta()
+            GLES20.glUniform2f(videoTexelLoc, videoTexelX, videoTexelY)
             GLES20.glUniform1f(videoSharpLoc, sharpnessFor(videoDisplayW, videoDisplayH, videoScaleMode))
 
             vertexBuffer?.position(0)
@@ -1229,12 +2865,25 @@ class WallpaperRenderer(
             val swapped = EGL14.eglSwapBuffers(eglDisplay, eglSurface)
             if (swapped) {
                 lastVideoFrameAt = now
+                // First real frame of this video on screen: let the engine start
+                // the fade now (see onFirstVideoFrame).
+                if (videoFirstFramePending.compareAndSet(true, false)) {
+                    try {
+                        onFirstVideoFrame?.invoke()
+                    } catch (t: Throwable) {
+                        AppLog.e(TAG, "onFirstVideoFrame callback failed", t)
+                    }
+                }
             } else {
-                Log.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
+                // Per frame on a broken surface: throttle it (see above).
+                if (now - lastFrameWarnAt > FRAME_WARN_INTERVAL_MS) {
+                    lastFrameWarnAt = now
+                    AppLog.w(TAG, "eglSwapBuffers failed: ${EGL14.eglGetError()}")
+                }
             }
             lastRenderWasImage = false
         } catch (t: Throwable) {
-            Log.e(TAG, "renderVideoFrame failed", t)
+            AppLog.e(TAG, "renderVideoFrame failed", t)
         }
     }
 
@@ -1250,10 +2899,8 @@ class WallpaperRenderer(
      * The caller (stopVideoAndRender) will immediately draw the new image.
      */
     private fun cleanupVideoResourcesOnRenderThread() {
-        // Reset the render-rate window so the per-minute diagnostics only
-        // measure continuous playback, not idle gaps between switches.
-        renderFpsWindowStart = 0L
-        renderFpsCount = 0
+        logPassFrameRate()
+        videoQuadFullscreen = false
         try { surfaceTexture?.release() } catch (_: Exception) {}
         surfaceTexture = null
         try { codecSurface?.release() } catch (_: Exception) {}
@@ -1272,30 +2919,76 @@ class WallpaperRenderer(
         val ver = IntArray(2)
         if (!EGL14.eglInitialize(eglDisplay, ver, 0, ver, 1)) return
 
-        val configAttribs = intArrayOf(
-            EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
-            EGL14.EGL_ALPHA_SIZE, 8,
-            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
-            EGL14.EGL_NONE
+        // Some devices/GPUs (e.g. Xiaomi/HyperOS tablets) reject the first
+        // RGBA8888 + ES2 window config and eglCreateWindowSurface then fails,
+        // which left the wallpaper black. Try a few configs in order:
+        // RGBA8888 -> RGB888 (no alpha) -> RGB565, and use the first that
+        // eglChooseConfig accepts.
+        val configCandidates = arrayOf(
+            intArrayOf(
+                EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
+                EGL14.EGL_ALPHA_SIZE, 8, EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT, EGL14.EGL_NONE
+            ),
+            intArrayOf(
+                EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
+                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT, EGL14.EGL_NONE
+            ),
+            intArrayOf(
+                EGL14.EGL_RED_SIZE, 5, EGL14.EGL_GREEN_SIZE, 6, EGL14.EGL_BLUE_SIZE, 5,
+                EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
+                EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT, EGL14.EGL_NONE
+            )
         )
-        val configs = arrayOfNulls<EGLConfig>(1)
-        val num = IntArray(1)
-        EGL14.eglChooseConfig(eglDisplay, configAttribs, 0, configs, 0, 1, num, 0)
-        eglConfig = configs[0] ?: return
+        eglConfig = null
+        for (attribs in configCandidates) {
+            val configs = arrayOfNulls<EGLConfig>(1)
+            val num = IntArray(1)
+            EGL14.eglChooseConfig(eglDisplay, attribs, 0, configs, 0, 1, num, 0)
+            if (configs[0] != null) {
+                eglConfig = configs[0]
+                break
+            }
+        }
+        if (eglConfig == null) {
+            AppLog.e(TAG, "No usable EGL config found")
+            return
+        }
 
         val ctxAttribs = intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE)
         eglContext = EGL14.eglCreateContext(eglDisplay, eglConfig, EGL14.EGL_NO_CONTEXT, ctxAttribs, 0)
-        if (eglContext == EGL14.EGL_NO_CONTEXT) return
+        if (eglContext == EGL14.EGL_NO_CONTEXT) {
+            AppLog.e(TAG, "EGL context creation failed")
+            return
+        }
         contextReady = true
 
         val surface = holder.surface
         if (surface != null && surface.isValid) createEglSurface()
     }
 
-    private fun createEglSurface() {
-        val surface = holder.surface ?: return
-        if (!surface.isValid) return
+    private fun createEglSurface(attempt: Int = 0) {
+        val surface = holder.surface
+        if (surface == null || !surface.isValid) {
+            // The Surface is transiently invalid while the display rotates on
+            // some devices. Retry briefly instead of leaving the wallpaper
+            // black until the next surface event.
+            if (attempt < 3) {
+                renderHandler?.postDelayed({ createEglSurface(attempt + 1) }, 200L)
+            } else {
+                AppLog.e(TAG, "Surface invalid after $attempt retries")
+            }
+            return
+        }
+
+        // A delayed retry scheduled during an EARLIER rotation can run after a
+        // newer surface was already created successfully. Recreating it then
+        // would only flicker/re-tear the healthy surface, so skip stale
+        // retries when the renderer is already ready.
+        if (attempt > 0 && surfaceReady && eglSurface != EGL14.EGL_NO_SURFACE) {
+            return
+        }
 
         if (eglSurface != EGL14.EGL_NO_SURFACE) {
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, eglContext)
@@ -1305,7 +2998,13 @@ class WallpaperRenderer(
 
         val attribs = intArrayOf(EGL14.EGL_NONE)
         eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, eglConfig, surface, attribs, 0)
-        if (eglSurface == EGL14.EGL_NO_SURFACE) return
+        if (eglSurface == EGL14.EGL_NO_SURFACE) {
+            AppLog.e(TAG, "eglCreateWindowSurface failed (attempt $attempt): ${EGL14.eglGetError()}")
+            if (attempt < 3) {
+                renderHandler?.postDelayed({ createEglSurface(attempt + 1) }, 200L)
+            }
+            return
+        }
 
         if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
             // Destroy the old context before creating a new one to avoid leak
@@ -1334,7 +3033,7 @@ class WallpaperRenderer(
         surfaceReady = true
         screenW = qr[0].toFloat()
         screenH = qr[1].toFloat()
-        Log.d(TAG, "EGL surface: ${qr[0]}x${qr[1]}")
+        AppLog.d(TAG, "EGL surface: ${qr[0]}x${qr[1]}")
     }
 
     private fun destroyEglSurface() {
@@ -1435,7 +3134,7 @@ class WallpaperRenderer(
         val linked = IntArray(1)
         GLES20.glGetProgramiv(p, GLES20.GL_LINK_STATUS, linked, 0)
         if (linked[0] == 0) {
-            Log.e(TAG, "Program link error: ${GLES20.glGetProgramInfoLog(p)}")
+            AppLog.e(TAG, "Program link error: ${GLES20.glGetProgramInfoLog(p)}")
             GLES20.glDeleteProgram(p)
             GLES20.glDeleteShader(vs); GLES20.glDeleteShader(fs)
             return 0
@@ -1451,7 +3150,7 @@ class WallpaperRenderer(
         val compiled = IntArray(1)
         GLES20.glGetShaderiv(s, GLES20.GL_COMPILE_STATUS, compiled, 0)
         if (compiled[0] == 0) {
-            Log.e(TAG, "Shader compile error: ${GLES20.glGetShaderInfoLog(s)}")
+            AppLog.e(TAG, "Shader compile error: ${GLES20.glGetShaderInfoLog(s)}")
             GLES20.glDeleteShader(s)
             return 0
         }
@@ -1460,5 +3159,103 @@ class WallpaperRenderer(
 
     private fun MediaFormat.getIntegerSafe(key: String): Int {
         return try { getInteger(key) } catch (_: Exception) { 0 }
+    }
+
+    /**
+     * Re-submit the codec-specific data (`csd-0`/`csd-1`/`csd-2`) to a decoder
+     * that is being reused for a loop restart.
+     *
+     * `MediaCodec.flush()` keeps the configured format, so this is normally a
+     * no-op - but several vendor decoders (Qualcomm among them) only resume
+     * producing frames after the SPS/PPS have been handed to them again, which
+     * is the same workaround ExoPlayer applies after a flush. A failure here is
+     * harmless: the pass that then presents no frame drops the session and the
+     * next pass rebuilds the codec from scratch.
+     */
+    private fun requeueCodecSpecificData(codec: MediaCodec, format: MediaFormat) {
+        for (key in CODEC_CONFIG_KEYS) {
+            val src = try { format.getByteBuffer(key) } catch (_: Exception) { null } ?: continue
+            try {
+                src.position(0)
+                val size = src.remaining()
+                if (size <= 0) continue
+                val inIdx = codec.dequeueInputBuffer(10_000L)
+                if (inIdx < 0) continue
+                val dst = codec.getInputBuffer(inIdx) ?: continue
+                dst.clear()
+                val copy = minOf(size, dst.capacity())
+                src.limit(copy)
+                dst.put(src)
+                codec.queueInputBuffer(
+                    inIdx, 0, copy, 0L, MediaCodec.BUFFER_FLAG_CODEC_CONFIG
+                )
+            } catch (t: Throwable) {
+                AppLog.d(TAG, "CSD re-submit failed ($key): ${t.message}")
+            }
+        }
+    }
+
+    /**
+     * Report the frame rate actually presented for the playback pass that just
+     * ended, then reset the window. This is the line to compare against the
+     * source frame rate logged by "Video started".
+     *
+     * Called both when the session is torn down (switch / rotation) and at every
+     * LOOP restart - a warm session keeps its GL resources, so the teardown path
+     * no longer runs on a loop, and without this the per-pass numbers would
+     * disappear entirely for a video that just loops.
+     */
+    private fun logPassFrameRate() {
+        if (renderFpsWindowStart > 0L && renderFpsCount > 0) {
+            val elapsed = (SystemClock.elapsedRealtime() - renderFpsWindowStart).coerceAtLeast(1L)
+            AppLog.d(
+                TAG,
+                "Video pass: %d frames presented in %dms (%.1f fps)".format(
+                    renderFpsCount, elapsed, renderFpsCount * 1000f / elapsed
+                )
+            )
+        }
+        // Reset the window so the per-minute diagnostic only measures continuous
+        // playback, not idle gaps between switches.
+        renderFpsWindowStart = 0L
+        renderFpsCount = 0
+    }
+
+    /**
+     * Copy a content URI into the app cache as a seekable file. Used when a
+     * provider (common on non-Xiaomi devices / cloud pickers) returns a
+     * descriptor MediaExtractor cannot seek in, which otherwise made videos
+     * display black. The copy is deleted as soon as the decode round ends.
+     */
+    private fun copyVideoToCache(uriStr: String): java.io.File? {
+        return try {
+            val dir = java.io.File(context.cacheDir, "video_cache").apply { mkdirs() }
+            // Best-effort cleanup of stale copies from previous sessions.
+            try {
+                val stale = dir.listFiles()
+                if (stale != null && stale.size > 4) {
+                    stale.sortedBy { it.lastModified() }
+                        .take(stale.size - 4)
+                        .forEach { it.delete() }
+                }
+            } catch (_: Exception) {
+            }
+            val out = java.io.File(
+                dir,
+                "video_${SystemClock.elapsedRealtime()}_${uriStr.hashCode()}.mp4"
+            )
+            context.contentResolver.openInputStream(Uri.parse(uriStr))?.use { input ->
+                out.outputStream().use { output -> input.copyTo(output, 256 * 1024) }
+            } ?: return null
+            if (out.length() <= 0L) {
+                out.delete()
+                null
+            } else {
+                out
+            }
+        } catch (t: Throwable) {
+            AppLog.e(TAG, "copyVideoToCache failed: ${LogText.short(uriStr)}", t)
+            null
+        }
     }
 }

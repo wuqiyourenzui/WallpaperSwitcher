@@ -1,10 +1,13 @@
 package com.wallpaperswitcher.engine
 
+import com.wallpaperswitcher.util.AppLog
+
+import com.wallpaperswitcher.util.LogText
+
 import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
-import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -17,7 +20,10 @@ data class ScannedFolder(
     val name: String,
     val imageCount: Int,
     val videoCount: Int = 0,
-    val sampleUris: List<String> = emptyList()
+    val sampleUris: List<String> = emptyList(),
+    // Newest DATE_ADDED among the folder's media (seconds since epoch), used
+    // for the "时间排序" folder order. 0 when unknown.
+    val newestAddedAt: Long = 0
 ) {
     val totalCount: Int get() = imageCount + videoCount
 }
@@ -25,7 +31,12 @@ data class ScannedFolder(
 data class FolderMedia(
     val uri: String,
     val displayName: String,
-    val mediaType: String
+    val mediaType: String,
+    /** Stored pixel size (0 when the provider does not report it). */
+    val width: Int = 0,
+    val height: Int = 0,
+    /** EXIF rotation in degrees; 0 = none/unknown. */
+    val rotationDegrees: Int = 0
 )
 
 /**
@@ -36,16 +47,60 @@ object MediaScanner {
 
     private const val TAG = "MediaScanner"
     private val blockedFolders = setOf("android", ".thumbnails", ".cache", ".trash", "obb")
+    // Recursion bound for SAF tree scans (see queryDocumentFolder).
+    private const val MAX_SCAN_DEPTH = 24
+    /**
+     * Result and MediaStore generation of the last completed scan (see
+     * [scanFolders]).
+     *
+     * A folder scan reads one row per media file, so it is only repeated when
+     * the media store really changed: [MediaStore.getGeneration] is bumped by
+     * the provider on every insert/update/delete, which is exactly "a new file
+     * may have appeared in one of the folders this list is built from".
+     */
+    @Volatile private var lastScanGeneration = Long.MIN_VALUE
+    @Volatile private var lastScanFolders: List<ScannedFolder>? = null
+
+    /**
+     * MediaStore generation (a counter the provider bumps whenever media is
+     * added, changed or removed), or [Long.MIN_VALUE] when the platform cannot
+     * provide one (Android 10 and older).
+     */
+    internal fun currentGeneration(context: Context): Long {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return Long.MIN_VALUE
+        return try {
+            MediaStore.getGeneration(context, MediaStore.VOLUME_EXTERNAL)
+        } catch (_: Exception) {
+            Long.MIN_VALUE
+        }
+    }
 
     suspend fun scanFolders(context: Context): List<ScannedFolder> = withContext(Dispatchers.IO) {
+        // Reuse the previous result while the media store has not changed: the
+        // picker opening again - or "重新扫描" being pressed twice - must not walk
+        // every media row for an answer that cannot have changed. The caller
+        // (WallpaperViewModel.rescanFolders) still reports the count to the user,
+        // and an actual insert/update/delete bumps the generation and does
+        // trigger a fresh walk.
+        val generation = currentGeneration(context)
+        if (generation != Long.MIN_VALUE) {
+            val cached = lastScanFolders
+            if (cached != null && generation == lastScanGeneration) {
+                AppLog.d(
+                    TAG,
+                    "scanFolders: media store unchanged (gen=$generation), " +
+                        "reusing ${cached.size} folders"
+                )
+                return@withContext cached
+            }
+        }
         try {
             val counts = mutableMapOf<String, IntArray>() // path -> [image, video]
             val names = mutableMapOf<String, String>()
             val samples = mutableMapOf<String, MutableList<String>>()
+            val newestAdded = mutableMapOf<String, Long>() // path -> latest date_added
 
-            // Index each MediaStore table and aggregate per folder on the fly:
-            // never build a full list of every media row, which can be huge and
-            // OOM on devices with large libraries.
+            // Index each MediaStore table and aggregate per folder on the fly.
             fun index(isVideo: Boolean) {
                 val contentResolver = context.contentResolver
                 val collectionUri = if (isVideo) {
@@ -53,25 +108,48 @@ object MediaScanner {
                 } else {
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI
                 }
-                val useRelativePath = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
-                val projection = if (useRelativePath) {
-                    arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.RELATIVE_PATH)
+                // One pass per table: the rows cannot be aggregated by the
+                // provider, so this walks them in a single cursor and keeps only
+                // per-folder counters, a few sample ids and the newest timestamp
+                // - never a list of every media row (huge/OOM on big libraries).
+                //
+                // A "COUNT(*) ... GROUP BY" short cut (one row per folder) is
+                // deliberately NOT used: the MediaStore provider validates every
+                // projection entry as a column name and rejects aggregate
+                // expressions with `IllegalArgumentException: Invalid column
+                // COUNT(*) AS c`. Verified on AOSP 14 and on MIUI with all three
+                // spellings - positional query, QUERY_ARG_SQL_GROUP_BY and
+                // QUERY_ARG_GROUP_COLUMNS - so the pass below is the only
+                // portable implementation. (An OEM whose provider does allow it
+                // would only be faster, not more correct.)
+                val projection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    arrayOf(
+                        MediaStore.Images.Media._ID,
+                        MediaStore.Images.Media.RELATIVE_PATH,
+                        MediaStore.Images.Media.DATE_ADDED
+                    )
                 } else {
                     @Suppress("DEPRECATION")
-                    arrayOf(MediaStore.Images.Media._ID, MediaStore.Images.Media.DATA)
+                    arrayOf(
+                        MediaStore.Images.Media._ID,
+                        MediaStore.Images.Media.DATA,
+                        MediaStore.Images.Media.DATE_ADDED
+                    )
                 }
                 contentResolver.query(collectionUri, projection, null, null, null)?.use { cursor ->
                     val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
                     val pathCol = cursor.getColumnIndex(
-                        if (useRelativePath) MediaStore.Images.Media.RELATIVE_PATH
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                            MediaStore.Images.Media.RELATIVE_PATH
                         else MediaStore.Images.Media.DATA
                     )
+                    val addedCol = cursor.getColumnIndex(MediaStore.Images.Media.DATE_ADDED)
                     while (cursor.moveToNext()) {
                         try {
                             val id = cursor.getLong(idCol)
                             val rawPath = if (pathCol >= 0) cursor.getString(pathCol) else null
                             if (rawPath.isNullOrBlank()) continue
-                            val folderKey = if (useRelativePath) {
+                            val folderKey = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                                 rawPath.trimEnd('/')
                             } else {
                                 @Suppress("DEPRECATION")
@@ -80,6 +158,11 @@ object MediaScanner {
                             if (folderKey.isEmpty()) continue
                             val c = counts.getOrPut(folderKey) { IntArray(2) }
                             c[if (isVideo) 1 else 0]++
+                            if (addedCol >= 0) {
+                                val added = cursor.getLong(addedCol)
+                                val old = newestAdded[folderKey]
+                                if (old == null || added > old) newestAdded[folderKey] = added
+                            }
                             names.putIfAbsent(folderKey, folderKey.substringAfterLast('/').ifEmpty { "Root" })
                             val list = samples.getOrPut(folderKey) { mutableListOf() }
                             if (list.size < 3) {
@@ -99,16 +182,25 @@ object MediaScanner {
                     name = names[path] ?: path,
                     imageCount = c[0],
                     videoCount = c[1],
-                    sampleUris = samples[path] ?: emptyList()
+                    sampleUris = samples[path] ?: emptyList(),
+                    newestAddedAt = newestAdded[path] ?: 0L
                 )
             }
                 .filter { it.totalCount >= 1 }
                 .filter { f -> f.path.split("/").none { it.lowercase() in blockedFolders } }
                 .sortedByDescending { it.totalCount }
-            Log.d(TAG, "scanFolders: found ${result.size} folders")
+            AppLog.d(TAG, "scanFolders: found ${result.size} folders")
+            // Remembered against the generation read BEFORE the walk: a change
+            // that happened while scanning means the stored generation is older
+            // than the data, so the next scan walks again instead of trusting a
+            // list that may already be missing a file.
+            if (result.isNotEmpty() && generation != Long.MIN_VALUE) {
+                lastScanFolders = result
+                lastScanGeneration = generation
+            }
             result
         } catch (e: Throwable) {
-            Log.e(TAG, "scanFolders failed", e)
+            AppLog.e(TAG, "scanFolders failed", e)
             emptyList()
         }
     }
@@ -118,7 +210,7 @@ object MediaScanner {
         withContext(Dispatchers.IO) {
             val media = queryByFolder(context, folderPath, isVideo = false) +
                 queryByFolder(context, folderPath, isVideo = true)
-            Log.d(TAG, "queryFolderMedia: $folderPath -> ${media.size} items")
+            AppLog.d(TAG, "queryFolderMedia: ${LogText.folder(folderPath)} -> ${media.size} items")
             media
         }
 
@@ -132,12 +224,15 @@ object MediaScanner {
                 val docFile = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext emptyList()
                 if (!docFile.isDirectory) return@withContext emptyList()
                 val result = mutableListOf<FolderMedia>()
-                fun scanDir(dir: DocumentFile) {
+                // Bound the recursion depth: a pathological tree (1000+ levels
+                // of nesting) would otherwise StackOverflow on the IO thread.
+                fun scanDir(dir: DocumentFile, depth: Int) {
+                    if (depth > MAX_SCAN_DEPTH) return
                     val files = try { dir.listFiles() } catch (_: Exception) { emptyArray() }
                     for (f in files) {
                         try {
                             if (f.isDirectory) {
-                                scanDir(f)
+                                scanDir(f, depth + 1)
                             } else if (f.isFile && isSupportedMedia(f.name ?: "")) {
                                 result.add(
                                     FolderMedia(
@@ -150,34 +245,26 @@ object MediaScanner {
                         } catch (_: Exception) { continue }
                     }
                 }
-                scanDir(docFile)
-                Log.d(TAG, "queryDocumentFolder: $treeUri -> ${result.size} items")
+                scanDir(docFile, 0)
+                AppLog.d(TAG, "queryDocumentFolder: ${LogText.short(treeUri)} -> ${result.size} items")
                 result
             } catch (e: Throwable) {
-                Log.e(TAG, "queryDocumentFolder failed: $treeUri", e)
+                AppLog.e(TAG, "queryDocumentFolder failed: ${LogText.short(treeUri)}", e)
                 emptyList()
             }
         }
 
-    fun isSupportedMedia(name: String): Boolean {
-        val ext = name.lowercase().substringAfterLast('.', "")
-        return ext in listOf("jpg", "jpeg", "png", "webp", "bmp", "gif", "mp4", "mkv", "webm", "avi", "mov", "3gp")
-    }
+    /** See [MediaTypes.isSupportedName]; kept here for the scanner's callers. */
+    fun isSupportedMedia(name: String): Boolean = MediaTypes.isSupportedName(name)
 
-    fun detectMediaType(name: String): String {
-        val ext = name.lowercase().substringAfterLast('.', "")
-        return when (ext) {
-            "gif" -> "GIF"
-            "mp4", "mkv", "webm", "avi", "mov", "3gp" -> "VIDEO"
-            else -> "IMAGE"
-        }
-    }
+    /** See [MediaTypes.fromName]; kept here for the scanner's callers. */
+    fun detectMediaType(name: String): String = MediaTypes.fromName(name)
 
     /**
      * Escape SQL LIKE wildcards so a folder path is matched literally.
      * Backslash must be escaped first (it is the ESCAPE character itself).
      */
-    private fun escapeLike(s: String): String =
+    internal fun escapeLike(s: String): String =
         s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     private fun queryByFolder(context: Context, folderPath: String, isVideo: Boolean): List<FolderMedia> {
@@ -189,7 +276,13 @@ object MediaScanner {
         }
         val projection = arrayOf(
             MediaStore.Images.Media._ID,
-            MediaStore.Images.Media.DISPLAY_NAME
+            MediaStore.Images.Media.DISPLAY_NAME,
+            // Free decode metadata: the same query already touches these rows,
+            // so storing them costs NOTHING extra and saves two media-library
+            // reads per later decode (bounds pass + EXIF pass).
+            MediaStore.Images.Media.WIDTH,
+            MediaStore.Images.Media.HEIGHT,
+            MediaStore.Images.Media.ORIENTATION
         )
         val selection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             "${MediaStore.Images.Media.RELATIVE_PATH} LIKE ? ESCAPE '\\' AND ${MediaStore.Images.Media.SIZE} > 0"
@@ -208,13 +301,29 @@ object MediaScanner {
         )?.use { cursor ->
             val idCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
             val nameCol = cursor.getColumnIndexOrThrow(MediaStore.Images.Media.DISPLAY_NAME)
+            val widthCol = cursor.getColumnIndex(MediaStore.Images.Media.WIDTH)
+            val heightCol = cursor.getColumnIndex(MediaStore.Images.Media.HEIGHT)
+            val orientationCol = cursor.getColumnIndex(MediaStore.Images.Media.ORIENTATION)
             while (cursor.moveToNext()) {
                 try {
                     val id = cursor.getLong(idCol)
                     val name = cursor.getString(nameCol) ?: "untitled"
                     val uri = Uri.withAppendedPath(collectionUri, id.toString()).toString()
-                    val mediaType = if (isVideo) "VIDEO" else "IMAGE"
-                    result.add(FolderMedia(uri, name, mediaType))
+                    // MediaStore folders also contain GIFs: detect them by the
+                    // display-name extension so they enter the animated-GIF
+                    // path instead of being treated as static IMAGE rows.
+                    val mediaType = if (isVideo) MediaTypes.VIDEO else detectMediaType(name)
+                    result.add(
+                        FolderMedia(
+                            uri = uri,
+                            displayName = name,
+                            mediaType = mediaType,
+                            width = if (widthCol >= 0) cursor.getInt(widthCol) else 0,
+                            height = if (heightCol >= 0) cursor.getInt(heightCol) else 0,
+                            rotationDegrees =
+                                if (orientationCol >= 0) cursor.getInt(orientationCol) else 0
+                        )
+                    )
                 } catch (_: Exception) { continue }
             }
         }

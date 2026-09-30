@@ -16,13 +16,7 @@ interface WallpaperGroupDao {
     fun getAllGroups(): Flow<List<WallpaperGroup>>
 
     @Query("SELECT * FROM wallpaper_groups WHERE isEnabled = 1")
-    fun getEnabledGroups(): Flow<List<WallpaperGroup>>
-
-    @Query("SELECT * FROM wallpaper_groups WHERE isEnabled = 1")
     suspend fun getEnabledGroupsSync(): List<WallpaperGroup>
-
-    @Query("SELECT * FROM wallpaper_groups WHERE isEnabled = 1 AND type = :type")
-    suspend fun getEnabledGroupsByType(type: String): List<WallpaperGroup>
 
     @Query("SELECT * FROM wallpaper_groups WHERE id = :id")
     suspend fun getGroupById(id: Long): WallpaperGroup?
@@ -36,21 +30,16 @@ interface WallpaperGroupDao {
     @Update
     suspend fun update(group: WallpaperGroup)
 
+    /** Change where this group's media may be shown (HOME / LOCK / BOTH). */
+    @Query("UPDATE wallpaper_groups SET target = :target WHERE id = :id")
+    suspend fun updateTarget(id: Long, target: String)
+
     @Delete
     suspend fun delete(group: WallpaperGroup)
-
-    @Query("DELETE FROM wallpaper_groups WHERE id = :id")
-    suspend fun deleteById(id: Long)
 }
 
 @Dao
 interface WallpaperImageDao {
-
-    @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC")
-    fun getImagesByGroup(groupId: Long): Flow<List<WallpaperImage>>
-
-    @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC LIMIT :limit OFFSET :offset")
-    suspend fun getImagesByGroupPaged(groupId: Long, limit: Int, offset: Int): List<WallpaperImage>
 
     @Query("SELECT COUNT(*) FROM wallpaper_images WHERE groupId = :groupId")
     suspend fun getImageCountByGroup(groupId: Long): Int
@@ -64,53 +53,43 @@ interface WallpaperImageDao {
     @Query("SELECT DISTINCT groupId, folderPath FROM wallpaper_images WHERE isFromFolder = 1 AND folderPath != ''")
     suspend fun getScannedFolderPaths(): List<ScannedFolderPath>
 
-    @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC")
+    @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC, id DESC")
     suspend fun getImagesByGroupSync(groupId: Long): List<WallpaperImage>
 
     @Query("SELECT * FROM wallpaper_images WHERE id = :id")
     suspend fun getImageById(id: Long): WallpaperImage?
 
-    @Query("SELECT * FROM wallpaper_images LIMIT 1")
-    suspend fun getFirstImage(): WallpaperImage?
-
+    // Every cross-group query takes the screen [slot] it is picking for
+    // ("HOME" or "LOCK"): a group only contributes to the screen(s) it targets
+    // (target = 'BOTH' always matches). This is what makes the home screen and
+    // the lock screen switch independently from different groups.
     @Query("""
         SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        WHERE groupId IN (
+            SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND target IN ('BOTH', :slot)
+        )
+        AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
         ORDER BY id ASC LIMIT 1
     """)
-    suspend fun getFirstFromEnabledGroups(): WallpaperImage?
-
-    // --- Group-specific queries ---
-
-    @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY RANDOM() LIMIT 1")
-    suspend fun getRandomImageFromGroup(groupId: Long): WallpaperImage?
-
-    @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId AND id != :excludeId ORDER BY RANDOM() LIMIT 1")
-    suspend fun getRandomImageFromGroupExcluding(groupId: Long, excludeId: Long): WallpaperImage?
-
-    @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt ASC LIMIT 1 OFFSET :offset")
-    suspend fun getSequentialImageFromGroup(groupId: Long, offset: Int): WallpaperImage?
-
-    @Query("SELECT COUNT(*) FROM wallpaper_images WHERE groupId = :groupId")
-    suspend fun countByGroup(groupId: Long): Int
+    suspend fun getFirstFromEnabledGroups(slot: String): WallpaperImage?
 
     // --- Cross-group queries (for wallpaper switching) ---
 
+    // Item-based SEQUENTIAL cursor: the next enabled media with an id strictly
+    // greater than the last displayed id (ORDER BY id is the same order used
+    // by getFirstFromEnabledGroups). Unlike an offset cursor, this never skips
+    // an item when media is deleted or a group is disabled between switches —
+    // the caller wraps to the first row when this returns null.
     @Query("""
         SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
-        ORDER BY id ASC LIMIT 1 OFFSET :offset
+        WHERE groupId IN (
+            SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND target IN ('BOTH', :slot)
+        )
+        AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
+        AND id > :lastId
+        ORDER BY id ASC LIMIT 1
     """)
-    suspend fun getSequentialImageFromEnabledGroups(offset: Int): WallpaperImage?
-
-    // Number of enabled media with a smaller id: the 0-based position of
-    // targetId in the id-ordered sequence used by SEQUENTIAL mode.
-    @Query("""
-        SELECT COUNT(*) FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
-        AND id < :targetId
-    """)
-    suspend fun getSequentialIndexBefore(targetId: Long): Int
+    suspend fun getSequentialImageFromEnabledGroupsAfter(slot: String, lastId: Long): WallpaperImage?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(image: WallpaperImage): Long
@@ -121,11 +100,24 @@ interface WallpaperImageDao {
     @Delete
     suspend fun delete(image: WallpaperImage)
 
-    @Query("DELETE FROM wallpaper_images WHERE id = :id")
-    suspend fun deleteById(id: Long)
+    /**
+     * Repair the stored media type of one item (used by the engine's
+     * self-heal: media added by an older build could be mis-typed as IMAGE
+     * while the file is really a video/GIF, which made it display black).
+     */
+    @Query("UPDATE wallpaper_images SET mediaType = :mediaType WHERE id = :id")
+    suspend fun updateMediaType(id: Long, mediaType: String)
 
-    @Query("DELETE FROM wallpaper_images WHERE groupId = :groupId")
-    suspend fun deleteByGroup(groupId: Long)
+    /**
+     * Remember the decode metadata of one media (see [WallpaperImage.width]).
+     * Matched by URI because the same file can be listed in several groups and
+     * the caller only knows the URI it just decoded.
+     */
+    @Query(
+        "UPDATE wallpaper_images SET width = :width, height = :height, " +
+            "rotationDegrees = :rotationDegrees WHERE uri = :uri"
+    )
+    suspend fun updateMediaMeta(uri: String, width: Int, height: Int, rotationDegrees: Int)
 
     @Query("DELETE FROM wallpaper_images WHERE id IN (:ids)")
     suspend fun deleteByIds(ids: List<Long>)
@@ -134,73 +126,73 @@ interface WallpaperImageDao {
 
     @Query("""
         SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        WHERE groupId IN (
+            SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND target IN ('BOTH', :slot)
+        )
+        AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
         ORDER BY RANDOM() LIMIT 1
     """)
-    suspend fun getRandomImageFromEnabledGroups(): WallpaperImage?
+    suspend fun getRandomImageFromEnabledGroups(slot: String): WallpaperImage?
 
     @Query("""
         SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        WHERE groupId IN (
+            SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND target IN ('BOTH', :slot)
+        )
+        AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
         AND id != :excludeId
         ORDER BY RANDOM() LIMIT 1
     """)
-    suspend fun getRandomImageFromEnabledGroupsExcluding(excludeId: Long): WallpaperImage?
+    suspend fun getRandomImageFromEnabledGroupsExcluding(slot: String, excludeId: Long): WallpaperImage?
 
-    // Fast random picks: ORDER BY RANDOM() sorts the whole table on every
-    // switch, which is slow and power-hungry on large libraries. These use a
-    // random OFFSET instead (with the ORDER BY RANDOM() variants kept as a
+    /**
+     * Every id that may be shown on [slot], in the same order as
+     * [getFirstFromEnabledGroups] and the sequential cursor.
+     *
+     * Used by the SHUFFLE deck: the "already shown" set is filtered in memory
+     * (see MediaPick.shuffleUnseen) instead of being passed to SQL as an
+     * `id NOT IN (...)` list, which throws as soon as one group holds more
+     * media than SQLite allows bound variables (999 on older builds) - the
+     * switch then failed completely instead of showing a wallpaper.
+     */
+    @Query("""
+        SELECT id FROM wallpaper_images
+        WHERE groupId IN (
+            SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND target IN ('BOTH', :slot)
+        )
+        AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
+        ORDER BY id ASC
+    """)
+    suspend fun getEnabledIds(slot: String): List<Long>
+
+    // Fast random pick: ORDER BY RANDOM() sorts the whole table on every
+    // switch, which is slow and power-hungry on large libraries. This uses a
+    // random OFFSET instead (with the ORDER BY RANDOM() variant kept as a
     // fallback when the offset lands on a deleted row gap).
     @Query("""
         SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
-        ORDER BY id LIMIT 1 OFFSET :offset
-    """)
-    suspend fun getRandomImageFromEnabledGroupsAt(offset: Int): WallpaperImage?
-
-    @Query("""
-        SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        WHERE groupId IN (
+            SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND target IN ('BOTH', :slot)
+        )
+        AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
         AND id != :excludeId
         ORDER BY id LIMIT 1 OFFSET :offset
     """)
-    suspend fun getRandomImageFromEnabledGroupsExcludingAt(excludeId: Long, offset: Int): WallpaperImage?
+    suspend fun getRandomImageFromEnabledGroupsExcludingAt(
+        slot: String,
+        excludeId: Long,
+        offset: Int
+    ): WallpaperImage?
 
     @Query("""
         SELECT COUNT(*) FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1)
+        WHERE groupId IN (
+            SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND target IN ('BOTH', :slot)
+        )
+        AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
     """)
-    suspend fun countByEnabledGroups(): Int
+    suspend fun countByEnabledGroups(slot: String): Int
 
-    // --- Type-filtered queries (IMAGE groups only or VIDEO groups only) ---
-
-    @Query("""
-        SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND type = :groupType)
-        ORDER BY RANDOM() LIMIT 1
-    """)
-    suspend fun getRandomFromEnabledGroupsByType(groupType: String): WallpaperImage?
-
-    @Query("""
-        SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND type = :groupType)
-        AND id != :excludeId
-        ORDER BY RANDOM() LIMIT 1
-    """)
-    suspend fun getRandomFromEnabledGroupsByTypeExcluding(groupType: String, excludeId: Long): WallpaperImage?
-
-    @Query("""
-        SELECT * FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND type = :groupType)
-        ORDER BY id ASC LIMIT 1 OFFSET :offset
-    """)
-    suspend fun getSequentialFromEnabledGroupsByType(groupType: String, offset: Int): WallpaperImage?
-
-    @Query("""
-        SELECT COUNT(*) FROM wallpaper_images
-        WHERE groupId IN (SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND type = :groupType)
-    """)
-    suspend fun countByEnabledGroupsOfType(groupType: String): Int
 
     // --- Per-group media counts (home screen cards) ---
 
@@ -219,6 +211,35 @@ interface SettingsDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun setSetting(setting: AppSettings)
+
+    /** Drop a setting row that a removed feature used to write (housekeeping). */
+    @Query("DELETE FROM app_settings WHERE `key` = :key")
+    suspend fun deleteKey(key: String): Int
+}
+
+/**
+ * Persisted SHUFFLE deck state (see [ShuffleShown]).
+ *
+ * Used by both switch paths: the live wallpaper engine keeps the deck in memory
+ * and writes each newly shown id as it appears, the static applier reads/writes
+ * per tick.
+ */
+@Dao
+interface ShuffleDao {
+
+    @Query("SELECT mediaId FROM shuffle_shown WHERE slot = :slot")
+    suspend fun getShownIds(slot: String): List<Long>
+
+    /**
+     * Record one shown media. IGNORE, not REPLACE: the row already existing is
+     * the normal case (a re-shown id inside one pass) and must stay a no-op.
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertShown(rows: List<ShuffleShown>)
+
+    /** Start a new pass: every id shown on [slot] may be picked again. */
+    @Query("DELETE FROM shuffle_shown WHERE slot = :slot")
+    suspend fun clearSlot(slot: String)
 }
 
 suspend fun SettingsDao.getString(key: String, default: String = ""): String {
