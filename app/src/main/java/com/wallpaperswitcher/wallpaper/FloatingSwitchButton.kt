@@ -88,6 +88,27 @@ class FloatingSwitchButton private constructor(context: Context) {
         private var shared: FloatingSwitchButton? = null
 
         /**
+         * Hide the process-wide button without going through the engine.
+         *
+         * The activity used to ask the engine (`dismissFloatingButtonIfAny`), which
+         * is a no-op while no engine is alive - and because the button is now
+         * process-wide it outlives an engine restart, so a button created by a
+         * previous engine instance stayed on screen after opening the app (user
+         * report: it did not disappear when entering the app). Hiding it directly
+         * also removes the delay, since the engine's own visibility callback only
+         * arrives after the activity window has been drawn.
+         */
+        fun hideShared() {
+            val instance = shared
+            if (instance == null) {
+                AppLog.d(TAG, "hideShared: no button instance in this process")
+                return
+            }
+            AppLog.d(TAG, "hideShared: hiding (id=${System.identityHashCode(instance)})")
+            instance.hideNow()
+        }
+
+        /**
          * The process-wide button. Engines come and go (the wallpaper is
          * re-applied, the picker's preview engine starts, ...); the overlay window
          * must not be re-created for each of them.
@@ -114,6 +135,8 @@ class FloatingSwitchButton private constructor(context: Context) {
     private var lastRawX = 0f
     private var lastRawY = 0f
     private var dragging = false
+    /** Y the window was parked at by [hideOverlay] (null while shown). */
+    private var hiddenY: Int? = null
 
     /** URI currently loaded into [imageView] (or being loaded). */
     private var activeImageUri: String? = null
@@ -175,6 +198,17 @@ class FloatingSwitchButton private constructor(context: Context) {
             if (existing.visibility != View.VISIBLE) {
                 existing.visibility = View.VISIBLE
                 setTouchable(true)
+                // Undo what hideOverlay() did to the window (see there): the ROM
+                // keeps drawing a hidden overlay's last buffer, so hiding parks the
+                // window transparent and off-screen.
+                layoutParams?.let { lp ->
+                    lp.alpha = 1f
+                    lp.y = hiddenY ?: lp.y
+                    hiddenY = null
+                    try {
+                        windowManager.updateViewLayout(existing, lp)
+                    } catch (_: Exception) {}
+                }
                 AppLog.d(TAG, "Floating button shown (id=${System.identityHashCode(this)})")
             }
             return
@@ -275,6 +309,13 @@ class FloatingSwitchButton private constructor(context: Context) {
     /**
      * Hide the button while keeping the window attached (no `removeView`, see the
      * class comment): the view goes invisible and stops accepting touches.
+     *
+     * A `GONE` view is not enough on MIUI: measured on the phone, the overlay
+     * window survived and kept the button visible over the app even though the
+     * hide ran 1ms after the activity started (the user report: the button did not
+     * disappear when entering the app). So the *window* is made invisible as well -
+     * alpha 0 plus parked above the screen - and `updateViewLayout` pushes the
+     * change through. [showOnDesktop] restores both.
      */
     fun hideOverlay() {
         val v = button ?: return
@@ -282,7 +323,24 @@ class FloatingSwitchButton private constructor(context: Context) {
         layoutParams?.let { persistPosition(it.x, it.y) }
         v.visibility = View.GONE
         setTouchable(false)
+        layoutParams?.let { lp ->
+            if (hiddenY == null) hiddenY = lp.y
+            lp.alpha = 0f
+            lp.y = -lp.height
+            try {
+                windowManager.updateViewLayout(v, lp)
+            } catch (_: Exception) {}
+        }
         AppLog.d(TAG, "Floating button hidden (id=${System.identityHashCode(this)})")
+    }
+
+    /** Hide from any thread (the activity's lifecycle callbacks use this). */
+    fun hideNow() {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            hideOverlay()
+        } else {
+            mainHandler.post { hideOverlay() }
+        }
     }
 
     /**

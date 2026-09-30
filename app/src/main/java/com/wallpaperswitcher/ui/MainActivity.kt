@@ -9,6 +9,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.wallpaperswitcher.util.AppLog
+import com.wallpaperswitcher.wallpaper.FloatingSwitchButton
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import com.wallpaperswitcher.service.WallpaperSwitchService
 import com.wallpaperswitcher.ui.theme.WallpaperSwitcherTheme
@@ -63,8 +65,14 @@ class MainActivity : ComponentActivity() {
         // background. Self-heal the timer whenever the app is brought back to
         // the foreground (and on every app launch).
         WallpaperSwitchService.ensureRunning(this)
-        // Hide the floating double-tap button the moment the app opens, so it
-        // never lingers over the UI during the window transition.
+        // Hide the floating button the moment the app opens, so it never lingers
+        // over the UI during the window transition.
+        //
+        // Two paths on purpose: the direct one works even when no wallpaper
+        // engine is alive (the button is process-wide and outlives an engine
+        // restart, so asking the engine used to leave it on screen), and the
+        // engine one also re-evaluates its own bookkeeping.
+        FloatingSwitchButton.hideShared()
         LiveWallpaperService.dismissFloatingButtonIfAny()
         // Re-evaluate the floating button (e.g. right after the user granted
         // the overlay permission in system settings) so it appears without
@@ -78,6 +86,12 @@ class MainActivity : ComponentActivity() {
         // onStop) must not fire while the grid is on screen.
         (application as? com.wallpaperswitcher.WallpaperSwitcherApp)
             ?.cancelThumbnailCacheTrim()
+        // Earliest chance to get the overlay out of the way: onStart runs before
+        // the activity window is drawn, so hiding here removes the button before
+        // the user ever sees it over the UI (the engine's visibility callback
+        // only arrives after the window animation).
+        AppLog.d(TAG, "onStart: hiding the floating button")
+        FloatingSwitchButton.hideShared()
         // Tell the wallpaper engine our UI is in front RIGHT NOW: its own
         // visibility callback lags behind the window animation, so without this
         // the video's audio kept playing (and the floating button kept showing)
@@ -102,5 +116,9 @@ class MainActivity : ComponentActivity() {
         // wake it now so the desktop resumes its normal interval immediately
         // instead of waiting for the loop's fallback re-check.
         WallpaperSwitchService.poke(this)
+    }
+
+    private companion object {
+        private const val TAG = "MainActivity"
     }
 }
