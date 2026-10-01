@@ -2670,6 +2670,25 @@ onSurfaceVariant = primary,     // ✗✗ 这是全应用的"次要文字"颜色
 **回归**：`ContainerContrastTest`（3 条 ✓：合成数学 + 浅色/深色两套方案对复合容器达 AA ✓，8 种刁钻主题色 ✓）、
 全套 **167 单测全绿** ✓、`lintDebug` 0 error ✓。
 
+#### 4.9.55 审查批次三：渲染路径资源与等待预算
+
+本批处理全仓审查里"渲染/拆解路径上的资源"这一类缺陷（R6/R15/R16）以及两处等待超预算（R8）。
+
+| 编号 | 位置 | 问题 | 修法 |
+|---|---|---|---|
+| R6 | `wallpaper/WallpaperRenderer.kt`（`setupEglContext` / `cleanupAll`） | 所有 renderer 都用 `eglGetDisplay(EGL_DEFAULT_DISPLAY)`，**同一进程共用同一句柄** ✓（主屏与预览可并存 ✓）；`eglInitialize` 失败时该句柄被保留 ✗，于是 `cleanupAll()` 会对一个**本实例从未初始化成功**的 display 调 `eglTerminate` ✗ —— init/terminate 计数失衡，可能减掉兄弟 engine 的最后一个引用并终结其 context（壁纸冻结） | 新增 `eglInitializedHere` 标志 ✓：仅在 `eglInitialize` 成功后置位 ✓，`cleanupAll()` 用它守卫 `eglTerminate` ✓，末尾复位 ✓ |
+| R15 | `WallpaperRenderer.kt`（`openAudioDescriptor` / `decodeLoop` 的 `VideoOpen`） | "超时判定"与"发布结果"不是原子操作 ✗：超时若落在 `abandon.get()` 与 `result.set(afd)` 之间，等待方已 `return null` 走人 ✓ → 该 fd **再无人关闭** ✗ → 云盘/SAF provider 每超时一次漏一个 ✓ 累积 `TooManyOpenFiles` | 发布后再查一次 `abandon` ✓，命中则 `compareAndSet(afd, null)` **取回并关闭** ✓（CAS 保证调用方与辅助线程不会重复关闭 ✓）；两处对称修改 ✓ |
+| R16 | `WallpaperRenderer.kt`（EGL context 重建分支） | context 因 `eglMakeCurrent` 失败被销毁重建时，只重建了 image/black 资源 ✗；`surfaceTexture`/`codecSurface`/`videoTexId` 仍指向**已死 context** 的对象 ✗，而 `reuseGl()` 只判断"非 0 即复用" ✗ → 每帧 `updateTexImage()` 失败 ✓ → **视频冻结在最后一帧** ✓ 直到换媒体 ✓ | 在重建分支里先调 `cleanupVideoResourcesOnRenderThread()` ✓（释放 ST + Surface、删除纹理并把 `videoTexId` 归零 ✓，对已清理状态是 no-op ✓） |
+| R8a | `service/WallpaperSwitchService.kt`（锁屏 tick 争用守卫） | 循环**先 delay 一整步再检查是否超预算** ✗ → `STATIC_APPLY_WAIT_MAX_MS = 6000` 实际累计 **9.25s** ✗（250+500+1000×7 ✓） | 每步先算剩余预算并夹住 sleep ✓，为 0 直接退出 ✓ |
+| R8b | 同上（`withStaticApply`，**手动"立即切换"走的正是这条** ✓） | 同一 overshoot 的第二份拷贝 ✗ | 同样的夹取 ✓ |
+| — | `ui/screens/ColorGridPicker.kt` | 选色对话框沿用 `AlertDialog` 默认宽度 ✗ → 12 列被挤进约 260dp，每格约 **20dp** ✗ 远低于 48dp 触控建议 ✓ | 加 `properties = DialogProperties(usePlatformDefaultWidth = false)` + `modifier = Modifier.fillMaxWidth(0.94f)` ✓ → 每格约 **45–90dp** ✓（并顺带解决 R5 的触控目标遗留 ✓，视觉更接近参考图 ✓） |
+
+**尚未处理**（明确留档，避免遗忘）：R9（锁屏路径**先推进锚点再执行** ✓ → `applyNext` 返回 null 时白等一个完整间隔 ✓）；`updateTexImage` 的 catch **未按 5s 限流** ✗（相邻两处已限流 ✓，纯日志噪音 ✓）。
+
+**诚实口径** ✓：R6/R15/R16 都只能靠**代码推理**验证 ✓（依赖 libEGL 引用计数、并发窗口期、GL context 语义 ✓）—— 本仓库的 JVM 单测覆盖不到 ✗，需要仪器测试（双 engine ✓ / 假 provider 卡超时 ✓ / 播放中重建 context ✓）✓，而当前**没有可用设备** ✗（`adb: device not found` ✓）。因此这三条**已修但缺自动化回归** ✓，行为正确性需真机复核。
+
+**回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、**167 单测全绿** ✓、`lintDebug` 0 error ✓。
+
 ## 五、服务与后台组件
 
 ### 5.1 WallpaperSwitchService (定时切换服务)
