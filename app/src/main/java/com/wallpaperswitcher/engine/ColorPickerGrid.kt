@@ -59,9 +59,16 @@ object ColorPickerGrid {
         return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
     }
 
-    /** `#RRGGBB` (upper case) for an ARGB colour; alpha is dropped. */
+    /**
+     * `#RRGGBB` (upper case) for an ARGB colour; alpha is dropped.
+     *
+     * Locale.ROOT is explicit: the string is stored in the database and later
+     * parsed by `android.graphics.Color.parseColor`, which only understands ASCII,
+     * so it must not depend on the user's locale (see the test that pins this
+     * against a locale whose digits are not ASCII).
+     */
     fun toHex(argb: Int): String =
-        String.format("#%06X", argb and 0x00FFFFFF)
+        String.format(java.util.Locale.ROOT, "#%06X", argb and 0x00FFFFFF)
 
     /** Same colour with the given 0..100 alpha (used for previews only). */
     fun withAlphaPercent(argb: Int, percent: Int): Int {
