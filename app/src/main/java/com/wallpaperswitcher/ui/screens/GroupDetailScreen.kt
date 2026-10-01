@@ -591,7 +591,7 @@ private fun GroupInfoHeader(
                     // 重命名 / 删除：紧凑图标按钮，按在右上角
                     IconButton(
                         onClick = { showRenameDialog = true },
-                        modifier = Modifier.size(40.dp)
+                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                     ) {
                         Icon(
                             Icons.Filled.Edit,
@@ -602,7 +602,7 @@ private fun GroupInfoHeader(
                     }
                     IconButton(
                         onClick = { showDeleteConfirm = true },
-                        modifier = Modifier.size(40.dp)
+                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                     ) {
                         Icon(
                             Icons.Filled.Delete,
@@ -742,7 +742,7 @@ private fun SelectionToolbar(
         verticalAlignment = Alignment.CenterVertically
     ) {
         IconButton(
-            modifier = Modifier.size(40.dp),
+            modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
             onClick = onExit
         ) {
             Icon(Icons.Filled.Close, "退出选择", modifier = Modifier.size(20.dp))
@@ -958,7 +958,7 @@ private fun ImageGridItem(
             ) {
                 IconButton(
                     onClick = { showMenu = true },
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                 ) {
                     Icon(
                         Icons.Filled.MoreVert,

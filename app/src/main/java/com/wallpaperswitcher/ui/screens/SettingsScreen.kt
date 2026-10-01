@@ -1180,7 +1180,7 @@ fun IntervalPickerDialog(
                 ) {
                     OutlinedTextField(
                         value = customValue,
-                        onValueChange = { customValue = it.filter { c -> c.isDigit() } },
+                        onValueChange = { customValue = it.filter { c -> c in '0'..'9' } },
                         label = { Text("秒数") },
                         placeholder = { Text("例如: 45") },
                         singleLine = true,
