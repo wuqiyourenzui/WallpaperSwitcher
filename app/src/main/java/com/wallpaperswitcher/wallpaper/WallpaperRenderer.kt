@@ -2591,7 +2591,17 @@ class WallpaperRenderer(
                                         st.getTransformMatrix(videoTexMatrix)
                                         renderVideoFrame(videoTexMatrix)
                                     } catch (t: Throwable) {
-                                        AppLog.e(TAG, "renderVideoFrame failed", t)
+                                        // Once per frame while the SurfaceTexture or the GL
+                                        // context is broken, and AppLog flushes every
+                                        // important line to disk - an unthrottled throwable
+                                        // here was 30-60 line+stack writes per second (see
+                                        // FRAME_WARN_INTERVAL_MS). Shares that budget with
+                                        // the other render warnings.
+                                        val nowWarn = android.os.SystemClock.elapsedRealtime()
+                                        if (nowWarn - lastFrameWarnAt > FRAME_WARN_INTERVAL_MS) {
+                                            lastFrameWarnAt = nowWarn
+                                            AppLog.e(TAG, "renderVideoFrame failed", t)
+                                        }
                                     }
                                 }
                             }
