@@ -3094,6 +3094,13 @@ class WallpaperRenderer(
             if (!EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) {
                 contextReady = false; return
             }
+            // A new GL context invalidates every object the old one created. The video
+            // side has to be dropped with it: surfaceTexture / codecSurface / videoTexId
+            // still named objects of the destroyed context, and reuseGl() only checks
+            // that they are non-zero, so it kept them - updateTexImage() then failed on
+            // every frame and the video stayed frozen on its last frame until a media
+            // switch. This is a no-op when they are already cleared.
+            cleanupVideoResourcesOnRenderThread()
             cleanupGlResources()
             setupGlResources()
             glResourcesValid = true
