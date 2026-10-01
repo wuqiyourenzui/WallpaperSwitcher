@@ -44,6 +44,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import com.wallpaperswitcher.engine.ColorPickerGrid
 
 /**
@@ -199,6 +200,13 @@ fun ColorGridPickerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        // Full width on purpose. AlertDialog's default width squeezes the 12-column
+        // grid into roughly 260dp, so a cell was ~20dp - far below the 48dp touch
+        // target, and narrower than the reference picker the user asked for. Taking
+        // the platform width gives each cell ~45-90dp depending on the screen, which
+        // is both accessible and much closer to the reference layout.
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+        modifier = Modifier.fillMaxWidth(0.94f),
         title = { Text(title) },
         text = {
             Column {
