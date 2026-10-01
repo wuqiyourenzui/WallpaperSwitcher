@@ -417,7 +417,11 @@ fun GroupDetailScreen(
     val folderScanPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { grantResults ->
-        if (grantResults.values.all { it }) {
+        // Any read-media grant is enough to list folders. Requiring ALL of them made
+        // "扫描到的文件夹" unusable when the user granted photos but not videos, even
+        // though the scan works with either - and Android 14's partial "选择照片"
+        // flow grants only the image permission, so that path never opened the picker.
+        if (grantResults.values.any { it }) {
             showAddDialog = false
             showFolderPicker = true
         } else {
