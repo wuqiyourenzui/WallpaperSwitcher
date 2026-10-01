@@ -32,6 +32,7 @@ import com.wallpaperswitcher.data.WallpaperGroup
 import com.wallpaperswitcher.engine.WallpaperTarget
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
+import com.wallpaperswitcher.ui.theme.LocalAccentColor
 
 /** How often the home screen re-checks whether the live wallpaper engine is alive. */
 private const val ENGINE_STATE_POLL_MS = 5_000L
@@ -633,7 +634,7 @@ private fun GroupSelectionToolbar(
         Text(
             "已选 $selectedCount/${allIds.size}",
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.primary,
+            color = LocalAccentColor.current,
             maxLines = 1,
             modifier = Modifier.weight(1f)
         )

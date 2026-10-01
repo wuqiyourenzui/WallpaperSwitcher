@@ -43,6 +43,7 @@ import com.wallpaperswitcher.ui.theme.ThemeMode
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 import java.io.File
 import kotlinx.coroutines.launch
+import com.wallpaperswitcher.ui.theme.LocalAccentColor
 
 /** Preset colors for the floating switch button. */
 private val floatingButtonColors = listOf(
@@ -275,7 +276,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                     Text(
                         "修改",
                         style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
+                        color = LocalAccentColor.current
                     )
                 }
             }
@@ -374,7 +375,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                     Text(
                         "修改",
                         style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary
+                        color = LocalAccentColor.current
                     )
                 }
             }
@@ -444,7 +445,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                     Text(
                         "$floatingButtonAlpha%",
                         style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary
+                        color = LocalAccentColor.current
                     )
                 }
                 Spacer(modifier = Modifier.height(4.dp))
@@ -1028,13 +1029,13 @@ private fun SettingsSection(
                 modifier = Modifier
                 .size(width = 4.dp, height = 14.dp)
                 .clip(RoundedCornerShape(2.dp))
-                .background(MaterialTheme.colorScheme.primary)
+                .background(LocalAccentColor.current)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 title,
                 style = MaterialTheme.typography.labelLarge,
-                color = MaterialTheme.colorScheme.primary,
+                color = LocalAccentColor.current,
                 fontWeight = FontWeight.SemiBold
             )
         }
@@ -1166,7 +1167,7 @@ fun IntervalPickerDialog(
                 Text(
                     "自定义时间",
                     style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = LocalAccentColor.current,
                     modifier = Modifier.padding(start = 12.dp, top = 8.dp)
                 )
                 Row(

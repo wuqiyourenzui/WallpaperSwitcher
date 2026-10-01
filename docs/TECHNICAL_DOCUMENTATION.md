@@ -2576,6 +2576,47 @@ hex 往返、alpha 映射（50% → 0x80，四舍五入 ✓）、**全矩阵往�
 **说明**：选色器的透明度显示的是数据库里已有的值（默认 10%；若用户曾拖到 100% 就显示 100%），它只是如实
 镜像该设置，不是 bug。
 
+#### 4.9.51 自定义主题色的可读性（对比度）
+
+用户报"软件界面有些文字和图形会随主题颜色变化，影响识别"。根因在 `Theme.kt` 的自定义配色方案里，
+on-色槽**写死了**：
+
+```kotlin
+onPrimary = Color.White,        // 淡色主题色 + 白字 = 看不见
+onPrimaryContainer = primary,   // 用主题色当"容器上的文字"
+onSecondaryContainer = primary,
+onSurfaceVariant = primary,     // ✗✗ 这是全应用的"次要文字"颜色 → 浅底浅字
+```
+
+`onSurfaceVariant` 被用来画说明/副标题（"最多 4 个字…"、"已设置…"、分组副标题…），所以用户一选浅色
+（淡黄/淡绿）就整片读不清 ✗；选深色 + 深色模式同理 ✗。
+
+**修法**（纯逻辑 + 单测，沿用项目惯例）
+
+| 文件 | 内容 |
+|---|---|
+| `engine/ColorContrast.kt` | WCAG 相对亮度、对比度、`readableOn(background)`（在黑/白里挑对比度更高的那个 → 用于 `onPrimary`）、`ensureReadable(color, background, 4.5)`（**沿亮度轴**把颜色推到达到 AA，色相饱和度不变）、`toHsl` |
+| `ui/theme/Theme.kt` | `customLightColorScheme` / `customDarkColorScheme` 改为：`onPrimary = readableOn(primary)`、`onSurfaceVariant`/`onPrimaryContainer`/`onSecondaryContainer = readableAccent(...)`；并用 `CompositionLocalProvider(LocalAccentColor provides colorScheme.onSurfaceVariant)` 把"可读的强调色"暴露给界面 |
+| 三个界面 | 8 处**在表面上用主题色画的文字/装饰条**（"修改"、间隔值、透明度百分比、分组标题、自定义时间、选中计数、扫描状态、分组标题竖条）改用 `LocalAccentColor.current` |
+
+**测试**（新增 11 条，套件 162 条全绿）
+
+* `ColorContrastTest`（8 条）：亮度/对比度极值（黑白 = 21:1）✓、`readableOn` 对深/浅色分别给黑白 ✓、
+  淡黄在浅色表面上被**压暗**且**色相不变** ✓、深色在深色表面上被提亮 ✓、已经达标的颜色**原样返回** ✓、
+  HSL 往返（容忍 ±1/255）✓。
+* `CustomColorSchemeTest`（3 条）：对 9 种"刁钻"主题色（纯白、纯黑、淡黄、浅灰、近黑、高饱和绿、品红…）
+  断言浅色与深色两套方案的 `onSurfaceVariant` 达到 **AA（≥4.5:1）**、`onPrimary` 达到 **≥3:1**、
+  `onPrimaryContainer` 达到 AA ✓。
+
+**这个测试当场抓到一个真 bug** ✓：第一版对着**应用自定义的** `DarkColorScheme.surface` 计算强调色 ✗，而
+`customDarkColorScheme` 实际产生的是 **Material 默认**表面色 ✗ → 深色模式下部分强调色达不到 AA ✗。
+改成 `lightColorScheme().surface` / `darkColorScheme().surface` 后通过 ✓。
+
+**诚实口径**：本机脚本始终没能点中选色网格（对话框布局与推算不一致 ✗），所以**没有**留下"浅色主题下的
+截图"✗；可读性由上述单测保证 ✓（比截图更硬），肉眼确认可以自己选一个淡黄色试一下 ✓。
+
+**回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、**162 单测全绿**（新增 11 条）✓、`lintDebug` 0 error ✓。
+
 ## 五、服务与后台组件
 
 ### 5.1 WallpaperSwitchService (定时切换服务)

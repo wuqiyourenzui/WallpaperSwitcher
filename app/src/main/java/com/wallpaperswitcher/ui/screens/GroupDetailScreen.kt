@@ -63,6 +63,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.wallpaperswitcher.ui.theme.LocalAccentColor
 
 // Grid thumbnails decode deliberately below the ~312px cell (3x density) so
 // memory traffic and decode time stay tiny; slight softness is accepted in
@@ -777,7 +778,7 @@ private fun SelectionToolbar(
         Text(
             "已选 $selectedCount/$totalCount",
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.primary,
+            color = LocalAccentColor.current,
             textAlign = TextAlign.End,
             maxLines = 1,
             modifier = Modifier.weight(1f)
@@ -1239,7 +1240,9 @@ fun FolderPickerDialog(
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = if (scanning) {
-                            MaterialTheme.colorScheme.primary
+                            // Accent text on the surface: use the contrast-safe
+                            // accent, not the raw user colour.
+                            LocalAccentColor.current
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },

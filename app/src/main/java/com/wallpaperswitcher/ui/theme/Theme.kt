@@ -5,8 +5,13 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+
+import com.wallpaperswitcher.engine.ColorContrast
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -136,20 +141,40 @@ enum class ThemeMode(val value: String, val label: String) {
 }
 
 /**
+ * Accent colour that is guaranteed to be legible on the current surface.
+ *
+ * The custom scheme feeds a contrast-corrected accent into `onSurfaceVariant`, so
+ * text drawn with this local stays readable no matter which colour the user picks
+ * (a pale accent used to make every secondary label pale-on-pale - the reported
+ * "文字和图形随主题颜色变化，影响识别"). Falls back to the scheme's primary for
+ * previews that are not wrapped in [WallpaperSwitcherTheme].
+ */
+val LocalAccentColor = staticCompositionLocalOf { Color.Unspecified }
+
+/**
  * Generate a light color scheme with a custom primary color. The container
  * and surface tones are tinted with the primary so the whole UI follows the
  * chosen accent instead of only the buttons.
+ *
+ * On-colours are derived from the accent instead of hard-coded: [readableOn] picks
+ * black or white for text drawn *on* the accent, and [ensureReadable] pushes the
+ * accent away from the surface until accent-coloured text reaches WCAG AA.
  */
 fun customLightColorScheme(primary: Color): ColorScheme {
+    // The scheme below is built from Material defaults (only the accent slots are
+    // overridden), so the accent must be tuned against THAT surface - using the
+    // app's own LightColorScheme.surface left dark-mode accents below AA.
+    val surface = lightColorScheme().surface
+    val accentText = readableAccent(primary, surface)
     return lightColorScheme(
         primary = primary,
-        onPrimary = Color.White,
+        onPrimary = Color(ColorContrast.readableOn(primary.toArgb())),
         primaryContainer = primary.copy(alpha = 0.15f),
-        onPrimaryContainer = primary,
+        onPrimaryContainer = accentText,
         secondaryContainer = primary.copy(alpha = 0.12f),
-        onSecondaryContainer = primary,
+        onSecondaryContainer = accentText,
         surfaceVariant = primary.copy(alpha = 0.10f),
-        onSurfaceVariant = primary,
+        onSurfaceVariant = accentText,
     )
 }
 
@@ -157,17 +182,28 @@ fun customLightColorScheme(primary: Color): ColorScheme {
  * Generate a dark color scheme with a custom primary color.
  */
 fun customDarkColorScheme(primary: Color): ColorScheme {
+    val surface = darkColorScheme().surface
+    val accentText = readableAccent(primary, surface)
     return darkColorScheme(
         primary = primary,
-        onPrimary = Color.Black,
+        onPrimary = Color(ColorContrast.readableOn(primary.toArgb())),
         primaryContainer = primary.copy(alpha = 0.3f),
-        onPrimaryContainer = primary,
+        onPrimaryContainer = accentText,
         secondaryContainer = primary.copy(alpha = 0.22f),
-        onSecondaryContainer = primary,
+        onSecondaryContainer = accentText,
         surfaceVariant = primary.copy(alpha = 0.18f),
-        onSurfaceVariant = primary,
+        onSurfaceVariant = accentText,
     )
 }
+
+/** The accent, darkened/lightened until accent-coloured text is readable on [surface]. */
+private fun readableAccent(primary: Color, surface: Color): Color = Color(
+    ColorContrast.ensureReadable(
+        primary.toArgb(),
+        surface.toArgb(),
+        ColorContrast.AA_NORMAL
+    )
+)
 
 @Composable
 fun WallpaperSwitcherTheme(
@@ -201,10 +237,12 @@ fun WallpaperSwitcherTheme(
         }
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        shapes = AppShapes,
-        typography = AppTypography,
-        content = content
-    )
+    CompositionLocalProvider(LocalAccentColor provides colorScheme.onSurfaceVariant) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            shapes = AppShapes,
+            typography = AppTypography,
+            content = content
+        )
+    }
 }
