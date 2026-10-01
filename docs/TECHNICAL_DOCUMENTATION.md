@@ -2380,6 +2380,202 @@ ON/OFF 常常属于**两个不同实例**（实测同一时刻出现 `ON(visibil
 
 **回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、143 单测 ✓。
 
+#### 4.9.40 未启用分组里的图片不能再被设为壁纸
+
+用户反馈：「当分组图片未启用时，里面的图片仍能设置为壁纸」。
+
+原因：两条用户入口都**没有校验分组状态**——
+
+- `WallpaperViewModel.setAsLiveWallpaper()`（点图片 → 系统动态壁纸界面）
+- `WallpaperViewModel.setImageAsWallpaper()`（三点菜单 →「设为壁纸」→ 预览确认）
+
+而引擎的目标切换曾经刻意"显式选择无视分组启用状态"（避免手动选中的图片被随机图替换），于是
+用户能把已关闭分组里的图片设成壁纸；但轮换、预取、锁屏/桌面定时和 `getFirstFromEnabledGroups`
+都只从**启用**分组里挑，下一次切换/重绘又把它换掉——等于设了个"注定被覆盖"的壁纸。
+
+修法：
+
+1. 两个入口在读取分组后立即判断 `group != null && !group.isEnabled` → 记录
+   `setAsLiveWallpaper ignored: group N is disabled` / `setImageAsWallpaper ignored: ...`
+   并提示「该分组未启用，请先打开分组开关」，**不移动 HOME 游标、不打开系统界面、不写任何状态**
+   （守卫放在最前面，因此也不会留下 pending preview pick）。
+2. 确认路径的兜底目标（预览会话已丢失 pending pick 时用 HOME 游标）新增
+   `homeCursorForConfirmedPick()`：只有游标仍指向**启用且支持桌面**的分组媒体才返回，否则返回 0，
+   确保"确认后推送"也不会复活已关闭分组的图片。
+3. 引擎目标切换处的注释更新为"用户入口已拦截 + 内部调用自带校验"，避免后人误以为这里仍需放行。
+
+**真机实测（Redmi 平板 25102RKBEC / 1200×2608，release 包）**：
+
+| 操作（分组已关闭） | 日志 | 结果 |
+|---|---|---|
+| 点图片 | `setAsLiveWallpaper ignored: group 37 is disabled` | 系统界面不打开，壁纸不变 |
+| 三点 →「设为壁纸」→ 确定 | `setImageAsWallpaper ignored: group 37 is disabled` | 无 `Wallpaper applied` / 无切换 |
+| 打开分组开关后再点图片 | `setAsLiveWallpaper: id=… target=…` | 系统界面正常打开；返回取消 → `pick cancelled` + 游标复原 |
+
+测试后已把该分组恢复为关闭；构建 + `:app:testDebugUnitTest`（130 条）全绿。
+
+#### 4.9.41 回到桌面 / 退出软件时视频要停一下（可见性恢复被去抖）
+
+用户反馈两件事，其实是同一个根因：
+
+- 「设置视频为壁纸后，返回桌面要黑屏一会才开始播放」
+- 「进入壁纸软件后，再退出，视频会卡一下再播放」
+
+真机日志（Redmi 平板 25102RKBEC）里每次回到桌面都固定多出约 250ms：
+
+```
+07:03:54.910 LiveWallpaperService: App UI hidden: re-evaluating wallpaper state
+07:03:55.162 VideoDecode: Video resumed (wallpaper visible again)   ← +252ms
+07:03:55.202 WallpaperRenderer: Video frame rendered                ← 第一帧
+```
+
+原因：`refreshPowerSave()` 对**所有**恢复都套了 `VISIBILITY_DEBOUNCE_MS = 250ms` 去抖，本意是吸收
+窗口/Activity 过渡期间成串的可见性回调（每次翻转在视频路径上都是一次解码器暂停+时钟重锚）。
+但"我们自己的 App 退到后台 / 亮屏"是**确定性**转换——壁纸就在前台且可交互，去抖只会让画面白停
+250ms；如果是刚被系统重建过的新引擎（还没有画过任何一帧），这 250ms 就是**纯黑屏**。
+
+修法（`LiveWallpaperService.refreshPowerSave`）：恢复时先判断
+`!appInForeground && powerSaveVisibleInput && isScreenInteractive()`（即"App 已退到后台、壁纸确实
+可见、屏幕已亮"）→ 立即 `applyPowerSave(hint)`；其余情况仍走 250ms 去抖。抖动保护没有丢：随后
+的 covered 报告由暂停路径处理，短暂 covered 仍会被 `VISIBILITY_PAUSE_COALESCE_MS` 合并
+（日志里 `Visibility blip coalesced: …` 仍然生效）。
+
+**实测（release 包，同一台平板）**：
+
+| | 修改前 | 修改后 |
+|---|---|---|
+| `App UI hidden` → `Power save OFF` | +252ms | **+1ms**（两轮复测：+1ms、0ms） |
+| 每轮进出 App 的暂停/恢复次数 | 1/1 | 1/1（无来回抖动，无 `blip` 误报） |
+
+按 07:03:55 那次的实测数字推算：新引擎 + 已初始化解码器的情况下，返回桌面到第一帧由约 290ms
+降到约 40ms（去抖残差 + 唤醒），"黑屏一会"与"卡一下"随之消失。
+
+#### 4.9.42 返回桌面时视频停顿 1 秒：app-foreground 标志挂在 onStop 上
+
+用户反馈（承接 §4.9.41）：「设置视频为壁纸后，返回桌面要黑屏一会才开始播放」「进入壁纸软件后，
+再退出，视频会卡一下再播放」。
+
+实测把 HOME 按键和日志时间对齐后，问题非常具体（Redmi 平板 25102RKBEC）：
+
+```
+HOME 按下                07:21:51.931
+App UI hidden           07:21:53.035   ← 1104ms 之后
+Video resumed           07:21:53.037
+```
+
+原因：引擎的"我们自己的 UI 在前台"标志由 `MainActivity.onStop()` 翻转，而 MIUI 要等**退出动画
+走完**才回调 onStop（实测 +1104ms）。这段时间里 launcher 已经在前面、壁纸已经可见，但解码仍被
+`app-foreground` 判为暂停，所以画面停住（新引擎还没画过一帧时就是黑屏）。壁纸自身的
+`onVisibilityChanged` 在这台 ROM 上要晚 1.5-2.5s（这正是当初引入该标志的原因），所以只能换触发点。
+
+修法：把 `setAppForeground(false)` 与 `WallpaperSwitchService.poke()` 从 `onStop()` 移到
+`MainActivity.onPause()`——onPause 与窗口切换同拍触发（实测 +84~127ms）；`onStop()` 只保留缩略图
+缓存回收（本来就有 60s 延迟）。引擎侧无需改动：§4.9.41 的"立即恢复"判断
+(`!appInForeground && 可见 && 屏幕亮`) 现在能在正确的时刻生效。
+
+**实测（release 包）**：
+
+| | 修改前 | 修改后 |
+|---|---|---|
+| HOME → `onPause` | —（挂在 onStop） | **+84ms / +127ms** |
+| HOME → 引擎恢复 | +1104ms | **+128ms** |
+| HOME → 首帧 | ~+1123ms | **+158ms** |
+| 两轮进出 App 的暂停/恢复次数 | 1/1 | 1/1（无抖动、无 blip 误报） |
+
+注意（既有策略的延伸）：引擎对"回到桌面"采用**乐观恢复**——先恢复，等系统可见性回调到达再纠正，
+所以"从我们 App 里打开别的应用"这种情况会比以前早约 1s 恢复解码/声音（原来是在 onStop 时恢复，
+同样存在这个窗口，只是更晚）。这是"少 1 秒静音/黑屏" 与"多 1 秒后台解码"之间的取舍，与
+`applyAppForeground` 里已记录的乐观恢复注释一致。
+
+#### 4.9.43 为什么"进出壁纸软件"比进出别的应用更容易看到视频卡顿
+
+用户问："壁纸软件进出视频就是比其他软件进出会卡顿"。同一台平板、同一段视频，用同一套
+`am start` / `KEYCODE_HOME` 流程对照测量（Redmi 平板 25102RKBEC）：
+
+| | 进入（视频暂停） | 退出（视频恢复） |
+|---|---|---|
+| 我们 App | **+105ms**（app-foreground 输入立即生效） | **+44~130ms**（onPause / 可见性回调） |
+| 系统设置 | +649ms 收到"被覆盖"，+1253ms 真正暂停 | +126ms（可见性回调） |
+
+差异来自两件**只有我们自己的 App 才会发生**的事：
+
+1. **进入我们 App 时，暂停比系统回调早约 1.1s**。引擎把"我们自己的 UI 在前台"
+   （`appInForeground`，由 `MainActivity.onStart/onPause` 维护）当作最快的暂停输入——这是为了
+   「打开应用时声音立刻关闭」。代价是：**MIUI 的开启动画还没结束、壁纸仍然可见的时候，视频就冻住了**。
+   别的应用不会有这个输入，暂停要等系统"壁纸被覆盖"回调（+0.6~1.3s），等它到达时壁纸早已被完全
+   遮住，所以用户看不到那一帧的停顿。
+2. **退出我们 App 时，引擎和动画在同一个进程里抢资源**。恢复由 onPause/可见性回调触发
+   （+44~130ms），而此刻**我们自己 Activity 的关闭动画还在跑**——解码器、GL 上传、音频轨道重建
+   都要和这个动画争 CPU/GPU，所以视频头几帧不均匀。别的应用退出时它的动画不牵扯我们的进程，
+   引擎恢复时 GPU 是空的。
+
+改动（退出侧）：新增 `APP_EXIT_RESUME_GRACE_MS = 250ms`——`appLeftAtMs` 记录 UI 离开的时刻，
+`refreshPowerSave()` 里的恢复（无论先到的是 app-left 还是可见性回调）都不早于该时刻 +250ms，
+让关闭动画先跑完。实测 HOME → 恢复由 +44ms 变为 **+350ms（= onPause + 252ms）**，动画期间不再有
+解码竞争；两轮复测仍是各一次暂停/恢复。
+
+进入侧**暂未改动**：要让画面在开启动画期间继续播放，必须把"立即静音"与"暂停解码"拆开
+（立即 `audioSession.pause()`，解码延后到被覆盖），并在恢复时把音频**重新对齐到视频当前位置**
+——否则音频会落后约 0.5s（音频线程在静音期间仍会写入并阻塞，恢复后从缓冲开头继续）。这需要动
+音频管线，风险高于收益，先记录方案待确认。
+
+#### 4.9.44 进入我们 App 时不再冻结画面（立即静音 + 延后暂停 + 音频重新对齐）
+
+承接 §4.9.43 的对照结论：进入我们 App 时暂停由 `app-foreground` **立即**触发（实测 +105ms），而
+系统"壁纸被覆盖"回调要 +0.6~1.3s——于是视频是在**开启动画仍在进行、壁纸仍然可见**的时候冻住的；
+别的应用没有这个输入，等回调到达时壁纸早已被遮住，所以看不到那一顿。用户选择方案 A：进我们 App
+时**画面继续播、声音立刻静音**。
+
+实现（三处）：
+
+1. **只静音、不停画面**：新增 `WallpaperRenderer.muteAudioKeepingVideo()`——立刻 `stopAudio()`
+   （音频线程停、`AudioTrack.pause()` 立即无声），但**不动** `powerSaveMode`，解码与渲染继续。
+   引擎侧 `applyAppForeground(true)` 改为此调用 + **延后** `refreshPowerSave()` 到
+   `APP_ENTRY_PAUSE_GRACE_MS = 600ms`（若系统"被覆盖"回调更早到达，则按回调立即暂停，符合实际遮挡）。
+2. **恢复时把音频重新对齐到画面**：新增 `unmuteAudioReanchored()`，用
+   `startAudio(uri, gen, lastVideoPositionUs)`（与"视频声音开关"同一条 re-anchor 路径）。静音期间
+   画面一直在走，若让音频从原处继续就会落后整个静音时长。
+3. **顺序修正（实测发现）**：解除静音必须发生在 `powerSaveMode = false` **之后**——写在前面时
+   `unmuteAudioReanchored()` 会因为 `powerSaveMode` 仍为 true 而提前返回，声音再也回不来；同时把
+   "状态没有变化但需要解除静音"（快速进出 App，从未真正暂停）也覆盖。`startVideo()`/`release()`
+   清掉该状态，避免跨视频泄漏。
+
+**实测（release 包，两轮复测一致）**：
+
+| 阶段 | 改前 | 改后 |
+|---|---|---|
+| 进入 App · 静音 | +105ms（同时冻结画面） | **+155ms 静音，画面继续播** |
+| 进入 App · 画面暂停 | +105ms（动画中，可见） | **+535ms（系统"被覆盖"回调后，不可见）** |
+| 退出 App · 画面恢复 | +44~130ms（与关闭动画抢资源） | **+251ms（关闭动画结束后）** |
+| 退出 App · 声音 | 随画面一起恢复（可能落后） | **`Audio unmuted, re-anchored at Nms` 接回当前画面** |
+| 每轮音频线程 | — | 1 次结束 + 1 次启动，无泄漏/无重复线程 |
+
+#### 4.9.50 主题色 / 悬浮按钮颜色：Material 风格网格选色器
+
+需求（用户给了参考截图）："主题和悬浮按钮颜色支持这种选择" —— 即色相×明度**网格**选色 + **透明度滑块**
+（棋盘格轨道）+ 预览条 + 取消/保存。
+
+**实现**（沿用项目惯例：纯逻辑进 `engine/` 并配单测，UI 只负责画）
+
+| 文件 | 内容 |
+|---|---|
+| `engine/ColorPickerGrid.kt` | 网格的纯数学：`COLUMNS=12`（每列 30°）、`TONES=[0.95,0.80,0.65,0.50,0.35,0.20]`（上浅下深）、`colorAt(col,row)`、`hslToRgb`、`toHex`、`withAlphaPercent`、`parseHex`、**`nearestCellOf(hex)`**（把当前颜色映射回格子，用于白圈标记） |
+| `ui/screens/ColorGridPicker.kt` | `ColorGridPicker`（预览条 + 网格 + 可选透明度滑块，棋盘格用 `drawBehind` 画）+ `ColorGridPickerDialog`（标题/取消/保存；**选中只改本地状态，按保存才生效**） |
+| `SettingsScreen.kt` | `ThemeColorPickerDialog` 内部改为新选色器（保留「跟随系统 Monet」行，存空串）；悬浮按钮颜色行新增**彩虹「自定义」圆点** → 打开带透明度滑块的选色器（透明度写的就是既有的 `setFloatingButtonAlpha`，与设置页的「透明度」滑块是同一个值、互相同步） |
+
+**为什么 `parseHex` 自己实现**：`util.parseHexColorInt` 走 `android.graphics.Color`，在 JVM 单测里不可用 ✗
+（第一版有 3 个测试因此失败 ✗），而"当前颜色落在哪个格子"必须可测 ✓。
+
+**单测**（`ColorPickerGridTest`，8 例）：列间距与行单调变暗 ✓、每格不透明 ✓、三原色位置 ✓、HSL 边界（黑/白）✓、
+hex 往返、alpha 映射（50% → 0x80，四舍五入 ✓）、**全矩阵往返**（每格颜色都能映射回自己 ✓）、非法输入返回 null ✓。
+
+**真机验收**（截图 `picker_button.png` / `picker_theme.png`）：网格 12×6 上浅下深 ✓、当前色白圈标记正确
+（默认蓝 `#1E88E5` 落在第 9 列第 4 行 ✓）、透明度滑块带棋盘格+渐变 ✓、取消/保存 ✓、两个入口均可用 ✓、无崩溃 ✓；
+`:app:testDebugUnitTest` **151 条全绿**（新增 8 条）、`lintDebug` 0 error ✓。
+
+**说明**：选色器的透明度显示的是数据库里已有的值（默认 10%；若用户曾拖到 100% 就显示 100%），它只是如实
+镜像该设置，不是 bug。
+
 ## 五、服务与后台组件
 
 ### 5.1 WallpaperSwitchService (定时切换服务)
@@ -2482,6 +2678,14 @@ WallpaperSwitcherApp (Scaffold)
 - 引擎未运行时的醒目警告卡片（定时/双击/解锁切换无法生效）
 - 分组列表：名称 + 媒体数徽章 + 启用开关 + 类型图标
 - "新建分组"对话框
+- **分组多选**：标题右侧的清单图标（或长按任意分组卡片）进入多选模式，顶栏换成工具条
+  ——退出 / 全选（`allIds` 直接来自列表，不需额外查询）/ 已选 N/M / **批量启用** / **批量删除**。
+  选中卡片用主色边框 + 主色底高亮，右侧开关换成只读 `Checkbox`（点卡片本身切换选中，避免与开关抢点击）。
+  选择状态用 `SnapshotStateMap<Long, Boolean>` per-key 读取，勾选一项只重组那一张卡片。
+  批量删除带确认对话框（分组里的媒体记录会一起移除，手机里的文件不动）；
+  `WallpaperViewModel.deleteGroups()` / `setGroupsEnabled()` 分别复用单条删除的游标清理逻辑
+  （`clearCursorsOfDeletedMedia()`：HOME/锁屏/最近写入/手动选择五处 id 若已悬空则清零）与一次
+  `WallpaperSwitchService.poke()`（批量启用只唤醒一次定时循环，而不是每个分组一次）。
 
 ### 6.3 GroupDetailScreen (分组详情)
 
@@ -2514,6 +2718,54 @@ WallpaperSwitcherApp (Scaffold)
 | 外观 | 主题颜色（16 色 + 跟随系统） | 色板对话框 |
 
 ---
+
+#### 6.4 悬浮按钮在"别的应用"里晚 0.6~0.8s 消失（决定：维持现状）
+
+现象（用户报告）：进我们自己的 App 时悬浮按钮瞬间消失，进别的应用却要过一会。
+
+实测（Redmi 平板 25102RKBEC，`am start -a android.settings.SETTINGS`）：发起 → **+615ms** 收到系统
+"壁纸被覆盖"回调 → **+777ms** 按钮收起。我们自己的 App 是 +0ms，因为它走 `MainActivity` 生命周期
+（`setAppForeground(true)` 立即 `hideFloatingButtonNow()`）。
+
+原因：悬浮按钮是 `TYPE_APPLICATION_OVERLAY`，永远画在所有应用之上，**必须我们主动收**；而"另一个
+应用到了前台"这件事，系统只在壁纸窗口真正被完全遮住时才回调我们（就是那 0.6~0.8s，也正是视频/
+音频暂停的时刻）。Android 10+ 把 `getRunningTasks()` / `getRunningAppProcesses()` 限制为"只能看到
+自己"，所以没有免权限的即时信号。
+
+备选与结论：
+
+- **B. 申请「使用情况访问」+ 轮询前台应用**：可做到瞬间收起，但需要一个特殊权限 + 轮询耗电，
+  且 MIUI 可能限制查询频率 → 用户未选。
+- **C. 桌面闲置后自动淡出**：曾实现并真机验证（5s 闲置稳定淡出），但实测**这台启动器不把桌面触摸
+  转发给壁纸**（三个位置点按均无 `Touch DOWN` 日志），"完全隐藏后靠触摸桌面唤回"不成立；改成
+  "淡成 8% 幽灵态"虽然可用，但已偏离用户要的行为 → **用户最终选择 A：维持现状**，代码已完整回退。
+- **A（当前行为）**：按钮在桌面上始终显示；进我们 App 立即消失；进别的应用晚 0.6~0.8s 消失。
+  这段时间它悬在新应用画面上——已知且接受。
+
+#### 6.5 主题：浅色/深色模式、Monet、更多配色
+
+三项一起做（用户需求）：
+
+1. **浅色/深色模式**：新增设置项 `theme_mode`（`system` / `light` / `dark`，缺失或未知一律按 `system`）。
+   `WallpaperViewModel.themeMode` 走和主题色同一条 `settingsUiState` 通路；`MainActivity` 把它翻译成
+   `ThemeMode.from(...).isDark()` 传给 `WallpaperSwitcherTheme(darkTheme = …)`，所以切换即时生效
+   （不需要重建 Activity）。设置界面在「外观」区块顶部加了「主题模式」三个 `FilterChip`。
+2. **Monet（Android 12+ 跟随壁纸取色）**：`Theme.kt` 原本就有一条 `Build.VERSION.SDK_INT >= S →
+   dynamicLight/DarkColorScheme(context)` 的分支，但只有"主题颜色"为空时才会走到，界面上写着"跟随系统"
+   ——用户看不出它其实是 Monet。现在：设置行在该分支生效时显示 **「跟随系统（Monet）」**，颜色对话框的
+   第一项也标成 **「跟随系统 Monet」**（旧版本显示"跟随系统"，走内置配色）；自定义颜色仍然优先于 Monet。
+3. **更多配色**：预置色从 17 个扩到 **28 个**（按色相排列：紫罗兰→深紫→玫红→桃红→玫瑰红→红→砖红→
+   深橙→橙→琥珀→黄→橄榄→绿→翡翠→青→深青→蓝→海洋蓝→靛蓝→紫→蓝灰→黑灰→棕→灰玫瑰…），
+   对话框内容加 `heightIn(max = 420.dp)` + `verticalScroll`，7 行色卡在小屏上也能滚动查看。
+
+**真机验证（Redmi 平板 25102RKBEC）**：
+
+| 操作 | 结果 |
+|---|---|
+| 主题模式 = 浅色 | 截图平均亮度 **179.7** |
+| 主题模式 = 深色 | **62.8** |
+| 主题模式 = 跟随系统 | 随系统深色 → 53.9（设置项回到默认，行为与改动前一致） |
+| 打开颜色对话框 | 28 个色项可见、可滚动；设置行副标题显示「跟随系统（Monet）」 |
 
 ## 七、权限声明
 

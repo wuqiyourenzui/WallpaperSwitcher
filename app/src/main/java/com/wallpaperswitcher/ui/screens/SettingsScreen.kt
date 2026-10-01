@@ -3,6 +3,7 @@ package com.wallpaperswitcher.ui.screens
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -23,6 +24,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
@@ -37,6 +39,7 @@ import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.engine.FloatingButtonContentPolicy
 import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.ui.theme.parseHexColor
+import com.wallpaperswitcher.ui.theme.ThemeMode
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 import java.io.File
 import kotlinx.coroutines.launch
@@ -82,6 +85,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
     val lockTimerEnabled = settingsUiState.lockTimerEnabled
     val lockIntervalMs = settingsUiState.lockIntervalMs
     val themeColor = settingsUiState.themeColor
+    val themeMode = settingsUiState.themeMode
     val autoScanEnabled = settingsUiState.autoScanEnabled
     val autoScanIntervalMs = settingsUiState.autoScanIntervalMs
     val autoScanLastRunAt = settingsUiState.autoScanLastRunAt
@@ -89,6 +93,8 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
     var showIntervalDialog by remember { mutableStateOf(false) }
     var showLockIntervalDialog by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
+    // Free colour choice for the floating button (hue x tone grid + translucency).
+    var showButtonColorDialog by remember { mutableStateOf(false) }
     var showAutoScanIntervalDialog by remember { mutableStateOf(false) }
     // Custom picture for the floating button. OpenDocument (not the photo
     // picker) because only its URI can be PERSISTED: the button lives in the
@@ -520,6 +526,39 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                             Text(name, style = MaterialTheme.typography.labelSmall, maxLines = 1)
                         }
                     }
+                    // Free choice from the hue x tone grid (see ColorGridPicker),
+                    // for colours the fixed palette above does not cover.
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable { showButtonColorDialog = true }
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.sweepGradient(
+                                        listOf(
+                                            Color(0xFFF44336), Color(0xFFFFEB3B),
+                                            Color(0xFF4CAF50), Color(0xFF00BCD4),
+                                            Color(0xFF2196F3), Color(0xFF9C27B0),
+                                            Color(0xFFF44336)
+                                        )
+                                    )
+                                )
+                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Outlined.Colorize,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("自定义", style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    }
                 }
             }
 
@@ -632,6 +671,34 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
         // Theme
         SettingsSection(title = "外观") {
+            // 浅色/深色：跟随系统 or 强制其中一种
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Outlined.Brightness4,
+                    null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Text("主题模式", modifier = Modifier.weight(1f))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    ThemeMode.entries.forEach { mode ->
+                        FilterChip(
+                            selected = ThemeMode.from(themeMode) == mode,
+                            onClick = { viewModel.setThemeMode(mode.value) },
+                            label = { Text(mode.label) }
+                        )
+                    }
+                }
+            }
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
             Row(
                 modifier = Modifier
                 .fillMaxWidth()
@@ -644,7 +711,14 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text("主题颜色", style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        if (themeColor.isEmpty()) "跟随系统" else themeColor,
+                        when {
+                            themeColor.isNotEmpty() -> themeColor
+                            // Android 12+ paints the whole UI from the wallpaper's
+                            // palette (Monet); older versions fall back to the
+                            // built-in scheme. Say which one is in effect.
+                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> "跟随系统（Monet）"
+                            else -> "跟随系统"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -867,6 +941,21 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 currentHex = themeColor,
                 onDismiss = { showColorDialog = false },
                 onSelect = { viewModel.setThemeColor(it); showColorDialog = false }
+            )
+        }
+
+        if (showButtonColorDialog) {
+            // Same picker as the theme colour, plus the translucency slider that
+            // drives the button's rest opacity (the 透明度 slider above shows the
+            // same setting, so either control keeps the other in sync).
+            ColorGridPickerDialog(
+                title = "按钮颜色",
+                currentHex = floatingButtonColor,
+                withAlpha = true,
+                alphaPercent = floatingButtonAlpha,
+                onConfirmAlpha = { viewModel.setFloatingButtonAlpha(it) },
+                onConfirm = { viewModel.setFloatingButtonColor(it) },
+                onDismiss = { showButtonColorDialog = false }
             )
         }
 
@@ -1123,93 +1212,16 @@ fun ThemeColorPickerDialog(
     onDismiss: () -> Unit,
     onSelect: (String) -> Unit
 ) {
-    // Predefined theme colors
-    val colors = listOf(
-        "" to "跟随系统",
-        "#6750A4" to "紫罗兰",
-        "#006C51" to "翡翠绿",
-        "#006E1C" to "翠绿",
-        "#0061A4" to "海洋蓝",
-        "#006874" to "青色",
-        "#984061" to "玫瑰红",
-        "#7D5260" to "棕色",
-        "#B82E2E" to "红色",
-        "#E65100" to "橙色",
-        "#F9A825" to "琥珀",
-        "#33691E" to "深绿",
-        "#01579B" to "深蓝",
-        "#4A148C" to "紫色",
-        "#880E4F" to "玫红",
-        "#BF360C" to "深橙",
-        "#263238" to "蓝灰",
-    )
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("主题颜色") },
-        text = {
-            Column {
-                Text(
-                    "选择主题颜色，立即生效",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-                // Grid of color circles
-                val chunked = colors.chunked(4)
-                chunked.forEach { row ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly
-                    ) {
-                        row.forEach { (hex, name) ->
-                            val isSelected = hex == currentHex
-                            val color = if (hex.isEmpty()) MaterialTheme.colorScheme.primary
-                            else parseHexColor(hex) ?: Color.Gray
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                modifier = Modifier.clickable { onSelect(hex) }
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                    .size(40.dp)
-                                    .clip(CircleShape)
-                                    .background(color)
-                                    .then(
-                                        if (isSelected) Modifier.border(
-                                            3.dp,
-                                            MaterialTheme.colorScheme.onSurface,
-                                            CircleShape
-                                        ) else Modifier
-                                    ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    if (isSelected) {
-                                        Icon(
-                                            Icons.Filled.Check,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                    }
-                                }
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    name,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                        // Fill empty slots in last row
-                        repeat(4 - row.size) {
-                            Spacer(modifier = Modifier.width(40.dp))
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+    // Material-style picker: hue x tone grid + the "follow the system" row.
+    // "" keeps the system accent (Android 12+ paints the UI from the wallpaper's
+    // palette - Monet); the grid covers everything else. Nothing is applied until
+    // 保存, so 取消 really cancels.
+    ColorGridPickerDialog(
+        title = "主题颜色",
+        currentHex = currentHex,
+        systemOption = true,
+        onConfirm = onSelect,
+        onDismiss = onDismiss
     )
 }
 

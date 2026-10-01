@@ -456,30 +456,76 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             // too; otherwise the UI could briefly show the deleted group's
             // residual list.
             if (_selectedGroupId.value == group.id) selectGroup(null)
-            // Clear last image ID if it belonged to the deleted group
-            // (CASCADE deletes images, so the ID would point to nothing)
-            val lastId = settingsDao.getLong(SettingsKeys.LAST_IMAGE_ID)
-            val image = imageDao.getImageById(lastId)
-            if (image == null) {
-                settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, 0L)
+            clearCursorsOfDeletedMedia()
+        }
+    }
+
+    /**
+     * Delete several groups at once (home screen multi-select).
+     *
+     * Each group's media ROWS go with it (the Room relation cascades) - the files
+     * on the phone are untouched, exactly like the single-group delete.
+     */
+    fun deleteGroups(ids: Set<Long>) {
+        if (ids.isEmpty()) return
+        guardedWrite("删除分组失败") {
+            ids.forEach { id ->
+                groupDao.getGroupById(id)?.let { groupDao.delete(it) }
             }
-            // Same for the lock screen's own cursor / write memo.
-            val lastLockId = settingsDao.getLong(SettingsKeys.LAST_IMAGE_ID_LOCK)
-            if (lastLockId > 0L && imageDao.getImageById(lastLockId) == null) {
-                settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID_LOCK, 0L)
+            // The detail screen must not keep showing a group that is now gone.
+            if (_selectedGroupId.value?.let { it in ids } == true) selectGroup(null)
+            clearCursorsOfDeletedMedia()
+        }
+    }
+
+    /**
+     * Enable/disable several groups at once (home screen multi-select).
+     *
+     * One [WallpaperSwitchService.poke] at the end instead of one per group: the
+     * timer loops only need to re-evaluate which groups may feed each screen, and
+     * poking N times would restart those loops N times.
+     */
+    fun setGroupsEnabled(ids: Set<Long>, enabled: Boolean) {
+        if (ids.isEmpty()) return
+        guardedWrite("批量切换分组失败") {
+            var changed = false
+            ids.forEach { id ->
+                val group = groupDao.getGroupById(id) ?: return@forEach
+                if (group.isEnabled != enabled) {
+                    groupDao.update(group.copy(isEnabled = enabled))
+                    changed = true
+                }
             }
-            val lastLockWrite = settingsDao.getLong(SettingsKeys.LAST_LOCK_WRITE_ID)
-            if (lastLockWrite > 0L && imageDao.getImageById(lastLockWrite) == null) {
-                settingsDao.setLong(SettingsKeys.LAST_LOCK_WRITE_ID, 0L)
-            }
-            val lastHomeWrite = settingsDao.getLong(SettingsKeys.LAST_HOME_WRITE_ID)
-            if (lastHomeWrite > 0L && imageDao.getImageById(lastHomeWrite) == null) {
-                settingsDao.setLong(SettingsKeys.LAST_HOME_WRITE_ID, 0L)
-            }
-            val manualPick = settingsDao.getLong(SettingsKeys.MANUAL_PICK_MEDIA_ID)
-            if (manualPick > 0L && imageDao.getImageById(manualPick) == null) {
-                settingsDao.setLong(SettingsKeys.MANUAL_PICK_MEDIA_ID, 0L)
-            }
+            if (changed) WallpaperSwitchService.poke(getApplication())
+        }
+    }
+
+    /**
+     * Drop cursors / write memos that pointed at media of a group that was just
+     * deleted: their rows are gone (CASCADE), so a stale id would make the engine
+     * or the lock enforcement chase a media that no longer exists.
+     */
+    private suspend fun clearCursorsOfDeletedMedia() {
+        val lastId = settingsDao.getLong(SettingsKeys.LAST_IMAGE_ID)
+        if (lastId > 0L && imageDao.getImageById(lastId) == null) {
+            settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, 0L)
+        }
+        // Same for the lock screen's own cursor / write memo.
+        val lastLockId = settingsDao.getLong(SettingsKeys.LAST_IMAGE_ID_LOCK)
+        if (lastLockId > 0L && imageDao.getImageById(lastLockId) == null) {
+            settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID_LOCK, 0L)
+        }
+        val lastLockWrite = settingsDao.getLong(SettingsKeys.LAST_LOCK_WRITE_ID)
+        if (lastLockWrite > 0L && imageDao.getImageById(lastLockWrite) == null) {
+            settingsDao.setLong(SettingsKeys.LAST_LOCK_WRITE_ID, 0L)
+        }
+        val lastHomeWrite = settingsDao.getLong(SettingsKeys.LAST_HOME_WRITE_ID)
+        if (lastHomeWrite > 0L && imageDao.getImageById(lastHomeWrite) == null) {
+            settingsDao.setLong(SettingsKeys.LAST_HOME_WRITE_ID, 0L)
+        }
+        val manualPick = settingsDao.getLong(SettingsKeys.MANUAL_PICK_MEDIA_ID)
+        if (manualPick > 0L && imageDao.getImageById(manualPick) == null) {
+            settingsDao.setLong(SettingsKeys.MANUAL_PICK_MEDIA_ID, 0L)
         }
     }
 
@@ -783,6 +829,15 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         .map { it ?: "" }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
 
+    // Light/dark mode: "system" (follow the phone) / "light" / "dark".
+    val themeMode: StateFlow<String> = settingsDao.getValueFlow(SettingsKeys.THEME_MODE)
+        .map { it ?: SettingsKeys.THEME_MODE_SYSTEM }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5000),
+            SettingsKeys.THEME_MODE_SYSTEM
+        )
+
     // --- Combined screen states ---
     //
     // Each screen subscribes to ONE combined StateFlow instead of N separate
@@ -833,6 +888,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         const val VIDEO_SOUND_ENABLED = 19
         const val FLOATING_BUTTON_TEXT = 20
         const val FLOATING_BUTTON_IMAGE_URI = 21
+        const val THEME_MODE = 22
     }
 
     /**
@@ -879,7 +935,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         lockIntervalMs,
         videoSoundEnabled,
         floatingButtonText,
-        floatingButtonImageUri
+        floatingButtonImageUri,
+        themeMode
     ) { a ->
         SettingsUiState(
             serviceEnabled = combined(a, SettingsField.SERVICE_ENABLED, "serviceEnabled", Boolean::class.javaObjectType) ?: false,
@@ -896,6 +953,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             clarityMode = combined(a, SettingsField.CLARITY_MODE, "clarityMode", String::class.java) ?: "auto",
             switchFadeEnabled = combined(a, SettingsField.SWITCH_FADE_ENABLED, "switchFadeEnabled", Boolean::class.javaObjectType) ?: true,
             themeColor = combined(a, SettingsField.THEME_COLOR, "themeColor", String::class.java) ?: "",
+            themeMode = combined(a, SettingsField.THEME_MODE, "themeMode", String::class.java)
+                ?: SettingsKeys.THEME_MODE_SYSTEM,
             autoScanEnabled = combined(a, SettingsField.AUTO_SCAN_ENABLED, "autoScanEnabled", Boolean::class.javaObjectType) ?: false,
             autoScanIntervalMs = combined(a, SettingsField.AUTO_SCAN_INTERVAL_MS, "autoScanIntervalMs", Long::class.javaObjectType) ?: 24L * 60 * 60 * 1000,
             autoScanLastRunAt = combined(a, SettingsField.AUTO_SCAN_LAST_RUN_AT, "autoScanLastRunAt", Long::class.javaObjectType) ?: 0L,
@@ -910,6 +969,13 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun setThemeColor(hex: String) {
         guardedWrite("保存主题色失败") {
             settingsDao.setString(SettingsKeys.THEME_COLOR, hex)
+        }
+    }
+
+    /** Light/dark mode: [SettingsKeys.THEME_MODE_SYSTEM] / _LIGHT / _DARK. */
+    fun setThemeMode(mode: String) {
+        guardedWrite("保存主题模式失败") {
+            settingsDao.setString(SettingsKeys.THEME_MODE, mode)
         }
     }
 
@@ -1233,6 +1299,20 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val group = groupDao.getGroupById(image.groupId)
+                // A DISABLED group is not part of the rotation: its media must
+                // not be settable from the group screen either (user report:
+                // 「当分组图片未启用时，里面的图片仍能设置为壁纸」). The engine, the
+                // static applier and both timers only ever pick from ENABLED
+                // groups, so applying this media produced a wallpaper the next
+                // redraw/switch replaced again.
+                if (group != null && !group.isEnabled) {
+                    AppLog.d(
+                        TAG,
+                        "setImageAsWallpaper ignored: group ${group.id} is disabled"
+                    )
+                    _toastMessage.emit("该分组未启用，请先打开分组开关")
+                    return@launch
+                }
                 val target = WallpaperTarget.fromName(group?.target)
                 AppLog.d(
                     TAG,
@@ -1341,6 +1421,18 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val group = groupDao.getGroupById(image.groupId)
+                // Same rule as setImageAsWallpaper: a disabled group's media is
+                // not settable (see the comment there). Checked BEFORE the HOME
+                // cursor is moved / the picker is launched, so a disabled pick
+                // cannot reach the engine or leave a pending preview pick behind.
+                if (group != null && !group.isEnabled) {
+                    AppLog.d(
+                        TAG,
+                        "setAsLiveWallpaper ignored: group ${group.id} is disabled"
+                    )
+                    _toastMessage.emit("该分组未启用，请先打开分组开关")
+                    return@launch
+                }
                 val target = WallpaperTarget.fromName(group?.target)
                 AppLog.d(
                     TAG,
@@ -1665,6 +1757,8 @@ data class SettingsUiState(
     val clarityMode: String = "auto",
     val switchFadeEnabled: Boolean = true,
     val themeColor: String = "",
+    /** "system" (follow the phone) / "light" / "dark". */
+    val themeMode: String = SettingsKeys.THEME_MODE_SYSTEM,
     val autoScanEnabled: Boolean = false,
     val autoScanIntervalMs: Long = 24L * 60 * 60 * 1000,
     /** Wall-clock ms of the last auto-scan run; 0 = never. */

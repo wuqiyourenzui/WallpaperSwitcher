@@ -1,9 +1,10 @@
 package com.wallpaperswitcher.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -50,6 +51,12 @@ fun HomeScreen(
     val serviceEnabled = homeUiState.serviceEnabled
     val lockTimerEnabled = homeUiState.lockTimerEnabled
     var showCreateDialog by remember { mutableStateOf(false) }
+    // 分组多选：批量删除 / 批量启用。The selection map is read per card (a
+    // snapshot read) so ticking one group only recomposes that card.
+    var groupSelectionMode by remember { mutableStateOf(false) }
+    val selectedGroupIds =
+        remember { androidx.compose.runtime.snapshots.SnapshotStateMap<Long, Boolean>() }
+    var confirmDeleteGroups by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -185,11 +192,44 @@ fun HomeScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            FilledTonalButton(onClick = { showCreateDialog = true }) {
-                Icon(Icons.Filled.Add, "新建", modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("新建分组")
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // 多选入口（图标按钮，窄屏也不挤压「新建分组」）
+                if (groups.isNotEmpty() && !groupSelectionMode) {
+                    IconButton(
+                        onClick = {
+                            selectedGroupIds.clear()
+                            groupSelectionMode = true
+                        }
+                    ) {
+                        Icon(Icons.Filled.Checklist, "多选分组", modifier = Modifier.size(22.dp))
+                    }
+                    Spacer(modifier = Modifier.width(4.dp))
+                }
+                FilledTonalButton(onClick = { showCreateDialog = true }) {
+                    Icon(Icons.Filled.Add, "新建", modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("新建分组")
+                }
             }
+        }
+
+        // 多选工具栏：与分组详情里的选择栏同一套交互（退出 / 全选 / 已选 / 动作）
+        if (groupSelectionMode) {
+            Spacer(modifier = Modifier.height(4.dp))
+            GroupSelectionToolbar(
+                selectedMap = selectedGroupIds,
+                allIds = groups.map { it.id },
+                onExit = {
+                    selectedGroupIds.clear()
+                    groupSelectionMode = false
+                },
+                onEnable = {
+                    viewModel.setGroupsEnabled(selectedGroupIds.keys.toSet(), true)
+                    selectedGroupIds.clear()
+                    groupSelectionMode = false
+                },
+                onDelete = { confirmDeleteGroups = true }
+            )
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -205,7 +245,28 @@ fun HomeScreen(
                     GroupCard(
                         group = group,
                         mediaCount = mediaCounts[group.id] ?: 0,
-                        onClick = { onGroupClick(group.id) },
+                        selectionMode = groupSelectionMode,
+                        isSelected = selectedGroupIds.containsKey(group.id),
+                        onClick = {
+                            if (groupSelectionMode) {
+                                if (selectedGroupIds.containsKey(group.id)) {
+                                    selectedGroupIds.remove(group.id)
+                                } else {
+                                    selectedGroupIds[group.id] = true
+                                }
+                            } else {
+                                onGroupClick(group.id)
+                            }
+                        },
+                        // Long-press enters multi-select with this group ticked -
+                        // the same gesture the media grid would use.
+                        onLongClick = {
+                            if (!groupSelectionMode) {
+                                selectedGroupIds.clear()
+                                selectedGroupIds[group.id] = true
+                                groupSelectionMode = true
+                            }
+                        },
                         onToggle = { viewModel.toggleGroupEnabled(group.id, it) }
                     )
                 }
@@ -223,6 +284,35 @@ fun HomeScreen(
                 viewModel.createGroupAndOpen(name) { groupId ->
                     onGroupClick(groupId)
                 }
+            }
+        )
+    }
+
+    if (confirmDeleteGroups) {
+        val count = selectedGroupIds.size
+        AlertDialog(
+            onDismissRequest = { confirmDeleteGroups = false },
+            title = { Text("删除分组") },
+            text = {
+                Text(
+                    "确定删除选中的 $count 个分组吗？分组里的媒体记录会一起移除" +
+                        "（手机里的照片/视频文件不会被删除）。"
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        viewModel.deleteGroups(selectedGroupIds.keys.toSet())
+                        selectedGroupIds.clear()
+                        groupSelectionMode = false
+                        confirmDeleteGroups = false
+                    }
+                ) {
+                    Text("删除", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmDeleteGroups = false }) { Text("取消") }
             }
         )
     }
@@ -358,29 +448,38 @@ private fun ServiceControlCard(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GroupCard(
     group: WallpaperGroup,
     mediaCount: Int,
+    selectionMode: Boolean = false,
+    isSelected: Boolean = false,
     onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
     onToggle: (Boolean) -> Unit
 ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick),
+            // Long-press is the usual way into a multi-select list; a plain tap
+            // still opens the group (or ticks it while selecting).
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
         shape = RoundedCornerShape(20.dp),
         colors = CardDefaults.cardColors(
-            containerColor = if (group.isEnabled)
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-            else
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f)
+            containerColor = when {
+                isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                group.isEnabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f)
+            }
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = if (group.isEnabled)
-            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-        else
-            null
+        border = when {
+            isSelected -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
+            group.isEnabled ->
+                BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+            else -> null
+        }
     ) {
         Row(
             modifier = Modifier
@@ -467,10 +566,100 @@ private fun GroupCard(
                 )
             }
 
-            Switch(
-                checked = group.isEnabled,
-                onCheckedChange = onToggle
+            if (selectionMode) {
+                // Ticking is handled by the card's own click - the box is a
+                // read-only indicator here, so tapping it does not fight the
+                // card's selection toggle.
+                Checkbox(checked = isSelected, onCheckedChange = null)
+            } else {
+                Switch(
+                    checked = group.isEnabled,
+                    onCheckedChange = onToggle
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Multi-select bar for the GROUP list: exit / select-all / count / 批量启用 /
+ * 批量删除.
+ *
+ * Mirrors the media grid's SelectionToolbar (GroupDetailScreen) so both
+ * selection modes look and behave the same, and reads the selection INSIDE this
+ * composable (a snapshot read) so ticking one group does not recompose the whole
+ * screen.
+ */
+@Composable
+private fun GroupSelectionToolbar(
+    selectedMap: androidx.compose.runtime.snapshots.SnapshotStateMap<Long, Boolean>,
+    allIds: List<Long>,
+    onExit: () -> Unit,
+    onEnable: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val selectedCount = selectedMap.size
+    val isAllSelected = allIds.isNotEmpty() && selectedCount == allIds.size
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 2.dp, bottom = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        IconButton(modifier = Modifier.size(40.dp), onClick = onExit) {
+            Icon(Icons.Filled.Close, "退出多选", modifier = Modifier.size(20.dp))
+        }
+        TextButton(
+            modifier = Modifier.heightIn(min = 40.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp),
+            onClick = {
+                if (isAllSelected) {
+                    selectedMap.clear()
+                } else {
+                    selectedMap.clear()
+                    allIds.forEach { selectedMap[it] = true }
+                }
+            }
+        ) {
+            Icon(
+                if (isAllSelected) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank,
+                null,
+                modifier = Modifier.size(18.dp)
             )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(if (isAllSelected) "取消全选" else "全选", maxLines = 1)
+        }
+        Text(
+            "已选 $selectedCount/${allIds.size}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+            modifier = Modifier.weight(1f)
+        )
+        if (selectedCount > 0) {
+            Button(
+                onClick = onEnable,
+                modifier = Modifier.heightIn(min = 40.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp)
+            ) {
+                Icon(Icons.Filled.CheckCircle, "启用", modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("启用", maxLines = 1)
+            }
+            Button(
+                onClick = onDelete,
+                modifier = Modifier.heightIn(min = 40.dp),
+                contentPadding = PaddingValues(horizontal = 12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.errorContainer,
+                    contentColor = MaterialTheme.colorScheme.onErrorContainer
+                )
+            ) {
+                Icon(Icons.Filled.Delete, "删除", modifier = Modifier.size(18.dp))
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("删除", maxLines = 1)
+            }
         }
     }
 }

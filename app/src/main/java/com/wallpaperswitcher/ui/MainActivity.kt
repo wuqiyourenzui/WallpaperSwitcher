@@ -14,6 +14,7 @@ import com.wallpaperswitcher.wallpaper.FloatingSwitchButton
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import com.wallpaperswitcher.service.WallpaperSwitchService
 import com.wallpaperswitcher.ui.theme.WallpaperSwitcherTheme
+import com.wallpaperswitcher.ui.theme.ThemeMode
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
 class MainActivity : ComponentActivity() {
@@ -24,6 +25,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val vm: WallpaperViewModel = viewModel()
             val themeColor by vm.themeColor.collectAsStateWithLifecycle()
+            val themeMode by vm.themeMode.collectAsStateWithLifecycle()
 
             // Ask for the notification permission on Android 13+: the timer is
             // a foreground service and its notification is the only visible
@@ -48,7 +50,12 @@ class MainActivity : ComponentActivity() {
             // screen as a permanent card (it re-reads the engine state on every
             // ON_RESUME). A second Toast here only duplicated the same message
             // right on top of it.
-            WallpaperSwitcherTheme(themeColorHex = themeColor) {
+            // "system" follows the phone, "light"/"dark" force one mode (see
+            // ThemeMode). Anything else falls back to following the system.
+            WallpaperSwitcherTheme(
+                darkTheme = ThemeMode.from(themeMode).isDark(),
+                themeColorHex = themeColor
+            ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -108,8 +115,24 @@ class MainActivity : ComponentActivity() {
         // disappears - cancelled in onStart() if the user comes straight back.
         (application as? com.wallpaperswitcher.WallpaperSwitcherApp)
             ?.scheduleThumbnailCacheTrim()
-        // Leaving the UI: the wallpaper may be visible again (home screen), in
-        // which case the audio resumes and the floating button comes back.
+    }
+
+    /**
+     * The UI lost the foreground: the wallpaper is in front again as soon as the
+     * next screen (the launcher) takes over, and that happens BEFORE [onStop].
+     *
+     * Measured on the Redmi tablet: `onStop` arrived **1104ms** after HOME (it
+     * waits for the app's exit animation), so flipping the engine's
+     * app-foreground flag there left the video frozen - or black on a freshly
+     * created engine - for that whole second before playback resumed
+     * (reports: 「设置视频为壁纸后，返回桌面要黑屏一会才开始播放」、
+     * 「进入壁纸软件后，再退出，视频会卡一下再播放」). onPause fires with the
+     * transition itself (~50ms), so the decode/audio resume together with the
+     * launcher animation instead of after it.
+     */
+    override fun onPause() {
+        super.onPause()
+        AppLog.d(TAG, "onPause: UI left the foreground")
         LiveWallpaperService.setAppForeground(false)
         // The desktop timer idles after its one switch while the app is in the
         // foreground (see the app-foreground gate in WallpaperSwitchService):

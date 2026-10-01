@@ -111,5 +111,14 @@ object SettingsKeys {
      */
     const val SHUFFLE_ALL_COUNT = "shuffle_all_count"
     // Theme
+    /** Custom accent colour as "#RRGGBB"; empty = 跟随系统 (Monet on Android 12+). */
     const val THEME_COLOR = "theme_color"
+    /**
+     * Light/dark mode: "system" (follow the phone) / "light" / "dark".
+     * Missing or unknown values behave like "system".
+     */
+    const val THEME_MODE = "theme_mode"
+    const val THEME_MODE_SYSTEM = "system"
+    const val THEME_MODE_LIGHT = "light"
+    const val THEME_MODE_DARK = "dark"
 }

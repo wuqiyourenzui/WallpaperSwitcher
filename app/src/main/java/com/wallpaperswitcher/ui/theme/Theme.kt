@@ -110,6 +110,32 @@ fun parseHexColor(hex: String): Color? =
     com.wallpaperswitcher.util.parseHexColorInt(hex)?.let { Color(it) }
 
 /**
+ * Light/dark choice from Settings: 跟随系统 / 浅色 / 深色.
+ *
+ * Stored as [com.wallpaperswitcher.data.SettingsKeys.THEME_MODE]'s string value;
+ * anything unknown (or a missing row, e.g. right after an update) behaves like
+ * [SYSTEM] so the UI never ends up in a state the user cannot name.
+ */
+enum class ThemeMode(val value: String, val label: String) {
+    SYSTEM(com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_SYSTEM, "跟随系统"),
+    LIGHT(com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_LIGHT, "浅色"),
+    DARK(com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_DARK, "深色");
+
+    /** Whether this mode wants [MaterialTheme]'s dark scheme right now. */
+    @Composable
+    fun isDark(): Boolean = when (this) {
+        LIGHT -> false
+        DARK -> true
+        SYSTEM -> isSystemInDarkTheme()
+    }
+
+    companion object {
+        fun from(value: String?): ThemeMode =
+            entries.firstOrNull { it.value == value } ?: SYSTEM
+    }
+}
+
+/**
  * Generate a light color scheme with a custom primary color. The container
  * and surface tones are tinted with the primary so the whole UI follows the
  * chosen accent instead of only the buttons.

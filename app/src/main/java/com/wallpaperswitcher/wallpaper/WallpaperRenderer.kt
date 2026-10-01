@@ -339,6 +339,11 @@ class WallpaperRenderer(
      * the beginning after every lock.
      */
     @Volatile var lastVideoPositionUs: Long = 0L
+    /**
+     * True while the video's audio was silenced for our OWN UI opening but the
+     * picture deliberately kept playing (see [muteAudioKeepingVideo]).
+     */
+    private var audioMutedForOwnUi = false
         private set
     // Monitor for the pass handshake (wait/notify, not a lock around state).
     private val audioPassLock = Object()
@@ -689,6 +694,7 @@ class WallpaperRenderer(
         currentVideoUri = null
         currentVideoCachePath = null
         audioPending = null
+        audioMutedForOwnUi = false
         audioSession.release()
         val handler = renderHandler
         val thread = renderThread
@@ -1089,6 +1095,9 @@ class WallpaperRenderer(
         // A stale cache path from the previous video would make the audio thread
         // open the wrong file.
         currentVideoCachePath = null
+        // A fresh video starts its own soundtrack: any "muted because our own UI
+        // opened" state belonged to the previous clip.
+        audioMutedForOwnUi = false
         // First stop any existing video
         stopVideoInternal()
 
@@ -1245,6 +1254,42 @@ class WallpaperRenderer(
             // sound (startVideo checks this flag).
             AppLog.d(TAG, "Video sound ON (no video playing right now)")
         }
+    }
+
+    /**
+     * Silence the video's audio immediately while the PICTURE keeps playing.
+     *
+     * Used when our own UI comes to the foreground: the sound has to stop with
+     * the tap (user requirement), but pausing the decode at that instant froze
+     * the video in the middle of the app-open animation - visible only for our
+     * own app, because other apps reach us through the system's "covered" report
+     * ~1.1s later, when the wallpaper is already hidden
+     * (see LiveWallpaperService.APP_ENTRY_PAUSE_GRACE_MS).
+     *
+     * [unmuteAudioReanchored] puts the sound back - joined to the frame that is
+     * on screen by then, so the muted interval is skipped instead of playing late.
+     */
+    fun muteAudioKeepingVideo() {
+        if (!videoSoundEnabled || !isVideoPlaying) return
+        if (audioMutedForOwnUi) return
+        audioMutedForOwnUi = true
+        stopAudio()
+        AppLog.d(TAG, "Audio muted (own UI opening; video keeps playing)")
+    }
+
+    /**
+     * Undo [muteAudioKeepingVideo]. The audio starts at the picture's CURRENT
+     * position: while it was muted the video kept advancing, so continuing the
+     * audio where it stopped would leave the sound behind the picture by the
+     * whole muted interval.
+     */
+    fun unmuteAudioReanchored() {
+        if (!audioMutedForOwnUi) return
+        audioMutedForOwnUi = false
+        if (!videoSoundEnabled || !isVideoPlaying || powerSaveMode) return
+        val uri = currentVideoUri ?: return
+        startAudio(uri, videoGeneration.get(), lastVideoPositionUs)
+        AppLog.d(TAG, "Audio unmuted, re-anchored at ${lastVideoPositionUs / 1000}ms")
     }
 
     /** Start the audio thread for [uriStr]; only called when sound is enabled. */

@@ -99,6 +99,30 @@ class LiveWallpaperService : WallpaperService() {
          */
         private const val PICK_CONFIRM_ENFORCE_DELAY_MS = 1_200L
         /**
+         * How long after our own UI leaves the foreground the engine resumes.
+         *
+         * The wallpaper engine shares the app's process, so resuming instantly
+         * put the decoder + GL + audio back on the CPU/GPU while our Activity was
+         * still running its close animation - the video's first frames then came
+         * out uneven (user report: 「壁纸软件进出视频就是比其他软件进出会卡顿」;
+         * entering/leaving other apps never touches this process). Shorter than
+         * the animation, so the picture is live again once the desktop is fully
+         * revealed.
+         */
+        private const val APP_EXIT_RESUME_GRACE_MS = 250L
+        /**
+         * How long the video keeps PLAYING after our own UI comes to the front,
+         * while the audio is already muted.
+         *
+         * The app's open animation runs for ~0.3-0.5s and the wallpaper is visible
+         * underneath it; MIUI reports us as "covered" at ~+0.6s. Pausing the
+         * decode at once (the old behaviour) froze the picture in the middle of
+         * that animation - a stutter only OUR app has, because other apps reach us
+         * through the system's covered report (measured +0.65~1.25s). The audio
+         * mutes instantly either way (see WallpaperRenderer.muteAudioKeepingVideo).
+         */
+        private const val APP_ENTRY_PAUSE_GRACE_MS = 600L
+        /**
          * Fire-and-forget bookkeeping that must survive the engine scope being
          * cancelled in onDestroy (e.g. the shuffle deck flush), with the same
          * uncaught-failure guard as the engine's own scope.
@@ -374,6 +398,34 @@ class LiveWallpaperService : WallpaperService() {
             previewPickHomeId = -1L
             previewPickAtMs = 0L
             realApplySincePick = false
+        }
+
+        /**
+         * HOME cursor as the target of a confirmed pick, for the case where the
+         * preview session no longer knows the picked id (see the caller).
+         *
+         * Returns 0 unless the cursor still points at a media whose group is
+         * ENABLED and targets the home screen: a disabled group's media must never
+         * be pushed to the engine (user report: 「当分组图片未启用时，里面的图片仍能
+         * 设置为壁纸」), and a lock-only media has no business on the desktop.
+         */
+        private suspend fun homeCursorForConfirmedPick(context: Context): Long {
+            return try {
+                val appDb = AppDatabase.getInstance(context)
+                val cursor = appDb.settingsDao().getLong(SettingsKeys.LAST_IMAGE_ID, 0L)
+                if (cursor <= 0L) return 0L
+                val media = appDb.wallpaperImageDao().getImageById(cursor) ?: return 0L
+                val group = appDb.wallpaperGroupDao().getGroupById(media.groupId) ?: return 0L
+                if (!group.isEnabled) return 0L
+                if (!com.wallpaperswitcher.engine.WallpaperTarget
+                        .fromName(group.target).includesHome
+                ) {
+                    return 0L
+                }
+                cursor
+            } catch (_: Exception) {
+                0L
+            }
         }
 
         /**
@@ -892,6 +944,15 @@ class LiveWallpaperService : WallpaperService() {
          */
         @Volatile private var powerSaveVisibleInput = true
         private var powerSavePending: Runnable? = null
+        /**
+         * When our own UI last left the foreground (0 = it never did / it is back).
+         * A resume inside [APP_EXIT_RESUME_GRACE_MS] of that is delayed, so the
+         * Activity's close animation finishes before the decoder/GL/audio come
+         * back (see APP_EXIT_RESUME_GRACE_MS).
+         */
+        private var appLeftAtMs = 0L
+        /** Pending "pause the decode after the app-open animation" task. */
+        private var appEntryPauseRunnable: Runnable? = null
         /** True while [powerSavePending] is a delayed visibility-blip pause. */
         private var pauseCoalescePending = false
         /** Pending "release the parked video/GIF" task (see the constant). */
@@ -1645,11 +1706,24 @@ class LiveWallpaperService : WallpaperService() {
             appInForeground = foreground
             if (foreground) {
                 visibleBeforeAppForeground = isVisible
-                AppLog.d(TAG, "App UI foreground: mute audio + hide floating button")
+                // Back already (a quick app switch): no exit grace is pending.
+                appLeftAtMs = 0L
+                AppLog.d(TAG, "App UI foreground: mute audio now, pause decode after the open animation")
+                // The sound stops with the tap (user requirement), but the picture
+                // keeps playing until our UI has really covered the wallpaper:
+                // pausing the decode at once froze the video DURING the app-open
+                // animation, which is visible only for our own app - other apps
+                // reach us through the system's covered report ~1.1s later
+                // (measured; see APP_ENTRY_PAUSE_GRACE_MS).
+                renderer?.muteAudioKeepingVideo()
                 // Only this input changes; the state is re-derived from all of
                 // them, so a "visible" callback arriving while our UI is up can no
-                // longer resume the audio behind it (see ScreenPowerPolicy).
-                refreshPowerSave("app-foreground")
+                // longer resume the audio behind it (see ScreenPowerPolicy). The
+                // evaluation is deferred so the decode survives the animation; a
+                // covered report that arrives earlier pauses us right away anyway.
+                val pauseForUi = Runnable { refreshPowerSave("app-foreground") }
+                appEntryPauseRunnable = pauseForUi
+                mainHandler.postDelayed(pauseForUi, APP_ENTRY_PAUSE_GRACE_MS)
                 hideFloatingButtonNow()
             } else {
                 AppLog.d(TAG, "App UI hidden: re-evaluating wallpaper state")
@@ -1675,6 +1749,13 @@ class LiveWallpaperService : WallpaperService() {
                     // corrects this input as soon as it arrives.
                     powerSaveVisibleInput = true
                 }
+                // Arms the exit grace: the resume itself is delayed inside
+                // refreshPowerSave (whichever signal asks for it first).
+                appLeftAtMs = SystemClock.elapsedRealtime()
+                // The app is gone again before the entry grace expired: that
+                // pending pause evaluation would only re-derive the same state.
+                appEntryPauseRunnable?.let { mainHandler.removeCallbacks(it) }
+                appEntryPauseRunnable = null
                 refreshPowerSave("app-left")
                 updateFloatingButton()
             }
@@ -1856,13 +1937,15 @@ class LiveWallpaperService : WallpaperService() {
                                 // cannot have advanced in the meantime).
                                 var targetHomeId = pickedHomeId
                                 if (targetHomeId <= 0L) {
-                                    targetHomeId = try {
-                                        AppDatabase.getInstance(appContext)
-                                            .settingsDao()
-                                            .getLong(SettingsKeys.LAST_IMAGE_ID, 0L)
-                                    } catch (_: Exception) {
-                                        0L
-                                    }
+                                    // The pending pick is normally still there; it is
+                                    // gone when a REAL engine was created between the
+                                    // tap and this check (its onCreate clears it).
+                                    // The HOME cursor the pick moved is then the
+                                    // remaining record of what the user chose - and
+                                    // it is still validated below (enabled,
+                                    // home-capable group) so a stale cursor can never
+                                    // re-apply a disabled group's media.
+                                    targetHomeId = homeCursorForConfirmedPick(appContext)
                                 }
                                 if (targetHomeId > 0L) {
                                     pushConfirmedPickToEngine(targetHomeId)
@@ -2141,6 +2224,7 @@ class LiveWallpaperService : WallpaperService() {
             floatingButtonHideRunnable = null
         }
 
+
         private fun flushShuffleState() {
             // onCreate() bails out early when the database cannot be opened, so
             // `db` can still be uninitialized when onDestroy() runs - reading it
@@ -2312,9 +2396,40 @@ class LiveWallpaperService : WallpaperService() {
                     applyPowerSave(hint)
                 }
             } else {
-                val runnable = Runnable { applyPowerSave(hint) }
-                powerSavePending = runnable
-                mainHandler.postDelayed(runnable, VISIBILITY_DEBOUNCE_MS)
+                // A resume triggered by OUR app leaving the foreground (or by the
+                // screen coming back) is a deliberate transition, not a window
+                // burst: the wallpaper is in front and interactive. Debouncing it
+                // froze the video for ~250ms after every return to the desktop
+                // (reports: 「设置视频为壁纸后返回桌面黑屏一会才开始播放」、
+                // 「进出壁纸软件后视频卡一下再播放」). The blip protection is not
+                // lost: a covered report that follows is handled by the pause path
+                // (and a brief one is coalesced by VISIBILITY_PAUSE_COALESCE_MS).
+                val deliberateResume = !appInForeground && powerSaveVisibleInput &&
+                    isScreenInteractive()
+                // Our own UI just left: let its exit animation finish before the
+                // decoder/GL/audio come back. Measured - resuming inside that
+                // animation made the video's first frames uneven, because the
+                // engine shares this process with the Activity that is animating
+                // (that is why entering/leaving OUR app looks worse than other
+                // apps, which never touch this process).
+                val sinceAppLeft = if (appLeftAtMs > 0L) {
+                    SystemClock.elapsedRealtime() - appLeftAtMs
+                } else {
+                    Long.MAX_VALUE
+                }
+                val delayMs = when {
+                    sinceAppLeft < APP_EXIT_RESUME_GRACE_MS ->
+                        APP_EXIT_RESUME_GRACE_MS - sinceAppLeft
+                    deliberateResume -> 0L
+                    else -> VISIBILITY_DEBOUNCE_MS
+                }
+                if (delayMs <= 0L) {
+                    applyPowerSave(hint)
+                } else {
+                    val runnable = Runnable { applyPowerSave(hint) }
+                    powerSavePending = runnable
+                    mainHandler.postDelayed(runnable, delayMs)
+                }
             }
         }
 
@@ -2328,8 +2443,22 @@ class LiveWallpaperService : WallpaperService() {
                 screenInteractive = isScreenInteractive()
             )
             val pause = reasons.isNotEmpty()
-            if (renderer?.powerSaveMode == pause) return
+            if (renderer?.powerSaveMode == pause) {
+                // No state change - but a quick enter/leave of our own UI never
+                // paused at all, so an "own UI opened" audio mute still has to be
+                // undone here.
+                if (!pause) renderer?.unmuteAudioReanchored()
+                return
+            }
             renderer?.powerSaveMode = pause
+            if (!pause) {
+                // Audible again: undo an "own UI opened" audio mute, joined to the
+                // frame that is on screen right now - the decode kept running while
+                // the sound was muted, so continuing where the audio stopped would
+                // leave it behind the picture. AFTER the flag flip: the unmute
+                // returns early while powerSaveMode is still true.
+                renderer?.unmuteAudioReanchored()
+            }
             // ON: every input that asked for it, so the log shows WHY (including
             // the case where two inputs disagree). OFF: the signal that triggered
             // this re-evaluation. The instance kind is part of the line because the
@@ -2741,10 +2870,14 @@ class LiveWallpaperService : WallpaperService() {
                 // A manual selection supersedes any prefetched next image.
                 clearPrefetchCache()
                 val img = imageDao.getImageById(targetId)
-                // Explicit user selection always applies the chosen media,
-                // regardless of the group's enabled state (the static path in
-                // WallpaperApplier behaves the same way). Silently replacing a
-                // manual pick with a random image was confusing.
+                // Explicit user selection always applies the chosen media.
+                // Silently replacing a manual pick with a random image was
+                // confusing. A DISABLED group's media never reaches this point:
+                // the user-facing entry points (setAsLiveWallpaper /
+                // setImageAsWallpaper) refuse a disabled group, and the internal
+                // callers (media-type repair, a confirmed pick) take their id from
+                // an enabled pick - so this permissive rule cannot re-apply media
+                // from a group the user switched off.
                 img ?: pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao)
             } else {
                 val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
