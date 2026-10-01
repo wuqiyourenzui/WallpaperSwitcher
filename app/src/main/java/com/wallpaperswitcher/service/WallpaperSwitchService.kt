@@ -644,9 +644,15 @@ class WallpaperSwitchService : Service() {
                         lockGuardHeld = true
                         break
                     }
-                    if (lockGuardWaited >= STATIC_APPLY_WAIT_MAX_MS) break
-                    delay(lockGuardStep)
-                    lockGuardWaited += lockGuardStep
+                    // Clamp every step to what is left of the budget. The loop used to
+                    // delay a whole step and only check afterwards, so the documented 6s
+                    // ceiling was really ~9.25s (250 + 500 + 1000x7 before the check
+                    // tripped) - and the user waits on this path.
+                    val remaining = STATIC_APPLY_WAIT_MAX_MS - lockGuardWaited
+                    if (remaining <= 0L) break
+                    val sleep = lockGuardStep.coerceAtMost(remaining)
+                    delay(sleep)
+                    lockGuardWaited += sleep
                     lockGuardStep = (lockGuardStep * 2).coerceAtMost(STATIC_APPLY_WAIT_STEP_MAX_MS)
                 }
                 if (!lockGuardHeld) {
