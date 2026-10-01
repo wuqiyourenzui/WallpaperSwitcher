@@ -165,15 +165,19 @@ fun customLightColorScheme(primary: Color): ColorScheme {
     // overridden), so the accent must be tuned against THAT surface - using the
     // app's own LightColorScheme.surface left dark-mode accents below AA.
     val surface = lightColorScheme().surface
-    val accentText = readableAccent(primary, surface)
+    // Tune the accent against what the text really sits on, not the bare surface:
+    // the containers are translucent (`primary.copy(alpha = 0.15f)` etc), so a
+    // saturated accent drags the backdrop towards the text colour. Asserting only
+    // against the surface hid that (see ContainerContrastTest).
+    val accentText = readableAccent(primary, surface, CONTAINER_ALPHA_LIGHT)
     return lightColorScheme(
         primary = primary,
         onPrimary = Color(ColorContrast.readableOn(primary.toArgb())),
-        primaryContainer = primary.copy(alpha = 0.15f),
+        primaryContainer = primary.copy(alpha = CONTAINER_ALPHA_LIGHT),
         onPrimaryContainer = accentText,
         secondaryContainer = primary.copy(alpha = 0.12f),
         onSecondaryContainer = accentText,
-        surfaceVariant = primary.copy(alpha = 0.10f),
+        surfaceVariant = primary.copy(alpha = SURFACE_VARIANT_ALPHA_LIGHT),
         onSurfaceVariant = accentText,
     )
 }
@@ -183,27 +187,62 @@ fun customLightColorScheme(primary: Color): ColorScheme {
  */
 fun customDarkColorScheme(primary: Color): ColorScheme {
     val surface = darkColorScheme().surface
-    val accentText = readableAccent(primary, surface)
+    val accentText = readableAccent(primary, surface, CONTAINER_ALPHA_DARK)
     return darkColorScheme(
         primary = primary,
         onPrimary = Color(ColorContrast.readableOn(primary.toArgb())),
-        primaryContainer = primary.copy(alpha = 0.3f),
+        primaryContainer = primary.copy(alpha = CONTAINER_ALPHA_DARK),
         onPrimaryContainer = accentText,
         secondaryContainer = primary.copy(alpha = 0.22f),
         onSecondaryContainer = accentText,
-        surfaceVariant = primary.copy(alpha = 0.18f),
+        surfaceVariant = primary.copy(alpha = SURFACE_VARIANT_ALPHA_DARK),
         onSurfaceVariant = accentText,
     )
 }
 
-/** The accent, darkened/lightened until accent-coloured text is readable on [surface]. */
-private fun readableAccent(primary: Color, surface: Color): Color = Color(
-    ColorContrast.ensureReadable(
-        primary.toArgb(),
-        surface.toArgb(),
-        ColorContrast.AA_NORMAL
+/** Container/variant alphas, shared with the tests so they assert the real backdrop. */
+const val CONTAINER_ALPHA_LIGHT = 0.15f
+const val CONTAINER_ALPHA_DARK = 0.30f
+const val SURFACE_VARIANT_ALPHA_LIGHT = 0.10f
+const val SURFACE_VARIANT_ALPHA_DARK = 0.18f
+
+/**
+ * The accent, darkened/lightened until accent-coloured text is readable on the
+ * *composited* container it will actually be drawn on (see
+ * [ColorContrast.composite]). The stricter of the two backdrops the accent lands
+ * on - the translucent container and the translucent surface variant - decides.
+ */
+private fun readableAccent(primary: Color, surface: Color, containerAlpha: Float): Color {
+    val variantAlpha = if (containerAlpha >= CONTAINER_ALPHA_DARK) {
+        SURFACE_VARIANT_ALPHA_DARK
+    } else {
+        SURFACE_VARIANT_ALPHA_LIGHT
+    }
+    val onContainer = ColorContrast.composite(primary.toArgb(), surface.toArgb(), containerAlpha)
+    val onVariant = ColorContrast.composite(primary.toArgb(), surface.toArgb(), variantAlpha)
+    val backdrop = if (
+        ColorContrast.contrastRatio(primary.toArgb(), onContainer) <=
+        ColorContrast.contrastRatio(primary.toArgb(), onVariant)
+    ) {
+        onContainer
+    } else {
+        onVariant
+    }
+    return Color(
+        ColorContrast.ensureReadable(primary.toArgb(), backdrop, ACCENT_TARGET_RATIO)
     )
-)
+}
+
+/**
+ * Target contrast for accent-coloured text, slightly above WCAG AA.
+ *
+ * The accent text is drawn on several translucent backdrops (the container, the
+ * surface variant) and on the bare surface; they differ by a fraction of a percent,
+ * but tuning to exactly 4.5 against one of them left another at 4.49 (a pure white
+ * accent was the reported case). The margin costs nothing visible and makes the AA
+ * guarantee hold for every backdrop the accent lands on.
+ */
+private const val ACCENT_TARGET_RATIO = ColorContrast.AA_NORMAL + 0.2f
 
 @Composable
 fun WallpaperSwitcherTheme(

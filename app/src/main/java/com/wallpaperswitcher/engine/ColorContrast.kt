@@ -112,4 +112,25 @@ object ColorContrast {
         }
         return floatArrayOf(((h % 360f) + 360f) % 360f, s, l)
     }
+
+    /**
+     * Alpha-composite [foreground] over [background], the way the custom colour
+     * scheme builds its containers (`primary.copy(alpha = 0.15f)` painted on the
+     * surface).
+     *
+     * Why this matters for contrast: text drawn with `onPrimaryContainer` does not
+     * sit on the bare surface, it sits on the *composited* container. Tuning the
+     * accent against the surface alone left that text short of AA for some accents
+     * (a saturated red container pulls the background towards the text colour) - the
+     * regression test could not see it because it asserted against the surface.
+     */
+    fun composite(foreground: Int, background: Int, alpha: Float): Int {
+        val a = alpha.coerceIn(0f, 1f)
+        fun blend(shift: Int): Int {
+            val f = (foreground shr shift) and 0xFF
+            val b = (background shr shift) and 0xFF
+            return Math.round(f * a + b * (1f - a)).coerceIn(0, 255)
+        }
+        return (0xFF shl 24) or (blend(16) shl 16) or (blend(8) shl 8) or blend(0)
+    }
 }
