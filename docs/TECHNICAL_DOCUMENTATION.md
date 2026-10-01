@@ -2648,6 +2648,28 @@ onSurfaceVariant = primary,     // ✗✗ 这是全应用的"次要文字"颜色
   原报告描述的"非 ASCII 十六进制 → 颜色静默不生效"不成立；`Locale.ROOT` 仅作防御性写法保留 ✓。
 * **回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、**164 单测全绿** ✓、`lintDebug` 0 error ✓。
 
+#### 4.9.54 审查批次三：对比度要按"文字真正落在哪个背景上"校准
+
+审计指出 4.9.51 的对比度修正**只对 `surface` 校准** ✗，而 `onPrimaryContainer` / `onSurfaceVariant`
+的文字实际画在**半透明容器**上（`primary.copy(alpha = 0.15f)` 等叠在 surface 之上）✓ —— 饱和主题色会把
+背景拉向文字颜色 ✗，而测试断言的正是 `surface` ✗，所以永远看不出这个缺口 ✓。
+
+**实现**：
+* `engine/ColorContrast.composite(fg, bg, alpha)`：新增纯函数做 alpha 合成 ✓（可单测 ✓）。
+* `Theme.kt`：`readableAccent()` 改为对**复合后的容器**校准 ✓，并在"容器 15%/30%"与"surfaceVariant
+  10%/18%"两个背景里取**较难的那个** ✓；容器/variant 的 alpha 提升为具名常量 ✓，供测试复用 ✓（测试断言的
+  背景与实现的背景不会再漂移 ✓）。
+* **余量**：校准目标从 4.5 提到 **4.7**（`ACCENT_TARGET_RATIO = AA_NORMAL + 0.2`）✓。原因是几个背景之间
+  只差千分之几 ✓，按 4.5 精确校准会让另一个背景停在 **4.49:1** ✗（纯白主题色就是这种情况 ✓，见下）。
+  留 0.2 的余量视觉上无差别 ✓，但让**所有**背景都稳过 AA ✓。
+
+**这个过程本身值得记录** ✓：改完之后 5 条测试变红 ✗，其中包含**改动前是绿的**两条 ✓ —— 失败信息给出
+`FFFFFFFF on surfaceVariant gives 4.49:1` ✓，正好证明"只对某一个背景校准"是治标不治本 ✓；另外一条是我自己
+把测试期望写反了 ✓（alpha=0 时显示的是**背景**色 ✓，不是前景 ✓），已修正 ✓。**没有靠放宽断言蒙混过去** ✓。
+
+**回归**：`ContainerContrastTest`（3 条 ✓：合成数学 + 浅色/深色两套方案对复合容器达 AA ✓，8 种刁钻主题色 ✓）、
+全套 **167 单测全绿** ✓、`lintDebug` 0 error ✓。
+
 ## 五、服务与后台组件
 
 ### 5.1 WallpaperSwitchService (定时切换服务)
