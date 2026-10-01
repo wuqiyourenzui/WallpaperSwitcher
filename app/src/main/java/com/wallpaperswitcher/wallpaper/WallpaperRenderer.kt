@@ -164,6 +164,17 @@ class WallpaperRenderer(
     private var eglContext = EGL14.EGL_NO_CONTEXT
     private var eglSurface = EGL14.EGL_NO_SURFACE
     private var eglConfig: EGLConfig? = null
+    /**
+     * True only when THIS renderer's `eglInitialize` call succeeded.
+     *
+     * Every renderer in the process gets the same handle from
+     * `eglGetDisplay(EGL_DEFAULT_DISPLAY)`, and a home engine and a preview engine can
+     * coexist. `setupEglContext()` keeps that handle when `eglInitialize` fails, so
+     * without this flag `cleanupAll()` would call `eglTerminate` on a display this
+     * instance never initialised - an unbalanced init/terminate pair that can drop a
+     * sibling engine's last reference and kill its GL context (frozen wallpaper).
+     */
+    private var eglInitializedHere = false
     // Written on the render thread, polled from the engine thread.
     @Volatile private var surfaceReady = false
     private var contextReady = false
@@ -2963,6 +2974,9 @@ class WallpaperRenderer(
         if (eglDisplay == EGL14.EGL_NO_DISPLAY) return
         val ver = IntArray(2)
         if (!EGL14.eglInitialize(eglDisplay, ver, 0, ver, 1)) return
+        // From here on this instance owns the display and must terminate it (see
+        // eglInitializedHere).
+        eglInitializedHere = true
 
         // Some devices/GPUs (e.g. Xiaomi/HyperOS tablets) reject the first
         // RGBA8888 + ES2 window config and eglCreateWindowSurface then fails,
@@ -3156,10 +3170,15 @@ class WallpaperRenderer(
             EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
             if (eglSurface != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(eglDisplay, eglSurface)
             if (eglContext != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(eglDisplay, eglContext)
-            EGL14.eglTerminate(eglDisplay)
+            // Only terminate a display THIS renderer initialised: the handle is shared
+            // process-wide (see eglInitializedHere), so terminating one we failed to
+            // initialise would unbalance the pair and could take a sibling engine's
+            // context down with it.
+            if (eglInitializedHere) EGL14.eglTerminate(eglDisplay)
         }
         eglDisplay = EGL14.EGL_NO_DISPLAY; eglSurface = EGL14.EGL_NO_SURFACE
         eglContext = EGL14.EGL_NO_CONTEXT; eglConfig = null
+        eglInitializedHere = false
         contextReady = false; surfaceReady = false
     }
 
