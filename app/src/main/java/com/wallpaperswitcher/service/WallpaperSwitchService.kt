@@ -1032,9 +1032,15 @@ class WallpaperSwitchService : Service() {
             // timeout) no longer costs 4 wakeups per second for the whole wait.
             var step = STATIC_APPLY_WAIT_STEP_MS
             while (!staticApplyInProgress.compareAndSet(false, true)) {
-                if (waited >= waitMs) return null
-                delay(step)
-                waited += step
+                // Clamp the step to the remaining budget (same reason as the lock tick
+                // loop): delaying a whole step and only checking afterwards made the
+                // documented 6s ceiling ~9.25s (250 + 500 + 1000x7), and the manual
+                // "switch now" tap waits here.
+                val remaining = waitMs - waited
+                if (remaining <= 0L) return null
+                val sleep = step.coerceAtMost(remaining)
+                delay(sleep)
+                waited += sleep
                 step = (step * 2).coerceAtMost(STATIC_APPLY_WAIT_STEP_MAX_MS)
             }
             try {
