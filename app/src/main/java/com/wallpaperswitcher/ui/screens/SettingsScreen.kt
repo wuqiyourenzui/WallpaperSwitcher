@@ -954,6 +954,10 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 currentHex = floatingButtonColor,
                 withAlpha = true,
                 alphaPercent = floatingButtonAlpha,
+                // Same floor the setter clamps to, so the slider cannot display a
+                // value that will not be stored (it ran 0..100 against MIN = 5).
+                alphaMinPercent =
+                com.wallpaperswitcher.data.SettingsKeys.FLOATING_BUTTON_ALPHA_MIN,
                 onConfirmAlpha = { viewModel.setFloatingButtonAlpha(it) },
                 onConfirm = { viewModel.setFloatingButtonColor(it) },
                 onDismiss = { showButtonColorDialog = false }

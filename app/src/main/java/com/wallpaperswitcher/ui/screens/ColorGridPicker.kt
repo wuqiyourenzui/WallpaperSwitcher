@@ -38,6 +38,11 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.wallpaperswitcher.engine.ColorPickerGrid
 
@@ -56,11 +61,18 @@ fun ColorGridPicker(
     onPick: (String) -> Unit,
     modifier: Modifier = Modifier,
     alphaPercent: Int? = null,
-    onAlphaChange: ((Int) -> Unit)? = null
+    onAlphaChange: ((Int) -> Unit)? = null,
+    /**
+     * Lowest value the translucency slider accepts. The floating button clamps its
+     * stored opacity to FLOATING_BUTTON_ALPHA_MIN, so the slider has to use the
+     * same floor - it used to run 0..100 and could show 0-4% while 5% was stored.
+     */
+    alphaMinPercent: Int = 0
 ) {
-    val selected = remember(selectedHex) { ColorPickerGrid.parseHex(selectedHex) }
+    val alphaFloor = alphaMinPercent.coerceIn(0, 100)
+    val selectedColor = remember(selectedHex) { ColorPickerGrid.parseHex(selectedHex) }
     val selectedCell = remember(selectedHex) { ColorPickerGrid.nearestCellOf(selectedHex) }
-    val previewColor = selected?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
+    val previewColor = selectedColor?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
     val previewAlpha = (alphaPercent ?: 100) / 100f
 
     Column(modifier = modifier.fillMaxWidth()) {
@@ -98,6 +110,15 @@ fun ColorGridPicker(
                             .aspectRatio(1f)
                             .clip(RoundedCornerShape(2.dp))
                             .background(color)
+                            // Accessibility: 72 unlabelled squares were read out as
+                            // "unlabelled button" by TalkBack. Name each cell by the
+                            // colour it offers and expose the selected state, so a
+                            // screen-reader user can navigate the palette at all.
+                            .semantics {
+                                role = Role.RadioButton
+                                selected = isSelected
+                                contentDescription = cellDescription(column, row)
+                            }
                             .clickable { onPick(hex) },
                         contentAlignment = Alignment.Center
                     ) {
@@ -140,7 +161,7 @@ fun ColorGridPicker(
                 Slider(
                     value = alphaPercent.toFloat(),
                     onValueChange = { onAlphaChange(it.toInt()) },
-                    valueRange = 0f..100f,
+                    valueRange = alphaFloor.toFloat()..100f,
                     colors = SliderDefaults.colors(
                         // The gradient underneath is the track.
                         activeTrackColor = Color.Transparent,
@@ -170,6 +191,7 @@ fun ColorGridPickerDialog(
     systemOption: Boolean = false,
     withAlpha: Boolean = false,
     alphaPercent: Int = 100,
+    alphaMinPercent: Int = 0,
     onConfirmAlpha: ((Int) -> Unit)? = null
 ) {
     var picked by remember(currentHex) { mutableStateOf(currentHex) }
@@ -217,6 +239,7 @@ fun ColorGridPickerDialog(
                     selectedHex = picked,
                     onPick = { picked = it },
                     alphaPercent = if (withAlpha) pickedAlpha else null,
+                    alphaMinPercent = alphaMinPercent,
                     onAlphaChange = if (withAlpha) {
                         { pickedAlpha = it }
                     } else {
@@ -244,8 +267,19 @@ fun ColorGridPickerDialog(
     )
 }
 
-/** Grey/white checkerboard, the usual affordance for "this is translucent". */
-private fun Modifier.checkerboard(cell: androidx.compose.ui.unit.Dp = 8.dp): Modifier =
+/**
+ * Human-readable name for one grid cell, used as its accessibility label.
+ *
+ * Built from the same numbers the cell is painted from ([ColorPickerGrid]), so the
+ * spoken colour and the visible colour cannot drift apart.
+ */
+private fun cellDescription(column: Int, row: Int): String {
+    val hue = ColorPickerGrid.hueAt(column).toInt()
+    val lightness = (ColorPickerGrid.toneAt(row) * 100).toInt()
+    return "色相 ${hue}°，明度 ${lightness}%"
+}
+
+/** Grey/white checkerboard, the usual affordance for "this is translucent". */private fun Modifier.checkerboard(cell: androidx.compose.ui.unit.Dp = 8.dp): Modifier =
     drawBehind {
         val step = cell.toPx()
         var y = 0f
