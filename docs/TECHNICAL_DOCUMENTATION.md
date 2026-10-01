@@ -2634,6 +2634,20 @@ onSurfaceVariant = primary,     // ✗✗ 这是全应用的"次要文字"颜色
 
 **诚实口径**：R1/R3/R4 本轮**没有新增单元测试** ✗ —— 它们的判定依赖 `WallpaperManager`、`Service` 生命周期这些 Android 框架对象 ✓，在本仓库的 JVM 单测环境里需要 Robolectric ✗（等于引入新依赖 ✗，与"不改公共 API / 不引入新依赖"的约束冲突 ✓）；把 `id > 0` 抽成纯函数再测只是同义反复 ✗，没有价值 ✓。R2 是 Compose 交互 ✓，本次尝试装机验证时**设备未连接** ✗（`adb: device not found` ✓）→ 待下次接上设备后按脚本 `.repair/verify_r2_dialog.py` 复验 ✓（该脚本只点「保存」并断言对话框标题消失 ✓，不依赖命中色块 ✓）。
 
+#### 4.9.53 审查批次二：选色网格无障碍 + 透明度下限对齐
+
+* **无障碍**：选色网格原来 72 个色块都是无标签的 `Box + clickable`，TalkBack 只能读成「未标记按钮」。
+  现在每格带 `semantics { role = Role.RadioButton; selected = isSelected; contentDescription = "色相 N°，明度 M%" }`，
+  标签由 `ColorPickerGrid` 的同一组数字生成，读出来的颜色不会和看到的颜色漂移 ✓。
+  遗留（需决策）：12 列布局在 AlertDialog 文本槽里每格约 20dp，仍低于 48dp 建议；**降列数解决不了**（要到 48dp 得降成
+  5 列，完全不像参考图），真正的修法是把对话框换成全宽 Dialog（更接近参考截图），尚未实施。
+* **透明度下限**：选色器的滑块原本是 `0f..100f`，而 `setFloatingButtonAlpha` 会 clamp 到
+  `FLOATING_BUTTON_ALPHA_MIN = 5`，于是可以显示 0–4% 而实际存 5%。现在 `ColorGridPicker` 增加
+  `alphaMinPercent` 参数，设置页传入该常量，显示值与存储值一致 ✓。
+* **Locale（R10）经实验证伪** ✗：见 4.9.54 与 `ColorPickerLocaleTest` —— `%X` 不受 Locale 影响，
+  原报告描述的"非 ASCII 十六进制 → 颜色静默不生效"不成立；`Locale.ROOT` 仅作防御性写法保留 ✓。
+* **回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、**164 单测全绿** ✓、`lintDebug` 0 error ✓。
+
 ## 五、服务与后台组件
 
 ### 5.1 WallpaperSwitchService (定时切换服务)
