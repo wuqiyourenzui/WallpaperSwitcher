@@ -1799,6 +1799,16 @@ class WallpaperRenderer(
                     try { afd?.close() } catch (_: Exception) {}
                 } else {
                     result.set(afd)
+                    // The timeout can fire between the check above and this publish:
+                    // the caller has already given up (it returned null), so nobody
+                    // else would ever close this descriptor - one leaked fd per
+                    // timed-out open, which accumulates into TooManyOpenFiles on the
+                    // flaky cloud providers this code exists for. Take it back out and
+                    // close it here; compareAndSet keeps the two sides from closing it
+                    // twice.
+                    if (abandon.get() && result.compareAndSet(afd, null)) {
+                        try { afd?.close() } catch (_: Exception) {}
+                    }
                 }
             } catch (t: Throwable) {
                 AppLog.d(TAG, "Video audio source open failed: ${t.message}")
@@ -2009,6 +2019,13 @@ class WallpaperRenderer(
                         try { afd?.close() } catch (_: Exception) {}
                     } else {
                         openResult.set(afd)
+                        // Same race as openAudioDescriptor: the 15s timeout can land
+                        // between the check and this publish, and the waiting caller
+                        // then reports failure without ever seeing the descriptor.
+                        // Close it ourselves unless the caller won the handoff.
+                        if (abandonOpen.get() && openResult.compareAndSet(afd, null)) {
+                            try { afd?.close() } catch (_: Exception) {}
+                        }
                     }
                 } catch (t: Throwable) {
                     openError.set(t)
