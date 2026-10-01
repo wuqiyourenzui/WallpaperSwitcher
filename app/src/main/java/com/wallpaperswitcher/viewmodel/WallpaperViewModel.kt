@@ -1367,10 +1367,23 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                     if (engineRunning || homeIsLive) {
                         // Keep LAST_IMAGE_ID in sync so the engine continues
                         // from this media after a restart (and so the engine
-                        // picks it up when its process is restarted).
+                        // picks it up when its process is restarted). This is
+                        // deliberate even when no engine accepts the push right
+                        // now: the cursor is the PICK, and the next engine start
+                        // renders it (see pushConfirmedPickToEngine).
                         settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
-                        sendTargetBroadcast(image.id)
-                        applied = true
+                        // A fire-and-forget broadcast used to be sent here and the
+                        // result thrown away, so a stale `engineRunning`/`homeIsLive`
+                        // (engine killed between the read and the send) reported
+                        // "已设为壁纸" while nothing changed. Ask the engine directly
+                        // and only claim success when one really accepted it.
+                        applied = LiveWallpaperService.pushConfirmedPickToEngine(image.id)
+                        if (!applied) {
+                            AppLog.w(
+                                TAG,
+                                "No live engine accepted the home pick; cursor kept for the next start"
+                            )
+                        }
                     } else {
                         note(WallpaperSwitchService.applyStaticWallpaper(
                             getApplication(),
@@ -1522,16 +1535,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 _toastMessage.emit("设置失败: ${e.message}")
             }
         }
-    }
-
-    private fun sendTargetBroadcast(targetId: Long) {
-        val switchIntent = android.content.Intent(LiveWallpaperService.ACTION_SWITCH).apply {
-            setPackage(getApplication<Application>().packageName)
-            putExtra(LiveWallpaperService.EXTRA_TARGET_ID, targetId)
-            putExtra(LiveWallpaperService.EXTRA_SOURCE, LiveWallpaperService.SOURCE_MANUAL)
-        }
-        getApplication<Application>().sendBroadcast(switchIntent)
-        AppLog.d(TAG, "Switch broadcast sent with targetId=$targetId")
     }
 
     private fun launchLiveWallpaperPicker() {

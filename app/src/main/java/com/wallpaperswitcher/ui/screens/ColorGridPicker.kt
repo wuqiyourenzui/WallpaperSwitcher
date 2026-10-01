@@ -230,6 +230,11 @@ fun ColorGridPickerDialog(
                 onClick = {
                     onConfirm(picked)
                     if (withAlpha) onConfirmAlpha?.invoke(pickedAlpha)
+                    // Close here rather than relying on the call site: the settings
+                    // screen only clears its own flag in onDismiss, so 保存 applied
+                    // the colour and left the dialog on screen (the theme dialog
+                    // closed only because its onConfirm happened to clear the flag).
+                    onDismiss()
                 }
             ) { Text("保存") }
         },

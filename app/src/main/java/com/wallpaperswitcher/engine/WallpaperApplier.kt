@@ -246,8 +246,13 @@ object WallpaperApplier {
                 TAG,
                 "Static bitmap: ${bitmap.width}x${bitmap.height} for ${image.displayName}"
             )
-            writeWallpaper(manager, bitmap, which, image.displayName, cacheKey, image)
-            applied = true
+            // Only claim success when the framework accepted one of the two
+            // writes (see writeWallpaper): `applied` drives both the cursor
+            // advance and the "已设为壁纸" toast.
+            applied = writeWallpaper(manager, bitmap, which, image.displayName, cacheKey, image)
+            if (!applied) {
+                AppLog.e(TAG, "Wallpaper write refused: ${image.displayName}")
+            }
         } catch (e: Throwable) {
             AppLog.e(TAG, "apply failed for ${image.displayName}", e)
         } finally {
@@ -262,7 +267,7 @@ object WallpaperApplier {
             }
             AppLog.d(TAG, "Wallpaper applied ($where): ${image.displayName}")
         } else {
-            AppLog.e(TAG, "WallpaperManager.setBitmap returned false: ${image.displayName}")
+            AppLog.e(TAG, "Wallpaper write refused (non-positive id): ${image.displayName}")
         }
         return applied
     }
@@ -308,8 +313,14 @@ object WallpaperApplier {
                 AppLog.w(TAG, "setStream failed for $name, falling back to setBitmap", t)
             }
         }
-        manager.setBitmap(bitmap, null, true, which)
-        return true
+        // setBitmap() reports its result as an Int - the id of the newly set
+        // wallpaper - and uses a non-positive value when the framework refused it
+        // (it can also throw, which writeCachedWallpaper already handles). The
+        // result used to be dropped and `true` returned unconditionally, so a
+        // refused write was indistinguishable from a success: the caller advanced
+        // the cursor and told the user the wallpaper had been set while the screen
+        // never changed.
+        return manager.setBitmap(bitmap, null, true, which) > 0
     }
 
     /**

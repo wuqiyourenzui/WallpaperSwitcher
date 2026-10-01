@@ -2617,6 +2617,23 @@ onSurfaceVariant = primary,     // ✗✗ 这是全应用的"次要文字"颜色
 
 **回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、**162 单测全绿**（新增 11 条）✓、`lintDebug` 0 error ✓。
 
+#### 4.9.52 审查批次一：不再"把没成功的事当成成功"
+
+全仓审查（69 个 Kotlin 文件 / 24411 行）里最集中的一类缺陷是**操作结果被丢弃后仍宣称成功**。本批修四处。
+
+| 编号 | 位置 | 问题 | 修法 |
+|---|---|---|---|
+| R1 | `engine/WallpaperApplier.kt:249,311` | `writeWallpaper()` 走 `setBitmap` 回退时丢弃返回值并无条件 `return true`；调用点又写死 `applied = true` | 回退分支改为 `return manager.setBitmap(...) > 0`；调用点 `applied = writeWallpaper(...)`，失败时记日志 |
+| R2 | `ui/screens/ColorGridPicker.kt:228` | 「按钮颜色」对话框按**保存不关闭** —— 设置页只在 `onDismiss` 里清 flag，`onConfirm` 不清 | 确认按钮内应用后直接 `onDismiss()`（主题色对话框之所以正常，只是因为它恰好顺手清了 flag） |
+| R3 | `wallpaper/LiveWallpaperService.kt:2052` | 看门狗 `if (WallpaperSwitchService.running) return` 把"服务对象活着"当成"循环活着"：两个循环在息屏时 `return` 退出（**故意的**，零唤醒），只靠 `ACTION_SCREEN_ON` 复活；漏一次广播就永久失效 | 服务在跑时改为调用 `poke(applicationContext)`（`wakeLoopsInPlace()` 会取消并重启两个循环，且循环自身会因定时器关闭而退出，所以仍然安全）。30s 节流与"仅在可见时"的调用条件不变，零唤醒契约不变 |
+| R4 | `viewmodel/WallpaperViewModel.kt:1366` | 首页选中后 `sendTargetBroadcast(...)` 发完即忘，却置 `applied = true` → 引擎在读取标志与发送之间死掉时，游标前移 + 提示成功而屏幕未变；`sendTargetBroadcast` 随之成为死代码 | 改用带返回值的 `LiveWallpaperService.pushConfirmedPickToEngine(id)`，只用它的结果决定是否宣称成功；**保留** `LAST_IMAGE_ID` 的写入（其语义是"记录用户的选择"，无活引擎时下次启动渲染它 —— 见该函数的 KDoc），删除 `sendTargetBroadcast` |
+
+**审查结论的一处更正** ✓：审计报告称 `WallpaperManager.setBitmap(...)` 返回 Boolean 且被丢弃 ✗ —— 编译期证明它返回的是 **Int（壁纸 id）** ✗，因此正确的失败判据是 **id ≤ 0** ✓（本批按此实现 ✓）；同一分支里那句日志文案 "setBitmap returned false" 也是错的 ✓，一并改正 ✓。
+
+**验证**：`:app:compileDebugKotlin` ✓、`:app:testDebugUnitTest` **162 条全绿** ✓、`:app:assembleRelease` ✓。
+
+**诚实口径**：R1/R3/R4 本轮**没有新增单元测试** ✗ —— 它们的判定依赖 `WallpaperManager`、`Service` 生命周期这些 Android 框架对象 ✓，在本仓库的 JVM 单测环境里需要 Robolectric ✗（等于引入新依赖 ✗，与"不改公共 API / 不引入新依赖"的约束冲突 ✓）；把 `id > 0` 抽成纯函数再测只是同义反复 ✗，没有价值 ✓。R2 是 Compose 交互 ✓，本次尝试装机验证时**设备未连接** ✗（`adb: device not found` ✓）→ 待下次接上设备后按脚本 `.repair/verify_r2_dialog.py` 复验 ✓（该脚本只点「保存」并断言对话框标题消失 ✓，不依赖命中色块 ✓）。
+
 ## 五、服务与后台组件
 
 ### 5.1 WallpaperSwitchService (定时切换服务)

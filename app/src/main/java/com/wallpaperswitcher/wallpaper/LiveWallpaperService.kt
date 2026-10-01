@@ -2055,7 +2055,17 @@ class LiveWallpaperService : WallpaperService() {
             lastTimerSelfHealAt = now
             scope.launch {
                 try {
-                    if (WallpaperSwitchService.running) return@launch
+                    // A *running* service does not mean its timer loops are alive:
+                    // both loops `return` out of their while-loop while the screen
+                    // is off (deliberately - zero wakeups) and only ACTION_SCREEN_ON
+                    // brings them back. On devices that skip that broadcast the timer
+                    // stayed dead forever while `running` kept this watchdog from
+                    // noticing. poke() restarts the loops in place (and still stops
+                    // itself again if the timers are switched off).
+                    if (WallpaperSwitchService.running) {
+                        WallpaperSwitchService.poke(applicationContext)
+                        return@launch
+                    }
                     // Either timer needs the service: the lock timer is
                     // independent of the home one and may be the only reason it
                     // has to run (same rule as BootReceiver / ensureRunning).
