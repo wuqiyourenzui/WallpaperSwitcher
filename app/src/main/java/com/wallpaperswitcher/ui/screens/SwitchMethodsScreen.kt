@@ -49,7 +49,10 @@ import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.ui.AppLocale
 import com.wallpaperswitcher.ui.theme.HiMotion
+import com.wallpaperswitcher.ui.theme.HiOptionPickerRow
+import com.wallpaperswitcher.ui.theme.HiOptionSpec
 import com.wallpaperswitcher.ui.theme.LocalAccentColor
+import com.wallpaperswitcher.ui.theme.hasHiOption
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
 /**
@@ -69,7 +72,6 @@ fun SwitchMethodsScreen(
     val doubleTapEnabled = state.doubleTapEnabled
     val lockTimerEnabled = state.lockTimerEnabled
     val lockIntervalMs = state.lockIntervalMs
-    val switchFadeEnabled = state.switchFadeEnabled
     val switchTransition = state.switchTransition
     val videoSoundEnabled = state.videoSoundEnabled
     val videoPlayToEnd = state.videoPlayToEnd
@@ -143,6 +145,22 @@ fun SwitchMethodsScreen(
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
+                // 过渡动画: fade / slide / zoom / none
+                // (SettingsKeys.SWITCH_TRANSITION_*)。选 "无" 时 ViewModel 会顺手把
+                // 旧的 switch_fade_enabled 兼容位写成 off，其它值写成 on —— 这套兼容
+                // 逻辑在 viewModel.setSwitchTransition 里，这里只给出用户选的那个值。
+                // 说明文字（settings_transition_hint）保留在这一行里，跟着标题一起显示。
+                HiOptionPickerRow(
+                    title = stringResource(R.string.settings_transition),
+                    subtitle = stringResource(R.string.settings_transition_hint),
+                    icon = Icons.Outlined.Animation,
+                    options = transitionOptions(),
+                    selectedKey = transitionKeyOf(switchTransition),
+                    onSelect = { viewModel.setSwitchTransition(it) },
+                )
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
                 SettingsSwitchItem(
                     icon = Icons.Outlined.MusicNote,
                     title = stringResource(R.string.settings_video_sound),
@@ -168,3 +186,23 @@ fun SwitchMethodsScreen(
         )
     }
 }
+
+// --- 选项表（纯逻辑，单测见 ui/theme/HiOptionLogicTest.kt） -------------------
+
+/** 过渡动画面板：key 就是存进 [SettingsKeys.SWITCH_TRANSITION] 的字符串。 */
+internal fun transitionOptions(): List<HiOptionSpec> = listOf(
+    HiOptionSpec(SettingsKeys.SWITCH_TRANSITION_FADE, R.string.transition_fade),
+    HiOptionSpec(SettingsKeys.SWITCH_TRANSITION_SLIDE, R.string.transition_slide),
+    HiOptionSpec(SettingsKeys.SWITCH_TRANSITION_ZOOM, R.string.transition_zoom),
+    HiOptionSpec(SettingsKeys.SWITCH_TRANSITION_NONE, R.string.transition_none),
+)
+
+/**
+ * 存的过渡动画 → 面板认得的 key。
+ *
+ * 渲染端只把 "fade"/"slide"/"zoom" 当成有动画，其余值（例如从备份文件里恢复进来的
+ * 陌生字符串）都是**没有过渡**（见 WallpaperRenderer 对 transitionMode 的判断），
+ * 所以未知值归一化到"无"：行右侧说的就是用户实际会看到的效果。
+ */
+internal fun transitionKeyOf(stored: String): String =
+    if (hasHiOption(transitionOptions(), stored)) stored else SettingsKeys.SWITCH_TRANSITION_DEFAULT

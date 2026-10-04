@@ -45,14 +45,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import android.os.Build
 
 import com.wallpaperswitcher.R
 import com.wallpaperswitcher.data.ScaleMode
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.ui.AppLocale
+import com.wallpaperswitcher.ui.theme.HiColorRow
 import com.wallpaperswitcher.ui.theme.HiMotion
+import com.wallpaperswitcher.ui.theme.HiOptionPickerRow
+import com.wallpaperswitcher.ui.theme.HiOptionSpec
 import com.wallpaperswitcher.ui.theme.parseHexColor
 import com.wallpaperswitcher.ui.theme.ThemeMode
 import com.wallpaperswitcher.ui.theme.LocalAccentColor
@@ -113,55 +115,32 @@ fun AppearanceScreen(
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
-                // 浅色/深色：跟随系统 or 强制其中一种
-                SettingsChoiceRow(
+                // 浅色/深色：跟随系统 or 强制其中一种。行右侧显示当前模式，
+                // 点一下弹出「跟随系统 / 浅色 / 深色」面板。
+                HiOptionPickerRow(
+                    title = stringResource(R.string.settings_theme_mode),
                     icon = Icons.Outlined.Brightness4,
-                    label = stringResource(R.string.settings_theme_mode)
-                ) {
-                    ThemeMode.entries.forEach { mode ->
-                        SettingsOptionChip(
-                            selected = ThemeMode.from(themeMode) == mode,
-                            onClick = { viewModel.setThemeMode(mode.value) },
-                            label = stringResource(mode.labelRes)
-                        )
-                    }
-                }
+                    options = themeModeOptions(),
+                    selectedKey = themeModeKeyOf(themeMode),
+                    onSelect = { viewModel.setThemeMode(it) },
+                )
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
-                Row(
-                    modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showColorDialog = true }
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Outlined.Palette, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(stringResource(R.string.settings_theme_color), style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            when {
-                                themeColor.isNotEmpty() -> themeColor
-                                // Android 12+ paints the whole UI from the wallpaper's
-                                // palette (Monet); older versions fall back to the
-                                // built-in scheme. Say which one is in effect.
-                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> stringResource(R.string.theme_color_system)
-                                else -> stringResource(R.string.theme_color_system)
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    val previewColor = if (themeColor.isNotEmpty()) parseHexColor(themeColor)
-                    else MaterialTheme.colorScheme.primary
-                    Box(
-                        modifier = Modifier
-                        .size(32.dp)
-                        .clip(CircleShape)
-                        .background(previewColor ?: MaterialTheme.colorScheme.primary)
-                    )
-                }
+                // 主题色：右侧是当前颜色的色点 + 色值（空 = 跟随系统），点一下打开
+                // 取色器；「删除」把它清回跟随系统，不用再进一次取色器。
+                val customThemeColor = themeColor.isNotEmpty()
+                HiColorRow(
+                    title = stringResource(R.string.settings_theme_color),
+                    hex = if (customThemeColor) themeColor else stringResource(R.string.theme_color_system),
+                    color = (if (customThemeColor) parseHexColor(themeColor) else null)
+                        ?: MaterialTheme.colorScheme.primary,
+                    // 没有自定义颜色时不给「删除」：清空 = 跟随系统，此时它已经
+                    // 是跟随系统了，摆一个按了没变化的按钮只会让人以为坏了。
+                    onClear = if (customThemeColor) ({ viewModel.setThemeColor("") }) else null,
+                    icon = Icons.Outlined.Palette,
+                    onClick = { showColorDialog = true },
+                )
         }
     }
 
@@ -187,3 +166,17 @@ fun AppearanceScreen(
         )
     }
 }
+
+// --- 选项表（纯逻辑，单测见 ui/theme/HiOptionLogicTest.kt） -------------------
+
+/** 浅色/深色面板：key 就是 `ThemeMode.value`，即存进设置里的那个字符串。 */
+internal fun themeModeOptions(): List<HiOptionSpec> =
+    ThemeMode.entries.map { HiOptionSpec(it.value, it.labelRes) }
+
+/**
+ * 存的主题模式 → 面板认得的 key。
+ *
+ * 复用 [ThemeMode.from]：未知值（老版本、手改过的库、备份恢复）等同于"跟随系统"，
+ * 和主题实际生效的方式一致 —— 面板里必须能选中它，否则用户看不到自己现在是哪一档。
+ */
+internal fun themeModeKeyOf(stored: String): String = ThemeMode.from(stored).value

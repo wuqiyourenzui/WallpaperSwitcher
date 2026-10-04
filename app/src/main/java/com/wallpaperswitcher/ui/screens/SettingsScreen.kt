@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -279,6 +280,121 @@ fun SettingsScreen(
                 checked = scenePauseOnLowBattery,
                 onCheckedChange = { viewModel.setScenePauseOnLowBattery(it) }
             )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // 配置导出 / 导入：分组 + 壁纸设置一次性导出成一个 JSON 文件。
+        // 换机、重装、或者只是想留个备份时用（导入是"新增"语义，
+        // 不会删掉现有的分组 —— 见 ConfigBackup.apply）。
+        SettingsSection(title = stringResource(R.string.settings_config_backup)) {
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val scope = rememberCoroutineScope()
+            var busy by remember { mutableStateOf(false) }
+            val exportLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.CreateDocument("application/json")
+            ) { uri: Uri? ->
+                if (uri == null) return@rememberLauncherForActivityResult
+                scope.launch {
+                    try {
+                        val text = viewModel.exportConfigText()
+                        context.contentResolver.openOutputStream(uri)?.use { out ->
+                            out.write(text.toByteArray(Charsets.UTF_8))
+                            out.flush()
+                        } ?: throw IllegalStateException("no output stream")
+                        Toast.makeText(
+                            context, R.string.toast_config_exported, Toast.LENGTH_SHORT
+                        ).show()
+                    } catch (e: Throwable) {
+                        Toast.makeText(
+                            context,
+                            context.getString(
+                                R.string.toast_config_export_failed, e.message.orEmpty()
+                            ),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } finally {
+                        busy = false
+                    }
+                }
+            }
+            val importLauncher = rememberLauncherForActivityResult(
+                contract = ActivityResultContracts.OpenDocument()
+            ) { uri: Uri? ->
+                if (uri == null) return@rememberLauncherForActivityResult
+                scope.launch {
+                    try {
+                        val text = context.contentResolver.openInputStream(uri)?.use { input ->
+                            input.readBytes().toString(Charsets.UTF_8)
+                        } ?: throw IllegalStateException("no input stream")
+                        val result = viewModel.importConfigText(text)
+                        Toast.makeText(
+                            context,
+                            context.getString(
+                                R.string.toast_config_imported, result.groups, result.sources
+                            ),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } catch (e: Throwable) {
+                        Toast.makeText(
+                            context,
+                            context.getString(
+                                R.string.toast_config_import_failed, e.message.orEmpty()
+                            ),
+                            Toast.LENGTH_LONG
+                        ).show()
+                    } finally {
+                        busy = false
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !busy) {
+                        busy = true
+                        exportLauncher.launch("wallpaper-switcher-config.json")
+                    }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Outlined.Upload,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Text(
+                    stringResource(R.string.settings_export_config),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            }
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = !busy) {
+                        busy = true
+                        importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                    }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Outlined.Download,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Text(
+                    stringResource(R.string.settings_import_config),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            }
         }
         Spacer(modifier = Modifier.height(8.dp))
 
