@@ -79,7 +79,7 @@
     <string name="settings_auto_scan">自動掃描資料夾</string>
     <string name="settings_auto_scan_hint">定期把已匯入資料夾的新增媒體加入群組</string>
     <string name="settings_scan_interval">掃描間隔</string>
-    <string name="settings_section_button">懸浮按鈕開關</string>
+    <string name="settings_section_button">懸浮按鈕外觀</string>
     <string name="settings_button_alpha">透明度</string>
     <string name="settings_button_alpha_hint" formatted="false">數值越低按鈕越透明（預設 10%）</string>
     <string name="settings_button_color">按鈕顏色</string>
@@ -273,6 +273,7 @@
     <string name="toast_log_share_failed">分享失敗，日誌檔案：%1$s</string>
     <string name="toast_media_all_present">這些媒體已經在群組裡了</string>
     <string name="toast_no_addable_media">沒有可新增的圖片/影片</string>
+    <string name="hint_unlock_static_mode">解鎖切換已開啟：靜態壁紙模式下解鎖直接換圖（無動畫）</string>
     <string name="hint_motion_needs_engine">影片/GIF 需要動態壁紙：請在系統動態壁紙中選擇本應用</string>
     <string name="home_permission_warning">缺少「照片和影片」權限，無法讀取已匯入的媒體；請授予權限後重試</string>
     <string name="action_grant_permission">去授權</string>

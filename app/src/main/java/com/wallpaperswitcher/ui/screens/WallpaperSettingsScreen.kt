@@ -78,7 +78,6 @@ fun WallpaperSettingsScreen(
     val clarityMode = state.clarityMode
     val rotateMismatchEnabled = state.rotateMismatchEnabled
     val rotateMismatchClockwise = state.rotateMismatchClockwise
-    val videoSoundEnabled = state.videoSoundEnabled
 
     SettingsPageScaffold(onBack = onBack, modifier = modifier) {
         SettingsSection(title = stringResource(R.string.settings_page_wallpaper)) {
@@ -142,17 +141,6 @@ fun WallpaperSettingsScreen(
                         modifier = Modifier.padding(start = 16.dp, bottom = 12.dp),
                     )
                 }
-
-                Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-    SettingsSwitchItem(
-                        icon = Icons.Outlined.MusicNote,
-                        title = stringResource(R.string.settings_video_sound),
-                        subtitle = stringResource(R.string.settings_video_sound_hint),
-                        checked = videoSoundEnabled,
-                        onCheckedChange = { viewModel.setVideoSoundEnabled(it) }
-                    )
-
         }
     }
 }

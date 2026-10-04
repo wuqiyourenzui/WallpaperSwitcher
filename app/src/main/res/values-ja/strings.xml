@@ -76,7 +76,7 @@
     <string name="settings_auto_scan">フォルダを自動スキャン</string>
     <string name="settings_auto_scan_hint">取り込み済みフォルダの新しい写真/動画を定期的に追加</string>
     <string name="settings_scan_interval">スキャン間隔</string>
-    <string name="settings_section_button">フローティングボタンのスイッチ</string>
+    <string name="settings_section_button">フローティングボタンの外観</string>
     <string name="settings_button_alpha">透明度</string>
     <string name="settings_button_alpha_hint" formatted="false">値が小さいほど透明になります（既定 10%）</string>
     <string name="settings_button_color">ボタンの色</string>
@@ -270,6 +270,7 @@
     <string name="toast_log_share_failed">共有に失敗しました。ログファイル：%1$s</string>
     <string name="toast_media_all_present">これらのメディアはすでにグループにあります</string>
     <string name="toast_no_addable_media">追加できる画像/動画がありません</string>
+    <string name="hint_unlock_static_mode">ロック解除の切り替えがオンです：静止壁紙モードのため、ロック解除で静止画に切り替わります（アニメーションなし）</string>
     <string name="hint_motion_needs_engine">動画/GIF にはライブ壁紙が必要です。システムのライブ壁紙設定でこのアプリを選んでください</string>
     <string name="home_permission_warning">「写真と動画」の権限がないため、取り込んだ写真/動画を読み取れません。許可してから再試行してください</string>
     <string name="action_grant_permission">許可する</string>

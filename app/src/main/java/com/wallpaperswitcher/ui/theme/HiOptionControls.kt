@@ -394,40 +394,12 @@ internal fun HiOptionPickerRow(
     subtitle: String? = null,
     icon: ImageVector? = null,
 ) {
-    HiOptionPickerRowOf(
-        title = title,
-        options = hiOptions(options),
-        selectedKey = selectedKey,
-        onSelect = onSelect,
-        modifier = modifier,
-        subtitle = subtitle,
-        icon = icon,
-    )
-}
-
-/**
- * 与 [HiOptionPickerRow] 相同，但选项文案已经落地。
- *
- * 语言名来自系统 Locale（`中文（简体）` / `English`…），没有对应的 string 资源，
- * 所以这一版直接收 [HiOption]；其余行为（行右侧显示当前值、面板在这一行下面
- * 展开、选中打勾）与截图里的下拉完全一致。
- */
-@Composable
-internal fun HiOptionPickerRowOf(
-    title: String,
-    options: List<HiOption>,
-    selectedKey: String,
-    onSelect: (String) -> Unit,
-    modifier: Modifier = Modifier,
-    subtitle: String? = null,
-    icon: ImageVector? = null,
-) {
     // 展开状态：每个选项行各自持有（同一个页面里的面板互不影响）。
     // rememberSaveable：转屏/进程重建之后展开状态还在，用户不会丢上下文。
     var open by rememberSaveable { mutableStateOf(false) }
     HiOptionRow(
         title = title,
-        value = options.firstOrNull { it.key == selectedKey }?.label.orEmpty(),
+        value = hiOptionLabelRes(options, selectedKey)?.let { stringResource(it) }.orEmpty(),
         modifier = modifier,
         subtitle = subtitle,
         icon = icon,
@@ -443,7 +415,7 @@ internal fun HiOptionPickerRowOf(
         exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
     ) {
         HiInlineOptionPanel(
-            options = options,
+            options = hiOptions(options),
             selectedKey = selectedKey,
             onSelect = { key ->
                 onSelect(key)

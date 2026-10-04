@@ -7,8 +7,6 @@ import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.ui.screens.CLARITY_KEY_AUTO
 import com.wallpaperswitcher.ui.screens.CLARITY_KEY_OFF
 import com.wallpaperswitcher.ui.screens.CLARITY_KEY_STRONG
-import com.wallpaperswitcher.ui.screens.autoScanIntervalKeyOf
-import com.wallpaperswitcher.ui.screens.autoScanIntervalOptions
 import com.wallpaperswitcher.ui.screens.ROTATE_KEY_CCW
 import com.wallpaperswitcher.ui.screens.ROTATE_KEY_CW
 import com.wallpaperswitcher.ui.screens.clarityKeyOf
@@ -226,18 +224,5 @@ class HiOptionLogicTest {
         assertNull(hiOptionLabelRes(switchModeOptions(), "FLIP"))
         assertNull(hiOptionLabelRes(clarityOptions(), "high"))
         assertNull(hiOptionLabelRes(emptyList(), "RANDOM"))
-    }
-
-    /** 文件夹扫描间隔：4 档预设，未知值落在第一档（1 小时，ViewModel 的默认）。 */
-    @Test
-    fun `auto scan interval panel round-trips and defaults to one hour`() {
-        val options = autoScanIntervalOptions()
-        assertEquals(4, options.size)
-        options.forEach { option ->
-            assertTrue(option.key.toLongOrNull() != null)
-            assertEquals(option.key, autoScanIntervalKeyOf(option.key.toLong()))
-        }
-        assertEquals(options.first().key, autoScanIntervalKeyOf(90_000L))
-        assertTrue(hasHiOption(options, autoScanIntervalKeyOf(90_000L)))
     }
 }

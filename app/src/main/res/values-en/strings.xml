@@ -83,7 +83,7 @@
     <string name="settings_auto_scan_interval_hint">At most every ~15 min, as scheduled by the system</string>
 
     <!-- Settings screen: floating button look -->
-    <string name="settings_section_button">Floating button switch</string>
+    <string name="settings_section_button">Floating button</string>
     <string name="settings_button_alpha">Transparency</string>
     <string name="settings_button_alpha_hint">Lower values make the button more transparent (default 10%)</string>
     <string name="settings_button_color">Button colour</string>
@@ -299,6 +299,7 @@
     <string name="toast_log_share_failed">Sharing failed — log file: %1$s</string>
     <string name="toast_media_all_present">Those items are already in this group</string>
     <string name="toast_no_addable_media">Nothing to add — no photos or videos</string>
+    <string name="hint_unlock_static_mode">Unlock switching is on: in static mode it swaps the still image (no animation)</string>
     <string name="hint_motion_needs_engine">Video/GIF need a live wallpaper — pick this app in the system live wallpaper settings</string>
     <string name="home_permission_warning">The imported photos/videos cannot be read without the “Photos and videos” permission. Grant it and try again.</string>
     <string name="action_grant_permission">Grant</string>

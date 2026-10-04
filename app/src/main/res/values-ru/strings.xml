@@ -76,7 +76,7 @@
     <string name="settings_auto_scan">Автоматически проверять папки</string>
     <string name="settings_auto_scan_hint">Периодически добавлять новые файлы из импортированных папок</string>
     <string name="settings_scan_interval">Интервал проверки</string>
-    <string name="settings_section_button">Переключатель плавающей кнопки</string>
+    <string name="settings_section_button">Вид плавающей кнопки</string>
     <string name="settings_button_alpha">Прозрачность</string>
     <string name="settings_button_alpha_hint" formatted="false">Чем меньше значение, тем прозрачнее (по умолчанию 10%)</string>
     <string name="settings_button_color">Цвет кнопки</string>
@@ -270,6 +270,7 @@
     <string name="toast_log_share_failed">Не удалось поделиться; файл журнала: %1$s</string>
     <string name="toast_media_all_present">Эти файлы уже есть в группе</string>
     <string name="toast_no_addable_media">Нет фото или видео для добавления</string>
+    <string name="hint_unlock_static_mode">Смена при разблокировке включена: в режиме статических обоев картинка меняется без анимации</string>
     <string name="hint_motion_needs_engine">Видео и GIF требуют живых обоев — выберите это приложение в системных настройках</string>
     <string name="home_permission_warning">Без разрешения «Фото и видео» импортированные файлы не читаются. Разрешите доступ и повторите</string>
     <string name="action_grant_permission">Разрешить</string>

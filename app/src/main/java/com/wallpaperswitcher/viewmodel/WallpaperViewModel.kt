@@ -410,6 +410,14 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun toggleUnlockSwitch(enabled: Boolean) {
         guardedWrite("切换解锁失败") {
             settingsDao.setBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, enabled)
+            // Unlock switching works in both modes: with the engine it switches
+            // the live wallpaper, without it ScreenUnlockReceiver writes a static
+            // home wallpaper. Only the *appearance* differs, so the hint says so
+            // "nstead of the old ineeds the live wallpaper engine" (which was
+            // wrong ever since the static fallback was added).
+            if (enabled && !LiveWallpaperService.engineRunning) {
+                _hintMessage.emit(str(R.string.hint_unlock_static_mode))
+            }
         }
     }
 

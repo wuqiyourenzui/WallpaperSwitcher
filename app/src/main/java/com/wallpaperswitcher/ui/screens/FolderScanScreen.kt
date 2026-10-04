@@ -49,8 +49,6 @@ import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.ui.AppLocale
 import com.wallpaperswitcher.ui.theme.HiMotion
-import com.wallpaperswitcher.ui.theme.HiOptionPickerRow
-import com.wallpaperswitcher.ui.theme.HiOptionSpec
 import com.wallpaperswitcher.ui.theme.LocalAccentColor
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
@@ -68,6 +66,8 @@ fun FolderScanScreen(
     val autoScanEnabled = state.autoScanEnabled
     val autoScanIntervalMs = state.autoScanIntervalMs
     val autoScanLastRunAt = state.autoScanLastRunAt
+
+    var showAutoScanIntervalDialog by remember { mutableStateOf(false) }
 
     SettingsPageScaffold(onBack = onBack, modifier = modifier) {
         SettingsSection(title = stringResource(R.string.settings_page_scan)) {
@@ -94,33 +94,44 @@ fun FolderScanScreen(
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
-                // 与「切换间隔 / 锁屏间隔」同一种形态：右侧显示当前值 + 下拉箭头。
-                HiOptionPickerRow(
-                    title = stringResource(R.string.settings_scan_interval),
-                    icon = Icons.Outlined.Schedule,
-                    options = autoScanIntervalOptions(),
-                    selectedKey = autoScanIntervalKeyOf(autoScanIntervalMs),
-                    onSelect = { key ->
-                        key.toLongOrNull()?.let { ms ->
-                            viewModel.toggleAutoScan(autoScanEnabled, ms)
-                        }
-                    },
-                )
+                Row(
+                    modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showAutoScanIntervalDialog = true }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Outlined.Schedule, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(stringResource(R.string.settings_scan_interval), style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            formatInterval(autoScanIntervalMs),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    // Same trailing affordance as the other interval rows (切换间隔 /
+                    // 锁屏切换间隔): without it this row looked like plain text while
+                    // its two siblings showed 修改, which is what made the column of
+                    // values look uneven.
+                    Text(
+                        stringResource(R.string.action_modify),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = LocalAccentColor.current
+                    )
+                }
         }
     }
+
+    if (showAutoScanIntervalDialog) {
+        AutoScanIntervalDialog(
+            currentMs = autoScanIntervalMs,
+            onDismiss = { showAutoScanIntervalDialog = false },
+            onSelect = { ms ->
+                viewModel.toggleAutoScan(autoScanEnabled, ms)
+                showAutoScanIntervalDialog = false
+            }
+        )
+    }
 }
-
-// --- 选项表（纯逻辑，单测见 ui/theme/HiOptionLogicTest.kt） -------------------
-
-/** 自动扫描间隔：key 是毫秒字符串。 */
-internal fun autoScanIntervalOptions(): List<HiOptionSpec> = listOf(
-    HiOptionSpec("3600000", R.string.duration_1h),
-    HiOptionSpec("21600000", R.string.duration_6h),
-    HiOptionSpec("43200000", R.string.duration_12h),
-    HiOptionSpec("86400000", R.string.duration_24h),
-)
-
-/** 存的毫秒 → 面板 key；不在预设里就落在最近的一档（1 小时）。 */
-internal fun autoScanIntervalKeyOf(ms: Long): String =
-    autoScanIntervalOptions().firstOrNull { it.key == ms.toString() }?.key
-        ?: autoScanIntervalOptions().first().key
