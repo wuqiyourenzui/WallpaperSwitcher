@@ -407,6 +407,7 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                 is Screen.SwitchMethods -> SwitchMethodsScreen(
                     viewModel = viewModel,
                     onBack = { currentScreen = Screen.Settings },
+                    onOpenButtonAppearance = { currentScreen = Screen.ButtonAppearance },
                 )
                 is Screen.FolderScan -> FolderScanScreen(
                     viewModel = viewModel,

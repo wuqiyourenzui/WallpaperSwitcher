@@ -25,9 +25,13 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import com.wallpaperswitcher.ui.theme.HiMotion
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -37,6 +41,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextAlign
@@ -65,6 +70,8 @@ fun HiOptionRow(
     modifier: Modifier = Modifier,
     subtitle: String? = null,
     icon: ImageVector? = null,
+    /** 展开时把右侧箭头转 180°（有面板在下面的那一行才需要传）。 */
+    expanded: Boolean = false,
     onClick: () -> Unit,
 ) {
     Row(
@@ -106,7 +113,9 @@ fun HiOptionRow(
             Icons.Outlined.KeyboardArrowDown,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
+            modifier = Modifier
+                .size(20.dp)
+                .rotate(if (expanded) 180f else 0f),
         )
     }
 }
@@ -371,21 +380,8 @@ fun HiOptionGap() = Spacer(modifier = Modifier.height(2.dp))
  * 为什么不用 Material 的 `DropdownMenu`（和 [HiOptionRow] 的注释同一个理由）：
  * 下拉菜单会盖住当前行、没有"当前值"这一列，而且它挂在行上，滚动列表时位置会飘。
  *
- * 为什么用 [ModalBottomSheet]：
- *  - 它是**独立窗口**，不受设置页 `verticalScroll` 的裁剪，也不会被列表项的
- *    `clickable` 区域限制；点遮罩、按返回键、往下拖都能关闭，系统返回键的
- *    行为与系统设置页一致（`onDismissRequest`）；
- *  - 面板里选项超过 4~5 个时，行的高度不变（[HiOptionSheet] 自己滚），列表
- *    不会因为某个设置选项多而被撑开 —— 这正是参考图里的形态；
- *  - 它是 Material3 的 `@ExperimentalMaterial3Api`，本项目其它地方
- *    （`FilterChip` 等）已经在用同一套 opt-in，没有引入新的风险面。
- *
- * 弹出层是独立窗口，但内容 lambda 仍在调用方的组合里执行，所以
- * [LocalAccentColor]、[MaterialTheme] 和主题色都照常生效。
- *
- * @param options 选项表（纯数据，便于单测）。
- * @param selectedKey 当前值；调用方负责归一化（未知值要落到表里的某一项）。
- * @param onSelect 用户选了某一项。只有用户真的点了才会回调 —— 打开/关闭面板不会写库。
+ * 面板**就在这一行下面原地展开**（不是弹出窗口）：用户要的形态就是这个 ——
+ * 弹出层会盖住当前值、也切断「这个面板属于哪一行」的联系。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -398,7 +394,8 @@ internal fun HiOptionPickerRow(
     subtitle: String? = null,
     icon: ImageVector? = null,
 ) {
-    // 记住"面板开着"这件事：转屏/进程被杀重建之后面板还在，用户不会丢上下文。
+    // 展开状态：每个选项行各自持有（同一个页面里的面板互不影响）。
+    // rememberSaveable：转屏/进程重建之后展开状态还在，用户不会丢上下文。
     var open by rememberSaveable { mutableStateOf(false) }
     HiOptionRow(
         title = title,
@@ -406,30 +403,57 @@ internal fun HiOptionPickerRow(
         modifier = modifier,
         subtitle = subtitle,
         icon = icon,
-        onClick = { open = true },
+        expanded = open,
+        onClick = { open = !open },
     )
-    if (open) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        val scope = rememberCoroutineScope()
-        ModalBottomSheet(
-            onDismissRequest = { open = false },
-            sheetState = sheetState,
-            // 和 [HiOptionPanelCard] 同色，面板从拖拽条到卡片是一整块，不会出现
-            // 上下两截颜色。
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
-        ) {
-            HiOptionPanelCard(title = title) {
-                HiOptionSheet(
-                    options = hiOptions(options),
-                    selectedKey = selectedKey,
-                    onSelect = { key ->
-                        onSelect(key)
-                        // 先播完收起动画再离开组合（Material 的写法）。完成回调里
-                        // 无条件关闭：即使动画被手势打断，面板也绝不会卡在打开状态。
-                        scope.launch { sheetState.hide() }.invokeOnCompletion { open = false }
-                    },
-                )
-            }
+    // 面板**就在这一行下面展开**，不再用 ModalBottomSheet：弹出窗口会盖住
+    // 原来的值、也切断"这个面板属于哪一行"的视觉联系（用户明确要求这个形态，
+    // 参考截图里的下拉就是这个样子）。
+    AnimatedVisibility(
+        visible = open,
+        enter = fadeIn(HiMotion.enter()) + expandVertically(HiMotion.enter()),
+        exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
+    ) {
+        HiInlineOptionPanel(
+            options = hiOptions(options),
+            selectedKey = selectedKey,
+            onSelect = { key ->
+                onSelect(key)
+                open = false
+            },
+        )
+    }
+}
+
+/**
+ * 行下方展开的选项面板：每行「选项名 +（可选）颜色预览 + 勾选」。
+ *
+ * 与 [HiOptionSheet] 的区别只是**外壳**：这里不再套底部圆角卡片（它属于弹出层），
+ * 而是缩进一块、用卡片色当背景，看起来像这一行的展开区。
+ */
+@Composable
+internal fun HiInlineOptionPanel(
+    options: List<HiOption>,
+    selectedKey: String,
+    onSelect: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+            .heightIn(max = 320.dp)
+            .verticalScroll(rememberScrollState()),
+    ) {
+        options.forEach { option ->
+            HiOptionSheetEntry(
+                label = option.label,
+                selected = option.key == selectedKey,
+                preview = option.preview,
+                onClick = { onSelect(option.key) },
+            )
         }
     }
 }

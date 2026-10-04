@@ -63,6 +63,8 @@ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 fun SwitchMethodsScreen(
     viewModel: WallpaperViewModel,
     onBack: () -> Unit,
+    /** 打开「悬浮按钮」子页（颜色 / 透明度 / 文字 / 图片）。 */
+    onOpenButtonAppearance: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.settingsUiState.collectAsStateWithLifecycle()
@@ -75,6 +77,7 @@ fun SwitchMethodsScreen(
     val switchTransition = state.switchTransition
     val videoSoundEnabled = state.videoSoundEnabled
     val videoPlayToEnd = state.videoPlayToEnd
+    val floatingButtonEnabled = state.floatingButtonEnabled
 
     var showIntervalDialog by remember { mutableStateOf(false) }
     var showLockIntervalDialog by remember { mutableStateOf(false) }
@@ -145,6 +148,24 @@ fun SwitchMethodsScreen(
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
+                // 悬浮切换按钮：开关在这里（用户要求），外观在它自己的子页里。
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.AdsClick,
+                    title = stringResource(R.string.settings_floating_button),
+                    subtitle = stringResource(R.string.settings_floating_button_hint),
+                    checked = floatingButtonEnabled,
+                    onCheckedChange = { viewModel.toggleFloatingButton(it) }
+                )
+
+                SettingsClickableItem(
+                    icon = Icons.Outlined.Palette,
+                    title = stringResource(R.string.settings_page_button),
+                    subtitle = stringResource(R.string.settings_page_button_desc),
+                    onClick = onOpenButtonAppearance,
+                )
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
                 // 过渡动画: fade / slide / zoom / none
                 // (SettingsKeys.SWITCH_TRANSITION_*)。选 "无" 时 ViewModel 会顺手把
                 // 旧的 switch_fade_enabled 兼容位写成 off，其它值写成 on —— 这套兼容
@@ -168,6 +189,68 @@ fun SwitchMethodsScreen(
                     checked = videoSoundEnabled,
                     onCheckedChange = { viewModel.setVideoSoundEnabled(it) }
                 )
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                // 视频播完再切：定时切换不再打断长视频。
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.Movie,
+                    title = stringResource(R.string.settings_video_play_to_end),
+                    subtitle = stringResource(R.string.settings_video_play_to_end_hint),
+                    checked = videoPlayToEnd,
+                    onCheckedChange = { viewModel.setVideoPlayToEnd(it) }
+                )
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // 锁屏切换：与桌面的定时/双击/解锁完全独立（双屏思路）。只从「应用位置」
+        // 含锁屏的分组里取图，并且有自己的间隔 —— 桌面锁屏各换各的。
+        SettingsSection(title = stringResource(R.string.settings_section_lock)) {
+            SettingsSwitchItem(
+                icon = Icons.Outlined.Timer,
+                title = stringResource(R.string.settings_lock_timer),
+                subtitle = stringResource(R.string.settings_lock_timer_hint),
+                checked = lockTimerEnabled,
+                onCheckedChange = { viewModel.toggleLockTimer(it) }
+            )
+
+            AnimatedVisibility(
+                visible = lockTimerEnabled,
+                enter = fadeIn(HiMotion.enter()) + expandVertically(HiMotion.enter()),
+                exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
+            ) {
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showLockIntervalDialog = true }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Outlined.Schedule,
+                        null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(stringResource(R.string.settings_lock_interval))
+                        Text(
+                            formatInterval(lockIntervalMs),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        stringResource(R.string.action_modify),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = LocalAccentColor.current
+                    )
+                }
+            }
+        }
         }
     }
 
