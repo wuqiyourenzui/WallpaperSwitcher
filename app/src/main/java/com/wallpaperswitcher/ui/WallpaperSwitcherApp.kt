@@ -75,6 +75,37 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
         }
     }
 
+    // HyperOS/MIUI 「动态壁纸服务」 is off: the system live-wallpaper screen closes
+    // itself before it is drawn, so a tap on a picture looks like a no-op. Offer
+    // the one page that holds the switch (see LiveWallpaperPermission).
+    var liveWallpaperBlocked by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        viewModel.liveWallpaperBlocked.collect { liveWallpaperBlocked = true }
+    }
+    if (liveWallpaperBlocked) {
+        AlertDialog(
+            onDismissRequest = { liveWallpaperBlocked = false },
+            title = { Text(stringResource(R.string.live_wallpaper_permission_title)) },
+            text = { Text(stringResource(R.string.live_wallpaper_permission_message)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        liveWallpaperBlocked = false
+                        com.wallpaperswitcher.engine.LiveWallpaperPermission
+                            .openPermissionEditor(context)
+                    }
+                ) {
+                    Text(stringResource(R.string.action_open_permission))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { liveWallpaperBlocked = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
+
     // Drop the hint the moment we come back to the foreground: leaving the
     // system live-wallpaper dialog (after tapping 设为壁纸, or by cancelling)
     // resumes this activity, and the instruction is no longer useful then.

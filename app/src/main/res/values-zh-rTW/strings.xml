@@ -632,6 +632,10 @@
     <string name="option_default">預設</string>
     <string name="color_picker_title">選擇顏色</string>
     <string name="color_hex">色值</string>
+    <string name="live_wallpaper_permission_title">需要開啟「動態桌布服務」</string>
+    <string name="live_wallpaper_permission_message">系統未允許本應用使用「動態桌布服務」，點擊圖片時系統動態桌布介面會立刻關閉，導致無法設定。請在「權限管理 → 其他權限」中開啟「動態桌布服務」後重試。</string>
+    <string name="action_open_permission">去開啟</string>
+    <string name="toast_picker_unavailable">無法開啟系統動態桌布介面</string>
 </resources>
 
 

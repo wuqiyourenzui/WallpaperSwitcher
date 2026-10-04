@@ -641,6 +641,10 @@
     <string name="option_default">По умолчанию</string>
     <string name="color_picker_title">Выбор цвета</string>
     <string name="color_hex">HEX</string>
+    <string name="live_wallpaper_permission_title">Включите «Службу живых обоев»</string>
+    <string name="live_wallpaper_permission_message">Система не разрешает этому приложению использовать «Службу живых обоев», поэтому экран живых обоев сразу закрывается и обои не устанавливаются. Включите её в разделе «Разрешения → Другие разрешения» и повторите попытку.</string>
+    <string name="action_open_permission">Открыть настройки</string>
+    <string name="toast_picker_unavailable">Не удаётся открыть системный экран живых обоев</string>
 </resources>
 
 

@@ -1148,6 +1148,16 @@ private fun ImageGridItem(
                         expanded = true,
                         onDismissRequest = { showMenu = false }
                     ) {
+                        // Restored after the settings rewrite dropped it: the
+                        // preview dialog (and this item) is the only way to set
+                        // a *static* wallpaper from the grid - tapping the cell
+                        // intentionally goes through the system live-wallpaper
+                        // screen instead.
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.menu_set_as_wallpaper)) },
+                            onClick = { showMenu = false; onSetWallpaper() },
+                            leadingIcon = { Icon(Icons.Filled.Wallpaper, null) }
+                        )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.action_delete)) },
                             onClick = { showMenu = false; onDelete() },

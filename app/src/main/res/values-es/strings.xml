@@ -633,6 +633,10 @@
     <string name="option_default">Predeterminado</string>
     <string name="color_picker_title">Elegir color</string>
     <string name="color_hex">Hex</string>
+    <string name="live_wallpaper_permission_title">Activa «Servicio de fondo dinámico»</string>
+    <string name="live_wallpaper_permission_message">El sistema no permite que esta aplicación use el «Servicio de fondo dinámico», así que la pantalla de fondos dinámicos se cierra al instante y no se puede aplicar. Actívalo en Permisos → Otros permisos y vuelve a intentarlo.</string>
+    <string name="action_open_permission">Abrir ajustes</string>
+    <string name="toast_picker_unavailable">No se puede abrir la pantalla de fondos dinámicos</string>
 </resources>
 
 

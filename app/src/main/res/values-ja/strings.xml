@@ -629,6 +629,10 @@
     <string name="option_default">デフォルト</string>
     <string name="color_picker_title">色を選択</string>
     <string name="color_hex">色値</string>
+    <string name="live_wallpaper_permission_title">「ライブ壁紙サービス」を有効にしてください</string>
+    <string name="live_wallpaper_permission_message">システムがこのアプリの「ライブ壁紙サービス」を許可していないため、ライブ壁紙の画面がすぐ閉じて設定できません。「権限管理 → その他の権限」で「ライブ壁紙サービス」を有効にしてから、もう一度お試しください。</string>
+    <string name="action_open_permission">設定を開く</string>
+    <string name="toast_picker_unavailable">システムのライブ壁紙画面を開けません</string>
 </resources>
 
 

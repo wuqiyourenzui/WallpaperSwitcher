@@ -289,6 +289,21 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     val hintMessage: SharedFlow<String> = _hintMessage
 
     /**
+     * The system live-wallpaper screen cannot be shown because HyperOS/MIUI
+     * has this app's 「动态壁纸服务」 permission turned off (see
+     * [com.wallpaperswitcher.engine.LiveWallpaperPermission]). The picker
+     * closes itself before it is drawn, so without this the tap would look like
+     * a no-op; the UI answers with a dialog that opens the right settings page.
+     *
+     * `Unit` payload: the dialog only needs "it happened" and is idempotent.
+     */
+    private val _liveWallpaperBlocked = MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val liveWallpaperBlocked: SharedFlow<Unit> = _liveWallpaperBlocked
+
+    /**
      * Run a settings/CRUD write with a shared exception guard: a Room or
      * WorkManager failure (e.g. corrupted DB during migration) must never leave
      * the user with a silently dead toggle or a crashed coroutine.
@@ -2524,8 +2539,17 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
                 // A motion wallpaper can only animate through the live engine.
                 if (motion && target.includesHome && !engineRunning && !homeIsLive) {
-                    launchLiveWallpaperPicker()
-                    _hintMessage.emit(str(R.string.hint_motion_needs_engine))
+                    // The ROM may refuse to show the picker at all (MIUI/HyperOS
+                    // 动态壁纸服务): then the dialog is the only useful answer -
+                    // emitting the "choose this app" hint on top of a picker that
+                    // never appears would be noise.
+                    if (!liveWallpaperPickerBlocked()) {
+                        if (launchLiveWallpaperPicker()) {
+                            _hintMessage.emit(str(R.string.hint_motion_needs_engine))
+                        } else {
+                            _toastMessage.emit(str(R.string.toast_picker_unavailable))
+                        }
+                    }
                     onResult?.invoke(false)
                     return@launch
                 }
@@ -2631,6 +2655,14 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                     _toastMessage.emit(str(R.string.toast_group_disabled))
                     return@launch
                 }
+                // ROM-level gate, checked before ANY state is moved: HyperOS/
+                // MIUI refuses to draw the system picker unless this app is
+                // allowed the 「动态壁纸服务」 app-op, and the refusal is
+                // invisible here (startActivity succeeds; the screen finishes
+                // itself ~20ms later). Aborting up front keeps the cursor and
+                // the manual-pick memo untouched, and the dialog tells the user
+                // where the switch is.
+                if (liveWallpaperPickerBlocked()) return@launch
                 val target = WallpaperTarget.fromName(group?.target)
                 AppLog.d(
                     TAG,
@@ -2686,7 +2718,12 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 // LAST_IMAGE_ID (set above) and re-asserts the group's 应用位置
                 // via enforceSlotsAfterLiveApply; cancelling changes nothing on
                 // screen. A lock-only pick never touched the engine anyway.
-                launchLiveWallpaperPicker()
+                // Total failure (no activity handles either intent) used to be
+                // swallowed: the tap then looked broken. Say so instead.
+                if (!launchLiveWallpaperPicker()) {
+                    _toastMessage.emit(str(R.string.toast_picker_unavailable))
+                    return@launch
+                }
                 // Every group can be set as a live wallpaper. Which screen then
                 // shows which media is decided by the group's 应用位置 (see
                 // enforceSlotsAfterLiveApply): lock-targeted groups get this
@@ -2722,7 +2759,31 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun launchLiveWallpaperPicker() {
+    /**
+     * `true` when the system live-wallpaper picker is known to refuse this app
+     * (MIUI/HyperOS 「动态壁纸服务」 off): the caller must abort without
+     * touching any cursor, and the UI shows the "turn the switch on" dialog.
+     */
+    private fun liveWallpaperPickerBlocked(): Boolean {
+        val app = getApplication<Application>()
+        if (com.wallpaperswitcher.engine.LiveWallpaperPermission.isSystemPickerAllowed(app)) {
+            return false
+        }
+        AppLog.w(
+            TAG,
+            "System live-wallpaper picker blocked: the MIUI 动态壁纸服务 permission is off"
+        )
+        _liveWallpaperBlocked.tryEmit(Unit)
+        return true
+    }
+
+    /**
+     * Opens the system live-wallpaper preview for this app's service.
+     *
+     * @return `false` when neither the preview nor the chooser could be
+     * started, so the caller can say so instead of appearing dead.
+     */
+    private fun launchLiveWallpaperPicker(): Boolean {
         try {
             val intent = android.content.Intent(android.app.WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
                 putExtra(
@@ -2732,12 +2793,18 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             getApplication<Application>().startActivity(intent)
-        } catch (_: Exception) {
+            return true
+        } catch (e: Exception) {
+            AppLog.w(TAG, "ACTION_CHANGE_LIVE_WALLPAPER failed: ${e.message}")
             try {
                 val intent = android.content.Intent(android.app.WallpaperManager.ACTION_LIVE_WALLPAPER_CHOOSER)
                 intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
                 getApplication<Application>().startActivity(intent)
-            } catch (_: Exception) {}
+                return true
+            } catch (e2: Exception) {
+                AppLog.e(TAG, "no live-wallpaper picker available", e2)
+                return false
+            }
         }
     }
 

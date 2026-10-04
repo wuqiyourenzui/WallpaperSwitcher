@@ -636,6 +636,10 @@
     <string name="option_default">默认</string>
     <string name="color_picker_title">选择颜色</string>
     <string name="color_hex">色值</string>
+    <string name="live_wallpaper_permission_title">需要开启「动态壁纸服务」</string>
+    <string name="live_wallpaper_permission_message">系统未允许本应用使用「动态壁纸服务」，点击图片时系统动态壁纸界面会立刻关闭，导致无法设置。请在「权限管理 → 其他权限」中打开「动态壁纸服务」后重试。</string>
+    <string name="action_open_permission">去开启</string>
+    <string name="toast_picker_unavailable">无法打开系统动态壁纸界面</string>
 </resources>
 
 

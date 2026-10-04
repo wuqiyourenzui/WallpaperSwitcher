@@ -6126,6 +6126,72 @@ FeedParser 自然解析不了 —— 卡片显示「刷新失败：返回内容�
 模拟器核对：设置主界面无「悬浮按钮开关」节、切换方式页有「悬浮切换按钮」且点
 「切换间隔」弹出预设 + 自定义对话框。
 
+#### 4.9.145 分组里点图片不弹系统动态壁纸：MIUI「动态壁纸服务」+ 菜单丢项
+
+用户反馈两件事：「分组里的图片点击不弹出系统动态壁纸」以及「无法设置为壁纸」。
+真机（Redmi 平板 25053RP5CC / HyperOS）排查后是两个互不相关的回归，一起修掉。
+
+**1. 点击图片后系统界面 20ms 就自己关了（不是应用闪退）**
+
+真机 logcat（`setAsLiveWallpaper: id=1221 target=BOTH` → 立刻回到
+`MainActivity`）里，系统选择器只留下一行警告：
+
+```
+06:03:43.954  7219  7219 W CHANGE_LIVE_WALLPAPER: No permission to change wall paper
+06:03:43.955  wm_on_create_called: LiveWallpaperChange
+06:03:43.973  wm_on_destroy_called: LiveWallpaperChange
+```
+
+把设备上的 `LiveWallpapersPicker.apk` 拉下来用 `apkanalyzer dex code` 反编译
+`LiveWallpaperChange` 得到判定逻辑（`withoutChangePermission()` / `init()`）：
+
+```java
+// 系统包直接放行，其余包必须 appOps 10045 == MODE_ALLOWED，否则 finish()
+int mode = appOps.checkOpNoThrow(10045, appInfo.uid, packageName);
+return mode != MODE_ALLOWED;
+```
+
+`10045` 是 MIUI 私有的 app-op「动态壁纸服务」（权限管理 → 其他权限 → 设置相关），
+`appops get com.wallpaperswitcher 10045` 当时返回 `ignore`；`appops set ... 10045 allow`
+后点击图片立刻恢复正常（`LiveWallpaperChange` 停留在预览页）。重装应用会拿到新
+UID，这个开关跟着掉回默认拒绝 —— 用户上一次「另一个 AI 改坏了」正是重装之后，
+但 `startActivity` 本身成功，应用侧完全看不到失败，所以既没有报错也没有提示。
+
+修法：
+
+- 新增 `engine/LiveWallpaperPermission`（纯判定核心 `isBlocked()` 带单测）：
+  仅当确实运行在 MIUI/HyperOS（`ro.miui.ui.version.name` / 厂商为 Xiaomi）且
+  app-op 读得出来且不等于 `MODE_ALLOWED` 时才判定被拦；其它 ROM、隐藏 op、
+  读取抛异常一律按「允许」，不会误伤正常设备。
+- `setAsLiveWallpaper()` 在**移动任何游标之前**检查：被拦时只发
+  `liveWallpaperBlocked` 事件并返回（不再写 `LAST_IMAGE_ID` /
+  `MANUAL_PICK_*`，也不会留下 pending preview pick）。`setImageAsWallpaper()`
+  的动态壁纸分支（无引擎时视频/GIF）同样走这把闸门。
+- UI（`WallpaperSwitcherApp`）收到事件后弹对话框说明原因，按钮「去开启」用
+  `miui.intent.action.APP_PERM_EDITOR` → `PermissionsEditorActivity`
+  （`extra_pkgname`）打开该应用的权限页，退回「应用详情」作为兜底；用户在那里
+  点「其他权限 → 动态壁纸服务 → 始终允许」即可。
+- `launchLiveWallpaperPicker()` 改成返回值：两个 intent 都起不来时发
+  `toast_picker_unavailable`，不再静默。
+
+**2. 三点菜单少了「设为壁纸」**
+
+`d8459f9`（设置页改版那笔）把九宫格菜单里的「设为壁纸」项删掉了，只剩「删除」，
+但 `onSetWallpaper` 参数、`previewImage` 状态和 `WallpaperPreviewDialog`
+都还在 —— 预览对话框成了永远打不开的死代码，用户自然「无法设置为壁纸」。
+菜单项已恢复（点击图片仍然按设计走系统动态壁纸界面，静态设置走菜单）。
+
+**验证**：单元测试 **454 条全绿**（新增 `LiveWallpaperPermissionTest` 5 条 +
+7 语言字符串齐全由 `LocaleResourcesTest` 把守）；真机回归：
+
+| 设备状态 | 操作 | 结果 |
+|---|---|---|
+| `appops get ... 10045` = `ignore` | 点分组里的图片 | 弹「需要开启动态壁纸服务」对话框，不移动游标 |
+| 同上 | 点「去开启」 | 打开 MIUI 权限页（`PermissionsEditorActivity`） |
+| 在权限页 其他权限 → 动态壁纸服务 → 始终允许 | （appops 变 `allow`） | — |
+| `allow` | 点图片 | 系统动态壁纸预览正常打开，不再闪退 |
+| `allow` | 三点 → 设为壁纸 | 预览对话框正常弹出 |
+
 ---
 
 ## 七、权限声明

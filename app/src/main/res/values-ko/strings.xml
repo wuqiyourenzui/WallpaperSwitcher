@@ -629,6 +629,10 @@
     <string name="option_default">기본</string>
     <string name="color_picker_title">색상 선택</string>
     <string name="color_hex">색상 값</string>
+    <string name="live_wallpaper_permission_title">\"라이브 배경 화면 서비스\"를 켜야 합니다</string>
+    <string name="live_wallpaper_permission_message">시스템이 이 앱의 \"라이브 배경 화면 서비스\"를 허용하지 않아 라이브 배경 화면 화면이 곧바로 닫혀 설정할 수 없습니다. 권한 관리 → 기타 권한에서 \"라이브 배경 화면 서비스\"를 켠 뒤 다시 시도해 주세요.</string>
+    <string name="action_open_permission">설정 열기</string>
+    <string name="toast_picker_unavailable">시스템 라이브 배경 화면 화면을 열 수 없습니다</string>
 </resources>
 
 

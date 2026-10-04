@@ -663,6 +663,10 @@
     <string name="option_default">Default</string>
     <string name="color_picker_title">Pick a colour</string>
     <string name="color_hex">Hex</string>
+    <string name="live_wallpaper_permission_title">Turn on “Live wallpaper service”</string>
+    <string name="live_wallpaper_permission_message">The system does not allow this app to use the “Live wallpaper service”, so the system live-wallpaper screen closes the instant it opens and the wallpaper cannot be set. Turn it on under Permissions → Other permissions and try again.</string>
+    <string name="action_open_permission">Open settings</string>
+    <string name="toast_picker_unavailable">Cannot open the system live-wallpaper screen</string>
 </resources>
 
 
