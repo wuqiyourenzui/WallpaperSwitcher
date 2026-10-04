@@ -79,7 +79,6 @@
     <string name="settings_auto_scan">自動掃描資料夾</string>
     <string name="settings_auto_scan_hint">定期把已匯入資料夾的新增媒體加入群組</string>
     <string name="settings_scan_interval">掃描間隔</string>
-    <string name="settings_section_button">懸浮按鈕外觀</string>
     <string name="settings_button_alpha">透明度</string>
     <string name="settings_button_alpha_hint" formatted="false">數值越低按鈕越透明（預設 10%）</string>
     <string name="settings_button_color">按鈕顏色</string>

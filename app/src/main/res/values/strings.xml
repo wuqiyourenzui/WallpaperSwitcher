@@ -73,7 +73,6 @@
     <string name="settings_auto_scan">自动扫描文件夹</string>
     <string name="settings_auto_scan_hint">定期把已导入文件夹的新增媒体加入分组</string>
     <string name="settings_scan_interval">扫描间隔</string>
-    <string name="settings_section_button">悬浮按钮外观</string>
     <string name="settings_button_alpha">透明度</string>
     <string name="settings_button_alpha_hint" formatted="false">数值越低按钮越透明（默认 10%）</string>
     <string name="settings_button_color">按钮颜色</string>

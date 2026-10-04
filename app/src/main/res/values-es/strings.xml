@@ -76,7 +76,6 @@
     <string name="settings_auto_scan">Escanear carpetas automáticamente</string>
     <string name="settings_auto_scan_hint">Añade periódicamente archivos nuevos de las carpetas importadas</string>
     <string name="settings_scan_interval">Intervalo de escaneo</string>
-    <string name="settings_section_button">Aspecto del botón flotante</string>
     <string name="settings_button_alpha">Transparencia</string>
     <string name="settings_button_alpha_hint" formatted="false">Cuanto menor sea el valor, más transparente (predeterminado 10%)</string>
     <string name="settings_button_color">Color del botón</string>

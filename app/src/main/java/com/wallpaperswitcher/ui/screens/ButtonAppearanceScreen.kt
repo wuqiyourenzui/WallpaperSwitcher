@@ -83,7 +83,6 @@ fun ButtonAppearanceScreen(
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.settingsUiState.collectAsStateWithLifecycle()
-    val floatingButtonEnabled = state.floatingButtonEnabled
     val floatingButtonColor = state.floatingButtonColor
     val floatingButtonAlpha = state.floatingButtonAlpha
     val floatingButtonText = state.floatingButtonText

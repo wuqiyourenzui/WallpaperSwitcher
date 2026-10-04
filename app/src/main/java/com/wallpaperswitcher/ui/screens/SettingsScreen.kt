@@ -108,7 +108,6 @@ fun SettingsScreen(
     val serviceEnabled = settingsUiState.serviceEnabled
     val doubleTapEnabled = settingsUiState.doubleTapEnabled
     val unlockSwitchEnabled = settingsUiState.unlockSwitchEnabled
-    val floatingButtonEnabled = settingsUiState.floatingButtonEnabled
     val floatingButtonColor = settingsUiState.floatingButtonColor
     val floatingButtonAlpha = settingsUiState.floatingButtonAlpha
     val floatingButtonText = settingsUiState.floatingButtonText
@@ -207,18 +206,6 @@ fun SettingsScreen(
                 title = stringResource(R.string.settings_page_appearance),
                 subtitle = stringResource(R.string.settings_page_appearance_desc),
                 onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.Appearance) },
-            )
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // 悬浮按钮总开关留在主界面（最常用），点进去才是它的外观。
-        SettingsSection(title = stringResource(R.string.settings_section_button)) {
-            SettingsSwitchItem(
-                icon = Icons.Outlined.AdsClick,
-                title = stringResource(R.string.settings_floating_button),
-                subtitle = stringResource(R.string.settings_floating_button_hint),
-                checked = floatingButtonEnabled,
-                onCheckedChange = { viewModel.toggleFloatingButton(it) }
             )
         }
         Spacer(modifier = Modifier.height(8.dp))

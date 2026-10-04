@@ -76,7 +76,6 @@
     <string name="settings_auto_scan">폴더 자동 검사</string>
     <string name="settings_auto_scan_hint">가져온 폴더의 새 미디어를 주기적으로 그룹에 추가</string>
     <string name="settings_scan_interval">검사 간격</string>
-    <string name="settings_section_button">플로팅 버튼 모양</string>
     <string name="settings_button_alpha">투명도</string>
     <string name="settings_button_alpha_hint" formatted="false">값이 낮을수록 더 투명합니다(기본 10%)</string>
     <string name="settings_button_color">버튼 색상</string>

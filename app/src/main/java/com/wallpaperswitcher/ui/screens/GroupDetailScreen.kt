@@ -110,8 +110,6 @@ fun GroupDetailScreen(
     viewModel: WallpaperViewModel,
     groupId: Long,
     onBack: () -> Unit,
-    /** 进「大图浏览」：九宫格适合整理，那个页面适合一张一张挑。 */
-    onBrowse: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val group by viewModel.selectedGroup.collectAsStateWithLifecycle()
@@ -260,27 +258,6 @@ fun GroupDetailScreen(
         // 内边距，避免窄屏上按钮文字被挤压；进入批量模式后整栏替换为选择工具
         // 栏（不再叠加两行），选择模式用“退出/全选/已选/删除”管理。
         if (!isSelectionMode) {
-            if (images.isNotEmpty()) {
-                // 「大图浏览」入口：网格适合整理，一张一张挑要走这个。
-                // 放在操作栏上方而不是塞进那一行 —— 那一行三个按钮已经排满，
-                // 再加一个会把四语言的长标签挤成省略号（见下面的注释）。
-                FilledTonalButton(
-                    onClick = onBrowse,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 16.dp, end = 16.dp, top = 8.dp)
-                        .heightIn(min = 44.dp),
-                    shape = RoundedCornerShape(14.dp),
-                ) {
-                    Icon(
-                        Icons.Outlined.PlayCircleOutline,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(stringResource(R.string.browse_title))
-                }
-            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

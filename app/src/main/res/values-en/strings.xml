@@ -83,7 +83,6 @@
     <string name="settings_auto_scan_interval_hint">At most every ~15 min, as scheduled by the system</string>
 
     <!-- Settings screen: floating button look -->
-    <string name="settings_section_button">Floating button</string>
     <string name="settings_button_alpha">Transparency</string>
     <string name="settings_button_alpha_hint">Lower values make the button more transparent (default 10%)</string>
     <string name="settings_button_color">Button colour</string>

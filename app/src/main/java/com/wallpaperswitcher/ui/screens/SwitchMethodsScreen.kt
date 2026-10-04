@@ -63,8 +63,6 @@ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 fun SwitchMethodsScreen(
     viewModel: WallpaperViewModel,
     onBack: () -> Unit,
-    /** 打开「悬浮按钮」子页（颜色 / 透明度 / 文字 / 图片）。 */
-    onOpenButtonAppearance: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.settingsUiState.collectAsStateWithLifecycle()
@@ -155,13 +153,6 @@ fun SwitchMethodsScreen(
                     subtitle = stringResource(R.string.settings_floating_button_hint),
                     checked = floatingButtonEnabled,
                     onCheckedChange = { viewModel.toggleFloatingButton(it) }
-                )
-
-                SettingsClickableItem(
-                    icon = Icons.Outlined.Palette,
-                    title = stringResource(R.string.settings_page_button),
-                    subtitle = stringResource(R.string.settings_page_button_desc),
-                    onClick = onOpenButtonAppearance,
                 )
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))

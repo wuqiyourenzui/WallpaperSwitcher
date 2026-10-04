@@ -405,8 +405,6 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                         viewModel = viewModel,
                         groupId = screen.groupId,
                         onBack = { currentScreen = Screen.Home },
-                        // 封面点开 = 大图浏览（九宫格适合整理，这个适合"挑一张"）。
-                        onBrowse = { currentScreen = Screen.Browse(screen.groupId) },
                     )
                 }
                 is Screen.Browse -> MediaBrowseScreen(
@@ -438,7 +436,6 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                 is Screen.SwitchMethods -> SwitchMethodsScreen(
                     viewModel = viewModel,
                     onBack = { currentScreen = Screen.Settings },
-                    onOpenButtonAppearance = { currentScreen = Screen.ButtonAppearance },
                 )
                 is Screen.FolderScan -> FolderScanScreen(
                     viewModel = viewModel,

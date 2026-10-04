@@ -76,7 +76,6 @@
     <string name="settings_auto_scan">フォルダを自動スキャン</string>
     <string name="settings_auto_scan_hint">取り込み済みフォルダの新しい写真/動画を定期的に追加</string>
     <string name="settings_scan_interval">スキャン間隔</string>
-    <string name="settings_section_button">フローティングボタンの外観</string>
     <string name="settings_button_alpha">透明度</string>
     <string name="settings_button_alpha_hint" formatted="false">値が小さいほど透明になります（既定 10%）</string>
     <string name="settings_button_color">ボタンの色</string>
