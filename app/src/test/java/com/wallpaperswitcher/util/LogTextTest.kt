@@ -13,6 +13,23 @@ import org.junit.Test
  */
 class LogTextTest {
 
+    /**
+     * The runtime-log size budget is a BYTE budget (it is compared with
+     * `File.length()`), and a Chinese line costs three bytes per character.
+     * Counting `String.length` made the 2MB rotation fire about three times late.
+     */
+    @Test
+    fun `a logged line is measured in utf8 bytes plus its newline`() {
+        assertEquals(1, AppLog.lineBytes(""))
+        assertEquals("ascii: 1 byte per char", 5, AppLog.lineBytes("abcd"))
+        // 2 CJK characters = 6 bytes, not 2.
+        assertEquals(7, AppLog.lineBytes("壁纸"))
+        assertTrue(
+            "CJK must count more than its character count",
+            AppLog.lineBytes("壁纸切换") > "壁纸切换".length
+        )
+    }
+
     @Test
     fun emptyValuesBecomeADash() {
         assertEquals("-", LogText.short(null))

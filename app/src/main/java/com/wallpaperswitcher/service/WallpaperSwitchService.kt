@@ -22,6 +22,9 @@ import com.wallpaperswitcher.data.getLong
 import com.wallpaperswitcher.data.setBool
 import com.wallpaperswitcher.data.setLong
 import com.wallpaperswitcher.engine.SwitchSchedule
+import com.wallpaperswitcher.engine.GroupPacing
+import com.wallpaperswitcher.engine.GroupSchedulePlan
+import com.wallpaperswitcher.engine.GroupRules
 import com.wallpaperswitcher.engine.SwitchPicking
 import com.wallpaperswitcher.engine.MediaTypes
 import com.wallpaperswitcher.engine.WallpaperApplier
@@ -119,6 +122,9 @@ class WallpaperSwitchService : Service() {
     // True once "Home timer disabled" has been logged for the current disabled
     // stretch (see runSwitchLoop): only the loop coroutine touches it.
     private var homeTimerDisabledLogged = false
+    // True once the current 一键暂停 stretch has been logged, so the hold does
+    // not write one line per re-check.
+    @Volatile private var pauseIdleAnnounced = false
 
     /**
      * Screen state gate for the timers:
@@ -159,13 +165,19 @@ class WallpaperSwitchService : Service() {
                     lockHiddenIdleAnnounced = false
                     scope.launch {
                         try {
-                            val dao = AppDatabase.getInstance(applicationContext).settingsDao()
+                            val db = AppDatabase.getInstance(applicationContext)
+                            val dao = db.settingsDao()
                             val now = System.currentTimeMillis()
                             dao.setLong(SettingsKeys.TIMER_LAST_SWITCH_WALL_MS, now)
                             dao.setLong(
                                 SettingsKeys.LOCK_TIMER_LAST_SWITCH_WALL_MS,
                                 now
                             )
+                            // Per-group intervals (GroupPacing) re-anchor too: a
+                            // group with its own rhythm must not count the
+                            // screen-off time any more than the screen-wide
+                            // schedule does. Rows that never switched stay due.
+                            db.groupScheduleDao().reanchorAll(now)
                         } catch (_: Exception) {
                         }
                     }
@@ -367,6 +379,28 @@ class WallpaperSwitchService : Service() {
                 // anchor + interval. The anchor is NOT reset when the screen
                 // turns off, so the time spent locked still counts.
                 val dao = db.settingsDao()
+                // 一键暂停 ("稍后切换") + 场景规则: hold the tick WITHOUT consuming
+                // it, so the moment the pause expires (or the scene rule no
+                // longer applies) the overdue switch fires - even if the app was
+                // closed the whole time.
+                val pausedLeft = pauseRemainingMs(dao)
+                if (pausedLeft > 0L) {
+                    if (!pauseIdleAnnounced) {
+                        pauseIdleAnnounced = true
+                        AppLog.d(TAG, "Paused (${pausedLeft}ms left): home timer holding")
+                    }
+                    delay(pausedLeft.coerceAtMost(PAUSE_RECHECK_MS))
+                    continue
+                }
+                if (scenePausesSwitching(dao)) {
+                    if (!pauseIdleAnnounced) {
+                        pauseIdleAnnounced = true
+                        AppLog.d(TAG, "Scene rule active: home timer holding")
+                    }
+                    delay(PAUSE_RECHECK_MS)
+                    continue
+                }
+                pauseIdleAnnounced = false
                 // A manual pick (tapping an image / confirming the system live
                 // wallpaper screen) must stay on screen while the user is in the
                 // system dialog: postpone the timer briefly, then restart the
@@ -398,15 +432,35 @@ class WallpaperSwitchService : Service() {
                     delay(holdLeft.coerceAtMost(60_000L))
                     continue
                 }
-                val interval = dao.getLong(SettingsKeys.GLOBAL_INTERVAL_MS, 60_000L)
-                val anchor = currentScheduleAnchor(dao, SettingsKeys.TIMER_LAST_SWITCH_WALL_MS)
-                val wait = SwitchSchedule.waitMs(anchor, interval, System.currentTimeMillis())
-                if (wait > 0L) {
+                // The next tick: the screen-wide schedule while every group
+                // follows the global interval (the original behaviour, byte for
+                // byte), or one group with its own rhythm once any group opted
+                // into its own interval (see GroupPacing). A null tick means no
+                // group can switch for this screen at all right now.
+                val tick = nextScreenTick(
+                    db,
+                    dao,
+                    WallpaperTarget.SLOT_HOME,
+                    groups.filter { WallpaperTarget.fromName(it.target).includesHome },
+                    SettingsKeys.GLOBAL_INTERVAL_MS,
+                    SettingsKeys.TIMER_LAST_SWITCH_WALL_MS
+                )
+                if (tick == null) {
+                    // Every group is media-less / outside its time window: stay
+                    // alive but idle, and let a poke or the re-check pick it up.
+                    pausedByScreenOff = false
+                    surfaceRetryCount = 0
+                    delay(HOME_IDLE_RECHECK_MS)
+                    continue
+                }
+                val interval = tick.intervalMs
+                val anchor = tick.anchor
+                if (tick.waitMs > 0L) {
                     // Not due yet. The schedule is healthy again, so the next
                     // tick is a normal one, not a catch-up.
                     pausedByScreenOff = false
                     surfaceRetryCount = 0
-                    delay(wait)
+                    delay(tick.waitMs)
                     continue
                 }
 
@@ -429,7 +483,7 @@ class WallpaperSwitchService : Service() {
                         AppLog.d(TAG, "Overdue tick left to the unlock switch; timer re-anchored")
                         pausedByScreenOff = false
                         surfaceRetryCount = 0
-                        moveScheduleAnchor(dao, SettingsKeys.TIMER_LAST_SWITCH_WALL_MS, System.currentTimeMillis())
+                        claimTick(db, dao, tick, WallpaperTarget.SLOT_HOME, SettingsKeys.TIMER_LAST_SWITCH_WALL_MS, System.currentTimeMillis())
                         continue
                     }
                     val pmGrace = getSystemService(Context.POWER_SERVICE) as? PowerManager
@@ -461,7 +515,7 @@ class WallpaperSwitchService : Service() {
                     AppLog.w(TAG, "Skipping tick: live wallpaper surface not ready")
                     surfaceRetryCount = 0
                     pausedByScreenOff = false
-                    moveScheduleAnchor(dao, SettingsKeys.TIMER_LAST_SWITCH_WALL_MS, System.currentTimeMillis())
+                    claimTick(db, dao, tick, WallpaperTarget.SLOT_HOME, SettingsKeys.TIMER_LAST_SWITCH_WALL_MS, System.currentTimeMillis())
                     continue
                 }
 
@@ -471,17 +525,26 @@ class WallpaperSwitchService : Service() {
                 // early claim the fresh loop would still see the tick as due
                 // and switch twice in a row.
                 val tickAt = System.currentTimeMillis()
-                withContext(NonCancellable) { moveScheduleAnchor(dao, SettingsKeys.TIMER_LAST_SWITCH_WALL_MS, tickAt) }
-                if (!sendSwitch(LiveWallpaperService.SOURCE_TIMER)) {
+                withContext(NonCancellable) { claimTick(db, dao, tick, WallpaperTarget.SLOT_HOME, SettingsKeys.TIMER_LAST_SWITCH_WALL_MS, tickAt) }
+                if (!sendSwitch(LiveWallpaperService.SOURCE_TIMER, tick.groupId)) {
                     // The screen turned off between the check and the dispatch.
                     // Put the anchor back so the tick (and its catch-up) stays
                     // pending for the next screen-on instead of being consumed.
-                    withContext(NonCancellable) { moveScheduleAnchor(dao, SettingsKeys.TIMER_LAST_SWITCH_WALL_MS, anchor) }
+                    withContext(NonCancellable) { restoreTick(db, dao, tick, WallpaperTarget.SLOT_HOME, SettingsKeys.TIMER_LAST_SWITCH_WALL_MS) }
                     pausedByScreenOff = true
                     return
                 }
                 pausedByScreenOff = false
                 consecutiveLoopFailures = 0
+                // Keep the home-screen widget's "current wallpaper / 下次切换"
+                // line in sync with the tick that just ran (fire-and-forget).
+                ioScope.launch {
+                    try {
+                        com.wallpaperswitcher.widget.WallpaperWidgetProvider
+                            .refreshAll(applicationContext)
+                    } catch (_: Exception) {
+                    }
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -503,15 +566,25 @@ class WallpaperSwitchService : Service() {
      * Always read from the DB (it is the single source of truth, shared with the
      * unlock-switch path) and seeded to "now" when the stored value is missing,
      * stale or in the future.
+     *
+     * [intervalMs] widens the "stale" window ([GroupPacing.staleAfterMs]): a
+     * 7-day interval whose anchor is 2 days old is perfectly healthy, while the
+     * fixed 24h window used to re-anchor it (the switch then never happened).
      */
-    private suspend fun currentScheduleAnchor(dao: SettingsDao, key: String): Long {
+    private suspend fun currentScheduleAnchor(
+        dao: SettingsDao,
+        key: String,
+        intervalMs: Long = 0L,
+    ): Long {
         val now = System.currentTimeMillis()
         val persisted = try {
             dao.getLong(key, 0L)
         } catch (_: Exception) {
             0L
         }
-        val anchor = SwitchSchedule.resolveAnchor(persisted, now)
+        val anchor = SwitchSchedule.resolveAnchor(
+            persisted, now, GroupPacing.staleAfterMs(intervalMs)
+        )
         if (anchor != persisted) {
             try { dao.setLong(key, anchor) } catch (_: Exception) {}
         }
@@ -534,6 +607,160 @@ class WallpaperSwitchService : Service() {
             0L
         }
         return (until - System.currentTimeMillis()).coerceAtLeast(0L)
+    }
+
+    /**
+     * One pending tick of a screen: either the screen-wide schedule
+     * (`groupId = 0`, the default) or a single group that carries its own
+     * interval (see [GroupPacing]).
+     */
+    private class PendingTick(
+        val groupId: Long,
+        val waitMs: Long,
+        val anchor: Long,
+        val intervalMs: Long,
+        /** The stored anchor before any claim, for the "dispatch did not happen" restore. */
+        val rawAnchor: Long,
+        /**
+         * True when this group's rhythm is the shared SCREEN clock: the tick
+         * then claims/restores the screen anchor (its own row is only
+         * bookkeeping for the round-robin order and the media cursor).
+         */
+        val usesScreenClock: Boolean = false,
+    )
+
+    /**
+     * The next tick of [slot].
+     *
+     * While EVERY group follows the global interval this is exactly the old
+     * behaviour: one screen-wide anchor, one interval. As soon as one group
+     * carries its own interval the per-group scheduler takes over (see
+     * [GroupPacing]): each group is due at its own `lastSwitchAt + interval`,
+     * and the next tick belongs to whichever group is due first - groups that
+     * are media-less for this screen or outside their 时间规则 window are not
+     * candidates at all.
+     *
+     * @return null when nothing can switch right now (no candidate group).
+     */
+    private suspend fun nextScreenTick(
+        db: AppDatabase,
+        dao: SettingsDao,
+        slot: String,
+        groups: List<com.wallpaperswitcher.data.WallpaperGroup>,
+        globalIntervalKey: String,
+        anchorKey: String,
+        now: Long = System.currentTimeMillis(),
+    ): PendingTick? {
+        val globalInterval = dao.getLong(globalIntervalKey, 60_000L)
+        // Per-group scheduling is needed as soon as ONE group has its own
+        // interval OR its own switch mode (see GroupRules.drivesOwnRhythm).
+        if (groups.none { GroupRules.drivesOwnRhythm(it) }) {
+            val anchor = currentScheduleAnchor(dao, anchorKey, globalInterval)
+            return PendingTick(
+                groupId = 0L,
+                waitMs = SwitchSchedule.waitMs(anchor, globalInterval, now),
+                anchor = anchor,
+                intervalMs = globalInterval,
+                rawAnchor = anchor,
+            )
+        }
+        // Two clocks: groups with their own interval run on their own, groups on
+        // the global interval share the screen anchor (one switch per interval,
+        // not one per group). Shared with 下一张预览 - see GroupSchedulePlan.
+        val screenAnchor = currentScheduleAnchor(dao, anchorKey, globalInterval)
+        val plan = GroupSchedulePlan.next(
+            db, slot, groups, globalInterval, screenAnchor, now
+        ) ?: return null
+        return PendingTick(
+            groupId = plan.groupId,
+            waitMs = plan.waitMs,
+            anchor = plan.anchor,
+            intervalMs = plan.intervalMs,
+            rawAnchor = plan.groupRawAnchor,
+            usesScreenClock = plan.usesScreenClock,
+        )
+    }
+
+    /**
+     * Claim a tick BEFORE dispatching it: a loop restart (screen-on / settings
+     * change) cancels this coroutine, and without the early claim the fresh
+     * loop would still see the tick as due and switch twice in a row.
+     */
+    private suspend fun claimTick(
+        db: AppDatabase,
+        dao: SettingsDao,
+        tick: PendingTick,
+        slot: String,
+        anchorKey: String,
+        at: Long,
+    ) {
+        // The shared screen clock moves for the screen-wide tick and for any
+        // group that follows the global interval.
+        if (tick.groupId <= 0L || tick.usesScreenClock) {
+            moveScheduleAnchor(dao, anchorKey, at)
+        }
+        if (tick.groupId > 0L) {
+            try {
+                val scheduleDao = db.groupScheduleDao()
+                scheduleDao.ensureRow(tick.groupId, slot)
+                scheduleDao.updateLastSwitchAt(tick.groupId, slot, at)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Undo [claimTick] when the dispatch did not happen after all. */
+    private suspend fun restoreTick(
+        db: AppDatabase,
+        dao: SettingsDao,
+        tick: PendingTick,
+        slot: String,
+        anchorKey: String,
+    ) {
+        if (tick.groupId <= 0L || tick.usesScreenClock) {
+            moveScheduleAnchor(dao, anchorKey, tick.anchor)
+        }
+        if (tick.groupId > 0L) {
+            try {
+                db.groupScheduleDao()
+                    .updateLastSwitchAt(tick.groupId, slot, tick.rawAnchor)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Clears the "pause" flag for the caller's log bookkeeping (see ON_PAUSE). */
+    private suspend fun pauseRemainingMs(dao: SettingsDao): Long {
+        val until = try {
+            dao.getLong(SettingsKeys.PAUSE_UNTIL, 0L)
+        } catch (_: Exception) {
+            0L
+        }
+        return (until - System.currentTimeMillis()).coerceAtLeast(0L)
+    }
+
+    /**
+     * Scene rules (see [SettingsKeys.SCENE_PAUSE_ON_POWER_SAVE] /
+     * [SettingsKeys.SCENE_PAUSE_ON_LOW_BATTERY]): true while the user asked the
+     * timers to hold their ticks for the current device state.
+     */
+    private suspend fun scenePausesSwitching(dao: SettingsDao): Boolean {
+        return try {
+            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (pm != null && pm.isPowerSaveMode &&
+                dao.getBool(SettingsKeys.SCENE_PAUSE_ON_POWER_SAVE, false)
+            ) {
+                return true
+            }
+            val bm = getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+            if (bm != null && dao.getBool(SettingsKeys.SCENE_PAUSE_ON_LOW_BATTERY, false)) {
+                val level = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                if (level in 0..SettingsKeys.SCENE_LOW_BATTERY_PERCENT) return true
+            }
+            false
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /**
@@ -624,11 +851,34 @@ class WallpaperSwitchService : Service() {
                 // image still gets a full interval on screen. Holding it here
                 // made the lock timer look "broken" whenever the user set a few
                 // lock images in a row (each pick renewed the hold).
-                val interval = dao.getLong(SettingsKeys.LOCK_INTERVAL_MS, 60_000L)
-                val anchor = currentScheduleAnchor(dao, SettingsKeys.LOCK_TIMER_LAST_SWITCH_WALL_MS)
-                val wait = SwitchSchedule.waitMs(anchor, interval, System.currentTimeMillis())
-                if (wait > 0L) {
-                    delay(wait)
+                // The 一键暂停 / 场景规则 hold applies to the lock timer too:
+                // "稍后切换" means both screens stay as they are.
+                val pausedLeft = pauseRemainingMs(dao)
+                if (pausedLeft > 0L) {
+                    delay(pausedLeft.coerceAtMost(PAUSE_RECHECK_MS))
+                    continue
+                }
+                if (scenePausesSwitching(dao)) {
+                    delay(PAUSE_RECHECK_MS)
+                    continue
+                }
+                val lockTick = nextScreenTick(
+                    db,
+                    dao,
+                    WallpaperTarget.SLOT_LOCK,
+                    db.wallpaperGroupDao().getEnabledGroupsSync()
+                        .filter { WallpaperTarget.fromName(it.target).includesLock },
+                    SettingsKeys.LOCK_INTERVAL_MS,
+                    SettingsKeys.LOCK_TIMER_LAST_SWITCH_WALL_MS
+                )
+                if (lockTick == null) {
+                    // Every lock group is media-less / outside its window: stay
+                    // alive and let a poke or the safety re-check pick it up.
+                    delay(LOCK_IDLE_WAIT_MS)
+                    continue
+                }
+                if (lockTick.waitMs > 0L) {
+                    delay(lockTick.waitMs)
                     continue
                 }
                 // A lock tick shares the static-apply guard with the home one.
@@ -666,8 +916,11 @@ class WallpaperSwitchService : Service() {
                     // and without the early claim the fresh loop would see the
                     // tick as still due and switch the lock twice in a row.
                     withContext(NonCancellable) {
-                        moveScheduleAnchor(
+                        claimTick(
+                            db,
                             dao,
+                            lockTick,
+                            WallpaperTarget.SLOT_LOCK,
                             SettingsKeys.LOCK_TIMER_LAST_SWITCH_WALL_MS,
                             System.currentTimeMillis()
                         )
@@ -675,7 +928,8 @@ class WallpaperSwitchService : Service() {
                     val applied = WallpaperApplier.applyNext(
                         applicationContext,
                         WallpaperTarget.SLOT_LOCK,
-                        android.app.WallpaperManager.FLAG_LOCK
+                        android.app.WallpaperManager.FLAG_LOCK,
+                        lockTick.groupId
                     )
                     if (applied != null) {
                         AppLog.d(
@@ -797,7 +1051,7 @@ class WallpaperSwitchService : Service() {
      *   because another one is already running counts as dispatched: the
      *   in-flight apply is the wallpaper change for this interval.
      */
-    private fun sendSwitch(source: String): Boolean {
+    private fun sendSwitch(source: String, groupId: Long = 0L): Boolean {
         // Screen off: nobody can see the result, and the live engine is in
         // power-save anyway. The tick is dropped; the interval restarts when
         // the screen comes back on (see the screen-state receiver).
@@ -824,11 +1078,12 @@ class WallpaperSwitchService : Service() {
             // write there would REPLACE the live wallpaper, so the broadcast is
             // sent either way - the engine applies LAST_IMAGE_ID when it comes
             // back up.
-            sendSwitchBroadcast(source)
+            sendSwitchBroadcast(source, groupId)
             return true
         }
         launchStaticTick(
-            "home tick", WallpaperTarget.SLOT_HOME, android.app.WallpaperManager.FLAG_SYSTEM
+            "home tick", WallpaperTarget.SLOT_HOME, android.app.WallpaperManager.FLAG_SYSTEM,
+            groupId
         )
         return true
     }
@@ -847,11 +1102,11 @@ class WallpaperSwitchService : Service() {
      * the same image forever. After a bounded wait the tick is skipped so the
      * loop can never pile up.
      */
-    private fun launchStaticTick(reason: String, slot: String, which: Int) {
+    private fun launchStaticTick(reason: String, slot: String, which: Int, groupId: Long = 0L) {
         scope.launch {
             try {
                 val result = withStaticApply(STATIC_APPLY_WAIT_MAX_MS) {
-                    runStaticTick(applicationContext, slot, which)
+                    runStaticTick(applicationContext, slot, which, groupId)
                 }
                 if (result == null) {
                     AppLog.d(TAG, "Static wallpaper apply still busy, skipping $reason")
@@ -884,10 +1139,13 @@ class WallpaperSwitchService : Service() {
     }
 
     /** Send the live-wallpaper switch trigger to our engine. */
-    private fun sendSwitchBroadcast(source: String) {
+    private fun sendSwitchBroadcast(source: String, groupId: Long = 0L) {
         val intent = Intent(LiveWallpaperService.ACTION_SWITCH)
         intent.setPackage(applicationContext.packageName)
         intent.putExtra(LiveWallpaperService.EXTRA_SOURCE, source)
+        if (groupId > 0L) {
+            intent.putExtra(LiveWallpaperService.EXTRA_GROUP_ID, groupId)
+        }
         applicationContext.sendBroadcast(intent)
         AppLog.d(TAG, "Switch broadcast sent ($source)")
     }
@@ -897,9 +1155,13 @@ class WallpaperSwitchService : Service() {
             this, 0, Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
+        // Localised through the chosen language, not the system one: the service
+        // runs outside composition and its context would otherwise keep the
+        // system locale (see AppLocale.localized).
+        val localized = com.wallpaperswitcher.ui.AppLocale.localized(this)
         return NotificationCompat.Builder(this, WallpaperSwitcherApp.CHANNEL_ID)
-            .setContentTitle(getString(R.string.notification_title))
-            .setContentText(getString(R.string.notification_text))
+            .setContentTitle(localized.getString(R.string.notification_title))
+            .setContentText(localized.getString(R.string.notification_text))
             .setSmallIcon(R.drawable.ic_wallpaper_thumb)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -946,6 +1208,20 @@ class WallpaperSwitchService : Service() {
         // restarts the loops immediately - this is only a fallback for a missed
         // poke, so it can be long (was a 15s poll).
         private const val LOCK_IDLE_WAIT_MS = 10 * 60_000L
+        /**
+         * Safety re-check while NO group can switch for a screen (every group
+         * media-less or outside its 时间规则 window). Any relevant change calls
+         * poke(), which restarts the loop immediately; this is only a fallback
+         * for a missed poke - and it is also what notices a group becoming
+         * active when its time window opens.
+         */
+        private const val HOME_IDLE_RECHECK_MS = 60_000L
+        /**
+         * How often the loops re-check a 一键暂停 / 场景规则 hold. The hold never
+         * consumes the tick, so this is purely how late the catch-up switch can
+         * be after the pause expires while the app stayed closed.
+         */
+        private const val PAUSE_RECHECK_MS = 30_000L
         /**
          * How often the HOME loop re-checks whether the desktop is visible while
          * the lock screen covers it (see the A1 gate in [runSwitchLoop]).
@@ -1088,7 +1364,8 @@ class WallpaperSwitchService : Service() {
         internal suspend fun runStaticTick(
             context: Context,
             slot: String,
-            which: Int
+            which: Int,
+            groupId: Long = 0L
         ): WallpaperApplier.StaticTickResult {
             // Belt-and-suspenders for the paths that are not the timer loops
             // (manual "switch now", unlock switch): never write a wallpaper
@@ -1103,7 +1380,7 @@ class WallpaperSwitchService : Service() {
                 AppLog.d(TAG, "Home is our live wallpaper; skipping static home write")
                 return WallpaperApplier.StaticTickResult(WallpaperApplier.StaticTickOutcome.FAILED)
             }
-            return WallpaperApplier.applyNextOutcome(context, slot, which)
+            return WallpaperApplier.applyNextOutcome(context, slot, which, groupId)
         }
 
         /**
@@ -1115,10 +1392,11 @@ class WallpaperSwitchService : Service() {
         internal suspend fun applyStaticTickNow(
             context: Context,
             slot: String,
-            which: Int
+            which: Int,
+            groupId: Long = 0L
         ): Boolean {
             return try {
-                val applied = withStaticApply(0L) { runStaticTick(context, slot, which) }
+                val applied = withStaticApply(0L) { runStaticTick(context, slot, which, groupId) }
                 if (applied == null) {
                     AppLog.d(TAG, "Static wallpaper apply already in progress, skipping $slot tick")
                     false
@@ -1443,6 +1721,10 @@ class WallpaperSwitchService : Service() {
          * work to show for it.
          */
         fun poke(context: Context) {
+            // "What may be shown changed" is exactly when the SHUFFLE deck's
+            // cached id list must be dropped (a group turned on/off, a target
+            // changed, media imported): see MediaPick.enabledIdsFor.
+            com.wallpaperswitcher.engine.MediaPick.invalidateEnabledIds()
             val active = activeInstance
             if (active != null && active.wakeLoopsInPlace()) {
                 AppLog.d(TAG, "poke: timer loops re-evaluated in place")
@@ -1466,11 +1748,27 @@ class WallpaperSwitchService : Service() {
             val app = context.applicationContext
             ioScope.launch {
                 try {
-                    AppDatabase.getInstance(app)
-                        .settingsDao()
+                    val db = AppDatabase.getInstance(app)
+                    db.settingsDao()
                         .setLong(SettingsKeys.TIMER_LAST_SWITCH_WALL_MS, System.currentTimeMillis())
                 } catch (_: Exception) {}
             }
+            // 手动切换也要遵守分组自己的切换模式：屏幕按分组调度时，这一次点击
+            // 就是"下一个到期的分组"的下一张（与定时切换、下一张预览完全一致），
+            // 而不是走屏幕级取图用全局模式随机挑一张。
+            ioScope.launch {
+                val groupId = try {
+                    GroupSchedulePlan.nextHomeGroupId(app)
+                } catch (_: Exception) {
+                    0L
+                }
+                dispatchManualSwitch(app, source, groupId)
+            }
+            return
+        }
+
+        /** Send one manual switch of [groupId] (0 = the screen-wide pick). */
+        private fun dispatchManualSwitch(app: Context, source: String, groupId: Long) {
             // `engineRunning` can be stale-false while OUR live wallpaper is
             // still the home wallpaper (the engine process was killed by the
             // OEM, or a preview engine just tore down). Writing a static home
@@ -1478,16 +1776,17 @@ class WallpaperSwitchService : Service() {
             // switch to the engine whenever it owns the home screen - not only
             // when its flag happens to be true.
             if (LiveWallpaperService.engineRunning ||
-                LiveWallpaperService.isHomeLiveWallpaper(context)
+                LiveWallpaperService.isHomeLiveWallpaper(app)
             ) {
                 // Home is the live wallpaper: ask the engine to display a new
                 // media there.
                 val intent = Intent(LiveWallpaperService.ACTION_SWITCH).apply {
                     putExtra(LiveWallpaperService.EXTRA_SOURCE, source)
+                    if (groupId > 0L) putExtra(LiveWallpaperService.EXTRA_GROUP_ID, groupId)
                 }
-                intent.setPackage(context.packageName)
-                context.sendBroadcast(intent)
-                AppLog.d(TAG, "Switch ($source): engine handles the home screen")
+                intent.setPackage(app.packageName)
+                app.sendBroadcast(intent)
+                AppLog.d(TAG, "Switch ($source): engine handles the home screen (group=$groupId)")
                 return
             }
             ioScope.launch {
@@ -1501,7 +1800,8 @@ class WallpaperSwitchService : Service() {
                         runStaticTick(
                             app,
                             WallpaperTarget.SLOT_HOME,
-                            android.app.WallpaperManager.FLAG_SYSTEM
+                            android.app.WallpaperManager.FLAG_SYSTEM,
+                            groupId
                         )
                     }
                     if (applied == null) {

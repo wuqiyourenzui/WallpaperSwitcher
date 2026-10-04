@@ -8,6 +8,7 @@ import android.content.Intent
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.getBool
+import com.wallpaperswitcher.data.getLong
 import com.wallpaperswitcher.service.WallpaperSwitchService
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import com.wallpaperswitcher.util.logCoroutineFailures
@@ -48,7 +49,16 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
                     val db = AppDatabase.getInstance(context)
                     val enabled = db.settingsDao().getBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, false)
                     AppLog.d(TAG, "unlockEnabled=$enabled")
-                    if (enabled) {
+                    // 一键暂停 (稍后切换) holds the AUTOMATIC triggers too: while
+                    // the user asked the wallpaper to stay put, an unlock must
+                    // not switch it. A manual tap on the floating button still
+                    // works - that is an explicit action.
+                    val paused = db.settingsDao()
+                        .getLong(SettingsKeys.PAUSE_UNTIL, 0L) > System.currentTimeMillis()
+                    if (paused) {
+                        AppLog.d(TAG, "Paused, skipping unlock switch")
+                    }
+                    if (enabled && !paused) {
                         // USER_PRESENT fires while the keyguard is still clearing.
                         // Wait a moment so the wallpaper becomes visible again;
                         // otherwise the engine skips the switch as "not visible".
@@ -64,10 +74,18 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
                             // broadcast to, so switch the home wallpaper
                             // directly (the timer's static path does the same).
                             AppLog.d(TAG, "Engine not running, switching statically (unlock)")
+                            // Respect the per-group rhythm/mode (0 = screen-wide).
+                            val groupId = try {
+                                com.wallpaperswitcher.engine.GroupSchedulePlan
+                                    .nextHomeGroupId(context)
+                            } catch (_: Exception) {
+                                0L
+                            }
                             val applied = WallpaperSwitchService.applyStaticTickNow(
                                 context,
                                 com.wallpaperswitcher.engine.WallpaperTarget.SLOT_HOME,
-                                android.app.WallpaperManager.FLAG_SYSTEM
+                                android.app.WallpaperManager.FLAG_SYSTEM,
+                                groupId
                             )
                             AppLog.d(TAG, "Static unlock switch applied=$applied")
                             // Only claim the unlock when something was actually
@@ -84,8 +102,16 @@ class ScreenUnlockReceiver : BroadcastReceiver() {
                         // engine instance directly returns whether a REAL engine
                         // accepted it, so a dead flag can no longer make the
                         // timer skip a switch that never happened.
+                        // Same group the timer would pick: an unlock switch must
+                        // follow the group's own mode too (0 = screen-wide).
+                        val groupId = try {
+                            com.wallpaperswitcher.engine.GroupSchedulePlan
+                                .nextHomeGroupId(context)
+                        } catch (_: Exception) {
+                            0L
+                        }
                         if (LiveWallpaperService.requestSwitchFromOutside(
-                                LiveWallpaperService.SOURCE_UNLOCK
+                                LiveWallpaperService.SOURCE_UNLOCK, groupId
                             )
                         ) {
                             // Tell the timer that "解锁切换" handled this unlock,

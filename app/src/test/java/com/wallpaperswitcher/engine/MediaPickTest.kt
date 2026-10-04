@@ -86,6 +86,45 @@ class MediaPickTest {
     }
 
     @Test
+    fun randomPickIsReproducibleSoThePreviewMatchesTheSwitch() = runBlocking {
+        // 下一张预览 and the switch that follows it ask the same question with
+        // the same cursor; with a true RNG they got different answers (the
+        // preview disagreed with the switch AND changed on every click).
+        val dao = FakeWallpaperImageDao((1L..40L).map { image(it) }.toMutableList())
+        repeat(20) { cursorStep ->
+            val cursor = cursorStep.toLong() * 3L
+            val preview = MediaPick.random(dao, home, lastId = cursor)
+            val actual = MediaPick.random(dao, home, lastId = cursor)
+            assertEquals(preview?.id, actual?.id)
+        }
+    }
+
+    @Test
+    fun randomPickMovesOnWhenTheCursorMoves() = runBlocking {
+        // Two different cursors must not always resolve to the same media, or
+        // every switch would show the same picture.
+        val dao = FakeWallpaperImageDao((1L..60L).map { image(it) }.toMutableList())
+        val picks = (0L until 60L).map { cursor -> MediaPick.random(dao, home, lastId = cursor)?.id }
+        assertTrue("expected a varied sequence, got $picks", picks.toSet().size > 10)
+    }
+
+    @Test
+    fun shufflePreviewRepeatsUntilTheDeckActuallyMoves() = runBlocking {
+        // The preview must not consume a card: two previews in a row are the
+        // same, and only after the switch records the id does the pick change.
+        val dao = FakeWallpaperImageDao((1L..8L).map { image(it) }.toMutableList())
+        val deck = mutableSetOf<Long>()
+        val first = MediaPick.shuffleUnseen(dao, home, deck, excludeId = 0L)?.id
+        val second = MediaPick.shuffleUnseen(dao, home, deck, excludeId = 0L)?.id
+        assertEquals(first, second)
+        assertNotNull(first)
+        deck.add(first!!)
+        val third = MediaPick.shuffleUnseen(dao, home, deck, excludeId = first)?.id
+        assertNotNull(third)
+        assertNotEquals(first, third)
+    }
+
+    @Test
     fun shuffleUnseenSkipsShownAndCurrentMedia() = runBlocking {
         val dao = FakeWallpaperImageDao((1L..5L).map { image(it) }.toMutableList())
         val picked = MediaPick.shuffleUnseen(
@@ -200,5 +239,39 @@ class MediaPickTest {
             "shown ids of deleted/disabled media must be pruned, was $shown",
             shown.none { it in listOf(2L, 3L, 4L) }
         )
+    }
+
+    /**
+     * The SHUFFLE deck filters the slot's whole id list in memory, so the list is
+     * cached (see MediaPick.enabledIdsFor): on an 18k-media library re-reading it
+     * on every switch is a full id scan plus an 18k allocation for nothing.
+     */
+    @Test
+    fun shuffleReusesTheIdListUntilSomethingInvalidatesIt() = runBlocking {
+        MediaPick.invalidateEnabledIds()
+        val dao = FakeWallpaperImageDao((1L..5L).map { image(it) }.toMutableList())
+        val shown = mutableSetOf<Long>()
+
+        // First pick reads the list, the second one is served from the cache.
+        MediaPick.shuffleUnseen(dao, home, shown, 0L, generation = 7L, knownCount = 5)
+        val afterFirst = dao.weightQueries
+        MediaPick.shuffleUnseen(dao, home, shown, 0L, generation = 7L, knownCount = 5)
+        assertEquals("an unchanged set must not re-read the id list", afterFirst, dao.weightQueries)
+
+        // A new media-store generation invalidates it (a scan import).
+        MediaPick.shuffleUnseen(dao, home, shown, 0L, generation = 8L, knownCount = 5)
+        assertEquals(afterFirst + 1, dao.weightQueries)
+
+        // So does an explicit invalidation (group toggled, media deleted).
+        MediaPick.shuffleUnseen(dao, home, shown, 0L, generation = 8L, knownCount = 5)
+        MediaPick.invalidateEnabledIds()
+        MediaPick.shuffleUnseen(dao, home, shown, 0L, generation = 8L, knownCount = 5)
+        assertEquals(afterFirst + 2, dao.weightQueries)
+
+        // ...and so does the count changing without any of the above: that is the
+        // auto-scan worker inserting media, which never pokes the service.
+        dao.insert(image(6L))
+        MediaPick.shuffleUnseen(dao, home, shown, 0L, generation = 8L, knownCount = 6)
+        assertEquals(afterFirst + 3, dao.weightQueries)
     }
 }

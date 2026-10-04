@@ -28,10 +28,31 @@ class WallpaperSwitcherApp : Application() {
     val database: AppDatabase by lazy { AppDatabase.getInstance(this) }
     private var unlockReceiver: ScreenUnlockReceiver? = null
 
+    /**
+     * Start the whole process in the chosen language, not just the Activity.
+     *
+     * Anything built outside composition - the notification channel name and its
+     * description, and every `getApplication().getString(...)` - used to resolve
+     * against the SYSTEM locale, so it stayed Chinese while the UI was English
+     * (see [com.wallpaperswitcher.ui.AppLocale.localized], which covers the
+     * strings read after a language change, when this context is already stale).
+     */
+    override fun attachBaseContext(base: Context) {
+        // Keep the untouched base around: "跟随系统" has to resolve against the
+        // system/per-app locale even after this process was started in another
+        // language (see AppLocale.rememberSystemBase).
+        com.wallpaperswitcher.ui.AppLocale.rememberSystemBase(base)
+        super.attachBaseContext(com.wallpaperswitcher.ui.AppLocale.wrap(base))
+    }
+
     override fun onCreate() {
         super.onCreate()
         // Start capturing runtime logs first so startup/engine logs are kept.
         AppLog.init(this)
+        // 订阅源 HTTP 磁盘缓存（离线/网络失败时的兜底）。Must be set before the
+        // HTTP client is built, so it runs first.
+        runCatching { com.wallpaperswitcher.engine.RssHttp.init(this) }
+            .onFailure { AppLog.e(TAG, "RssHttp.init failed", it) }
         // None of the startup steps below may take the app down: a notification
         // channel, a receiver (OEM policy) or the image loader failing must
         // degrade that one feature, not crash every launch.
@@ -42,6 +63,53 @@ class WallpaperSwitcherApp : Application() {
             .onFailure { AppLog.e(TAG, "registerUnlockReceiver failed", it) }
         runCatching { initCoil() }
             .onFailure { AppLog.e(TAG, "initCoil failed", it) }
+        // 订阅源的会话 Cookie（loginUrl / Set-Cookie）持久化。
+        runCatching { com.wallpaperswitcher.engine.RssCookieStore.init(this) }
+            .onFailure { AppLog.e(TAG, "RssCookieStore.init failed", it) }
+        // 订阅源登录信息（loginUi 表单值 / putLoginHeader）持久化。
+        runCatching { com.wallpaperswitcher.engine.legado.RssLoginStore.init(this) }
+            .onFailure { AppLog.e(TAG, "RssLoginStore.init failed", it) }
+        // 订阅源代理（阅读的 proxy 等价物），写进 HTTP 层。
+        CoroutineScope(Dispatchers.IO + logCoroutineFailures(TAG)).launch {
+            runCatching { com.wallpaperswitcher.engine.RssProxySetting.apply(this@WallpaperSwitcherApp) }
+                .onFailure { AppLog.w(TAG, "RssProxySetting.apply failed: ${it.javaClass.simpleName}") }
+        }
+        // @webjs: rules run inside a hidden WebView, which needs an app context.
+        runCatching { com.wallpaperswitcher.engine.legado.WebJsRunner.init(this) }
+            .onFailure { AppLog.e(TAG, "WebJsRunner.init failed", it) }
+        // 在线壁纸源: heal the WorkManager queue (an edit while the process was
+        // dead, a restore, or an OEM cleanup must still end up scheduled with
+        // the right network/charging constraints).
+        CoroutineScope(Dispatchers.IO + logCoroutineFailures(TAG)).launch {
+            try {
+                com.wallpaperswitcher.engine.OnlineSourceScheduler.ensureScheduled(this@WallpaperSwitcherApp)
+            } catch (t: Throwable) {
+                AppLog.e(TAG, "ensureScheduled (online sources) failed", t)
+            }
+        }
+        // 订阅源不再做本地缓存（进源实时加载、退出即清空），所以那个 6 小时的
+        // 后台刷新没有意义了：只做收尾，把老版本排队的任务取消掉。
+        CoroutineScope(Dispatchers.IO + logCoroutineFailures(TAG)).launch {
+            try {
+                com.wallpaperswitcher.engine.RssScheduler.ensureScheduled(this@WallpaperSwitcherApp)
+            } catch (t: Throwable) {
+                AppLog.e(TAG, "ensureScheduled (subscriptions) failed", t)
+            }
+            // 上一次运行可能残留的订阅缓存行（旧版本写入的）也一并清掉。
+            try {
+                com.wallpaperswitcher.data.AppDatabase.getInstance(this@WallpaperSwitcherApp)
+                    .rssArticleDao().deleteAll()
+            } catch (t: Throwable) {
+                AppLog.w(TAG, "rss cache cleanup failed: ${t.javaClass.simpleName}")
+            }
+            // 顺手清掉"行已删、文件还在"的导入媒体（历史遗留会占几百 MB）。
+            try {
+                com.wallpaperswitcher.engine.OwnedMediaCleaner
+                    .sweep(this@WallpaperSwitcherApp)
+            } catch (t: Throwable) {
+                AppLog.w(TAG, "owned media sweep failed: ${t.javaClass.simpleName}")
+            }
+        }
     }
 
     /**
@@ -163,6 +231,36 @@ class WallpaperSwitcherApp : Application() {
                 // getBool(..., true) fallback already assumes.
                 if (dao.getValue(SettingsKeys.LOCK_TIMER_ENABLED) == null) {
                     dao.setBool(SettingsKeys.LOCK_TIMER_ENABLED, true)
+                }
+                // Built-in subscription source (好壁纸), seeded exactly once so
+                // deleting it does not bring it back.
+                if (dao.getValue(SettingsKeys.RSS_DEFAULT_SEEDED) == null) {
+                    dao.setBool(SettingsKeys.RSS_DEFAULT_SEEDED, true)
+                    val sources = database.rssSourceDao()
+                    if (sources.getAll().isEmpty()) {
+                        // Rule source derived from haowallpaper.com's markup:
+                        // cards on /homeView, details at /homeViewLook/<id>.
+                        val raw = """
+                            {"sourceName":"好壁纸","sourceUrl":"https://haowallpaper.com/homeView",
+                             "sortUrl":"最新::/homeView",
+                             "ruleArticles":"class.card",
+                             "ruleTitle":"tag.h3@text||tag.a.0@title||class.card-content@text",
+                             "ruleLink":"tag.a.0@href",
+                             "ruleImage":"class.video-preview-poster@src||tag.img@src",
+                             "ruleContent":"{{@@tag.img@html}}",
+                             "type":0,"enabled":true}
+                        """.trimIndent()
+                        val id = sources.insert(
+                            com.wallpaperswitcher.data.RssSource(
+                                name = "好壁纸",
+                                url = "https://haowallpaper.com/homeView",
+                                type = 0,
+                                enabled = true,
+                                rawJson = raw,
+                            )
+                        )
+                        AppLog.d(TAG, "default subscription seeded (id=$id)")
+                    }
                 }
                 // Housekeeping: the "swipe / page-flip switch" feature was
                 // removed, and its toggle row was left behind in existing

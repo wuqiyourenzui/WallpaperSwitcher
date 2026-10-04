@@ -1,6 +1,7 @@
 package com.wallpaperswitcher.engine
 
 import com.wallpaperswitcher.data.ScaleMode
+import com.wallpaperswitcher.data.SettingsKeys
 import kotlin.math.abs
 
 /**
@@ -11,6 +12,20 @@ import kotlin.math.abs
  * edge (i.e. covers the whole screen).
  */
 object WallpaperGeometry {
+
+    /**
+     * 过渡动画 travel of the SLIDE mode, in NDC units (2 = one full screen
+     * width). A full-width slide starts with the media completely off-screen,
+     * i.e. a black first frame; 0.36 (= 18% of the width) slides the picture in
+     * over a thin dark strip instead.
+     */
+    const val TRANSITION_SLIDE_TRAVEL_NDC = 0.36f
+
+    /**
+     * Start scale of the ZOOM mode. 0.93 keeps the dark border thin (the old
+     * 0.85 left 15% of the screen black on the first frame).
+     */
+    const val TRANSITION_ZOOM_START_SCALE = 0.93f
 
     /**
      * Quad for a static image. v=0 is the image top (BitmapFactory uploads the
@@ -124,4 +139,45 @@ object WallpaperGeometry {
      */
     fun quadCoversScreen(q: FloatArray): Boolean =
         q.size >= 2 && abs(q[0]) >= 1f && abs(q[1]) >= 1f
+
+    /**
+     * 过渡动画: transform a quad for the in-flight switch transition.
+     *
+     * [progress] is 0 at the start of the transition and 1 when it is settled;
+     * 1 (or a mode without a geometry animation, e.g. the classic fade) returns
+     * the quad unchanged, so the settled state is always the exact FIT / FILL /
+     * STRETCH layout.
+     *
+     * - slide: the new media enters from the right edge;
+     * - zoom: it grows from 85% around the centre.
+     *
+     * Kept here (not in the renderer) so the maths is unit-testable.
+     */
+    fun applyTransition(quad: FloatArray, mode: String, progress: Float): FloatArray {
+        if (progress >= 1f || quad.size < 2) return quad
+        val t = progress.coerceIn(0f, 1f)
+        return when (mode) {
+            SettingsKeys.SWITCH_TRANSITION_SLIDE -> {
+                // A short, eased travel instead of a full-screen slide-in: the
+                // media never starts fully off-screen (no black first frame).
+                val dx = (1f - t) * TRANSITION_SLIDE_TRAVEL_NDC
+                for (i in intArrayOf(0, 4, 8, 12)) {
+                    if (i < quad.size) quad[i] += dx
+                }
+                quad
+            }
+            SettingsKeys.SWITCH_TRANSITION_ZOOM -> {
+                val s = TRANSITION_ZOOM_START_SCALE +
+                    (1f - TRANSITION_ZOOM_START_SCALE) * t
+                for (i in intArrayOf(0, 4, 8, 12)) {
+                    if (i < quad.size) quad[i] *= s
+                }
+                for (i in intArrayOf(1, 5, 9, 13)) {
+                    if (i < quad.size) quad[i] *= s
+                }
+                quad
+            }
+            else -> quad
+        }
+    }
 }

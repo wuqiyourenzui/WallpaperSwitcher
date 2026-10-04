@@ -38,6 +38,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -45,6 +46,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import com.wallpaperswitcher.R
 import com.wallpaperswitcher.engine.ColorPickerGrid
 
 /**
@@ -143,7 +145,7 @@ fun ColorGridPicker(
         if (alphaPercent != null && onAlphaChange != null) {
             Spacer(modifier = Modifier.height(14.dp))
             Text(
-                "透明度 $alphaPercent%",
+                stringResource(R.string.color_alpha, alphaPercent),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -237,7 +239,9 @@ fun ColorGridPickerDialog(
                         }
                         Spacer(modifier = Modifier.size(12.dp))
                         Text(
-                            "跟随系统 Monet（用壁纸配色，Android 12+）",
+                            // Shared with the settings row's value: both mean
+                            // "let the system decide", so they read the same.
+                            stringResource(R.string.theme_color_system),
                             style = MaterialTheme.typography.bodyMedium
                         )
                     }
@@ -267,10 +271,10 @@ fun ColorGridPickerDialog(
                     // closed only because its onConfirm happened to clear the flag).
                     onDismiss()
                 }
-            ) { Text("保存") }
+            ) { Text(stringResource(R.string.action_save)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         }
     )
 }

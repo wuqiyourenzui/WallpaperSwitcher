@@ -339,14 +339,19 @@ object AppLog {
             }
             buffer.addLast(line)
             while (buffer.size > MAX_MEMORY_LINES) buffer.removeFirst()
-            rotateLogIfNeededLocked(line.length + 1)
+            // UTF-8 bytes, not String.length: the file is UTF-8 and a Chinese
+            // log line costs ~3 bytes per character, so counting characters made
+            // the 2MB cap fire about three times late (and made the number
+            // disagree with `f.length()` recorded at startup, which IS bytes).
+            val lineBytes = lineBytes(line)
+            rotateLogIfNeededLocked(lineBytes)
             val w = writer
             if (w != null) {
                 try {
                     w.write(line)
                     w.newLine()
-                    writtenBytes += line.length + 1
-                    pendingFlushBytes += line.length + 1
+                    writtenBytes += lineBytes
+                    pendingFlushBytes += lineBytes
                     // Debug lines are batched, everything else (W/E/I) is flushed
                     // immediately so a crash report can never lose a warning. The
                     // batch is bounded by both size and time: an abrupt kill costs
@@ -378,6 +383,16 @@ object AppLog {
         flushScheduled = true
         handler.postDelayed(scheduledFlush, FLUSH_MAX_INTERVAL_MS)
     }
+
+    /**
+     * Bytes one logged line costs in the UTF-8 file, INCLUDING its newline.
+     *
+     * The size budget is compared against [File.length] (bytes), so the counter
+     * has to be bytes as well: `String.length` counts UTF-16 units, which made a
+     * Chinese log line look ~1/3 of its real size and pushed the 2MB rotation
+     * far past its bound. Pure so it is unit-tested.
+     */
+    internal fun lineBytes(line: String): Int = line.toByteArray(Charsets.UTF_8).size + 1
 
     private const val RUNTIME_FILE = "runtime.log"
     /** Log of the previous session, kept so a restart does not lose the context. */

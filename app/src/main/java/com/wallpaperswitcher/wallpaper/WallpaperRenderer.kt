@@ -25,10 +25,13 @@ import android.os.SystemClock
 import android.view.Surface
 
 import android.view.SurfaceHolder
+import android.view.Choreographer
 
 import com.wallpaperswitcher.data.ScaleMode
+import com.wallpaperswitcher.data.SettingsKeys
 
 import com.wallpaperswitcher.engine.WallpaperGeometry
+import com.wallpaperswitcher.engine.TransitionCurve
 
 import com.wallpaperswitcher.engine.VideoSound
 
@@ -242,6 +245,25 @@ class WallpaperRenderer(
     // decays over ~250ms after a switch, drawn on top of every presented frame.
     private var fadeAlpha = 0f
     private var fadeGeneration = 0
+    /**
+     * 过渡动画 (see SettingsKeys.SWITCH_TRANSITION_*): "fade" (the historical
+     * black fade-in), "slide" / "zoom" (quad geometry animation) or "none".
+     * Render-thread state: written through [requestTransition].
+     */
+    private var transitionMode = SettingsKeys.SWITCH_TRANSITION_DEFAULT
+    /** 0 at the start of a slide/zoom transition, 1 when settled. */
+    private var transitionProgress = 1f
+    /**
+     * Frame-clock driver of the running transition (null = none). The animation
+     * is sampled in [android.view.Choreographer.FrameCallback], i.e. once per
+     * displayed frame, instead of on a fixed 25ms timer - that is what makes it
+     * smooth on 60/90/120Hz panels.
+     */
+    private var transitionCallback: android.view.Choreographer.FrameCallback? = null
+    /** Frame time the running transition started at (0 = not started yet). */
+    private var transitionStartNanos = 0L
+    /** Frames the running transition has presented (for the completion log). */
+    private var transitionFrameCount = 0
     private var lastImageBitmap: Bitmap? = null
     private var lastImageScaleMode: ScaleMode = ScaleMode.FIT
     /** GPU quarter turn applied to the image currently uploaded (see computeQuad). */
@@ -429,6 +451,14 @@ class WallpaperRenderer(
      */
     @Volatile
     var onFirstVideoFrame: (() -> Unit)? = null
+    /**
+     * Invoked (on the decode thread) every time a video pass reaches its end,
+     * right before the clip loops. The engine uses it for 视频播完再切: a timed
+     * switch that arrived while the video was playing is executed here instead
+     * of cutting the clip off mid-pass.
+     */
+    @Volatile
+    var onVideoPassCompleted: (() -> Unit)? = null
     // Set by startVideo, cleared when the first frame has been reported.
     private val videoFirstFramePending = AtomicBoolean(false)
     @Volatile
@@ -637,7 +667,11 @@ class WallpaperRenderer(
             displayW != displayH && mediaLandscape != screenLandscape
         val effW = if (videoExtraRotate) displayH else displayW
         val effH = if (videoExtraRotate) displayW else displayH
-        val quad = WallpaperGeometry.computeVideoQuad(effW, effH, screenW, screenH, scaleMode)
+        val quad = WallpaperGeometry.applyTransition(
+            WallpaperGeometry.computeVideoQuad(effW, effH, screenW, screenH, scaleMode),
+            transitionMode,
+            transitionProgress
+        )
         vertexBuffer?.clear()
         vertexBuffer?.put(quad)?.position(0)
         videoQuadFullscreen = WallpaperGeometry.quadCoversScreen(quad)
@@ -767,71 +801,149 @@ class WallpaperRenderer(
     }
 
     /**
-     * Start a fade-in-from-black transition after a switch. The overlay is
-     * drawn on top of every presented frame while its alpha decays, so it
-     * works for images, GIFs and videos alike. Call after the new media has
-     * been applied.
+     * 过渡动画: play the user's chosen transition after a switch.
+     *
+     * "fade" dims and brightens the new media; "slide" and "zoom" animate its
+     * quad; "none" presents the frame as-is. All of them are overlay/geometry
+     * effects that work for images, GIFs and videos alike (video frames pick the
+     * transform up on their next frame).
+     *
+     * The animation is driven by the display's frame clock with an ease-out
+     * curve (see [TransitionCurve]) rather than by fixed 25ms steps: the old
+     * step timer was not aligned to vsync, so identical steps landed on 1 or 2
+     * frames each and the motion juddered, and both fade and slide started from
+     * a fully black frame.
      */
-    fun requestFade() {
+    fun requestTransition(mode: String) {
         postToRenderThread {
-            startFadeSteps()
+            transitionMode = mode
+            startTransition()
+        }
+    }
+
+    /** Adopt a 过渡动画 change without playing anything (next switch uses it). */
+    fun setTransitionMode(mode: String) {
+        postToRenderThread {
+            transitionMode = mode
+            cancelTransition()
+            fadeAlpha = 0f
+            transitionProgress = 1f
         }
     }
 
     /**
-     * Schedule the fade overlay steps. Runs on the render thread. For static
-     * images the last bitmap is re-rendered each step (so the overlay is
-     * visible even without new frames); video/GIF frames keep arriving and are
-     * drawn with the overlay automatically.
+     * Render thread: (re)start the transition for [transitionMode], on the frame
+     * clock. The first frame is applied immediately so the effect starts with
+     * the switch instead of one vsync later.
      */
-    private fun startFadeSteps() {
-        fadeGeneration++
-        val gen = fadeGeneration
-        fadeAlpha = 1f
-        // ~200ms fade-in. The first presented frame is full black, then the
-        // alpha decays every 25ms so the transition is clearly visible instead
-        // of being over before the eye notices it.
-        val stepMs = 25L
-        val steps = 8
-        var step = 1
-        // Draw the fully-black frame immediately. For a static image this
-        // re-presents the texture with the overlay; video/GIF frames pick the
-        // overlay up automatically when they arrive.
-        if (lastRenderWasImage) {
-            val bmp = lastImageBitmap
-            if (bmp != null && !bmp.isRecycled) {
-                renderImageFromTexture()
-            }
+    private fun startTransition() {
+        cancelTransition()
+        val fade = transitionMode == SettingsKeys.SWITCH_TRANSITION_FADE
+        val geometry = transitionMode == SettingsKeys.SWITCH_TRANSITION_SLIDE ||
+            transitionMode == SettingsKeys.SWITCH_TRANSITION_ZOOM
+        if (!fade && !geometry) {
+            fadeAlpha = 0f
+            transitionProgress = 1f
+            return
         }
-        val runnable = object : Runnable {
-            override fun run() {
-                if (gen != fadeGeneration) return
-                fadeAlpha = (1f - step.toFloat() / steps).coerceAtLeast(0f)
-                if (lastRenderWasImage) {
-                    // Force a redraw so the static image is re-presented with
-                    // the current overlay alpha. The texture is re-drawn from
-                    // the already-uploaded image (no texImage2D re-upload):
-                    // the bitmap is unchanged between fade steps, so the old
-                    // per-step upload wasted a full screen-size GPU transfer
-                    // (and a mipmap regen) up to 5 extra times per switch.
-                    val bmp = lastImageBitmap
-                    if (bmp != null && !bmp.isRecycled) renderImageFromTexture()
-                }
-                if (fadeAlpha > 0f) {
+        val generation = ++fadeGeneration
+        transitionStartNanos = 0L
+        transitionFrameCount = 0
+        // Frame 0: dim the media / place the quad at its start position at once.
+        applyTransitionProgress(TransitionCurve.easeOutCubic(0f), fade)
+        val choreographer = try {
+            Choreographer.getInstance()
+        } catch (_: Throwable) {
+            null
+        }
+        if (choreographer == null) {
+            // No frame clock available (never expected on a Looper thread):
+            // settle immediately rather than stranding a half-applied effect.
+            finishTransition(fade)
+            return
+        }
+        val callback = object : Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                if (generation != fadeGeneration) return
+                if (transitionStartNanos == 0L) transitionStartNanos = frameTimeNanos
+                val linear = TransitionCurve.progressAt(transitionStartNanos, frameTimeNanos)
+                transitionFrameCount++
+                applyTransitionProgress(TransitionCurve.easeOutCubic(linear), fade)
+                if (linear < 1f) {
                     try {
-                        renderHandler?.postDelayed(this, stepMs)
-                    } catch (_: Exception) {
-                        // The handler looper may be quitting during engine
-                        // release; stop the fade instead of crashing.
-                        fadeAlpha = 0f
+                        choreographer.postFrameCallback(this)
+                    } catch (_: Throwable) {
+                        finishTransition(fade)
                     }
                 } else {
-                    fadeAlpha = 0f
+                    finishTransition(fade)
                 }
-                step++
             }
         }
-        renderHandler?.post(runnable)
+        transitionCallback = callback
+        try {
+            choreographer.postFrameCallback(callback)
+        } catch (_: Throwable) {
+            transitionCallback = null
+            finishTransition(fade)
+        }
+    }
+
+    /** Publish one animation frame (eased progress) and repaint the media. */
+    private fun applyTransitionProgress(eased: Float, fade: Boolean) {
+        if (fade) {
+            fadeAlpha = TransitionCurve.fadeAlpha(eased)
+        } else {
+            transitionProgress = eased
+        }
+        repaintForTransition()
+    }
+
+    /** Settle on the final state and stop the frame callback. */
+    private fun finishTransition(fade: Boolean) {
+        if (fade) fadeAlpha = 0f
+        transitionProgress = 1f
+        repaintForTransition()
+        transitionCallback = null
+        // One line per transition (not per frame): the frame count vs the
+        // elapsed time is what tells a smooth run (e.g. 13 frames / 220ms =
+        // 60Hz) from a juddering one, and it lands in the exported log.
+        AppLog.d(
+            TAG,
+            "Transition done: $transitionMode frames=$transitionFrameCount " +
+                "duration=${TransitionCurve.DURATION_MS.toInt()}ms"
+        )
+    }
+
+    /** Stop a running transition without touching the settled state. */
+    private fun cancelTransition() {
+        fadeGeneration++
+        val callback = transitionCallback ?: return
+        transitionCallback = null
+        try {
+            Choreographer.getInstance().removeFrameCallback(callback)
+        } catch (_: Throwable) {
+        }
+    }
+
+    /** Re-present the current media with the current transition transform. */
+    private fun repaintForTransition() {
+        try {
+            if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
+            if (lastRenderWasImage) {
+                val bmp = lastImageBitmap
+                if (bmp != null && !bmp.isRecycled) renderImageFromTexture()
+            } else if (videoTexId != 0) {
+                // Video: recompute the quad; the frame itself arrives from the
+                // decoder. If it is throttled (power save), the transform is
+                // simply in place for the next presented frame.
+                refreshVideoQuad(videoDisplayW, videoDisplayH, videoScaleMode)
+            }
+        } catch (t: Throwable) {
+            AppLog.e(TAG, "transition repaint failed", t)
+            transitionProgress = 1f
+            fadeAlpha = 0f
+        }
     }
 
     /**
@@ -895,6 +1007,11 @@ class WallpaperRenderer(
             )
             val drawnW = kotlin.math.abs(quad[4]) * screenW
             val drawnH = kotlin.math.abs(quad[5]) * screenH
+            // 过渡动画 (slide/zoom): the quad grows/slides in during the first
+            // ~200ms; the settled state (progress = 1) is the exact layout.
+            // Applied AFTER the mipmap decision above, which must see the real
+            // on-screen size of the media.
+            WallpaperGeometry.applyTransition(quad, transitionMode, transitionProgress)
             // Mipmaps only help when the texture is DOWNSCALED on screen (the
             // minification filter is never used when the image is magnified).
             // With the display-aware decode, many images are shown at ~1:1 or
@@ -997,6 +1114,7 @@ class WallpaperRenderer(
                 bmp.width.toFloat(), bmp.height.toFloat(), screenW, screenH, lastImageScaleMode,
                 lastImageRotateCw
             )
+            WallpaperGeometry.applyTransition(quad, transitionMode, transitionProgress)
             vertexBuffer?.clear()
             vertexBuffer?.put(quad)?.position(0)
 
@@ -1158,7 +1276,11 @@ class WallpaperRenderer(
         // asked for sound. It waits for the first playback pass of THIS video
         // (see signalVideoPassStart), so a video that never starts stays silent.
         currentVideoUri = uriStr
-        if (videoSoundEnabled) startAudio(uriStr, gen, startPositionUs.coerceAtLeast(0L))
+        // Not while our own UI is open: a media switch triggered from inside the
+        // app must not start playing audio behind it (see muteAudioKeepingVideo).
+        if (videoSoundEnabled && !audioMutedForOwnUi) {
+            startAudio(uriStr, gen, startPositionUs.coerceAtLeast(0L))
+        }
     }
 
     /**
@@ -1252,7 +1374,7 @@ class WallpaperRenderer(
             return
         }
         val uri = currentVideoUri
-        if (uri != null && isVideoPlaying) {
+        if (uri != null && isVideoPlaying && !audioMutedForOwnUi) {
             // Start the sound where the picture IS, not at 0: switching the
             // setting on mid-playback used to play the audio from the file's
             // start while the picture stayed at its position (the two only met
@@ -1261,9 +1383,15 @@ class WallpaperRenderer(
             startAudio(uri, videoGeneration.get(), lastVideoPositionUs)
             AppLog.d(TAG, "Video sound ON (from ${lastVideoPositionUs / 1000}ms)")
         } else {
+            if (audioMutedForOwnUi) {
+                // Enabled from inside the app while our UI is open: remember it
+                // (the flag is on) and stay silent until the UI is gone.
+                AppLog.d(TAG, "Video sound ON (kept silent: our UI is in front)")
+            } else {
             // Enabled while an image/GIF is showing: the next video starts with
             // sound (startVideo checks this flag).
             AppLog.d(TAG, "Video sound ON (no video playing right now)")
+            }
         }
     }
 
@@ -1281,11 +1409,29 @@ class WallpaperRenderer(
      * on screen by then, so the muted interval is skipped instead of playing late.
      */
     fun muteAudioKeepingVideo() {
-        if (!videoSoundEnabled || !isVideoPlaying) return
-        if (audioMutedForOwnUi) return
+        // No `isVideoPlaying` gate: a video that is (re)starting right now - a
+        // switch, a decoder rebuild after a failure, or a lagging
+        // `isVideoPlaying` flag - still must not be audible behind our UI. The
+        // old guard skipped the mute in exactly those windows, and because the
+        // flag below stayed false nothing ever retried it: the sound kept
+        // playing until the (deferred) power-save pause, or came back with the
+        // next media.
+        if (!videoSoundEnabled) return
+        val firstTime = !audioMutedForOwnUi
         audioMutedForOwnUi = true
+        // Sticky at the session level too: the audio thread's own
+        // ensurePlaying()/resume()/restart() calls (per playback pass, on a
+        // decoder format change, on the first visible frame) used to be able to
+        // turn the sound back on while our UI was in front.
+        audioSession.muteForPolicy()
         stopAudio()
-        AppLog.d(TAG, "Audio muted (own UI opening; video keeps playing)")
+        if (firstTime) {
+            AppLog.d(TAG, "Audio muted (own UI opening; video keeps playing)")
+        } else {
+            // Re-asserted (a video/audio restart slipped through): worth a line,
+            // it is the difference between "muted" and "audible behind the UI".
+            AppLog.d(TAG, "Audio mute re-asserted while the UI is open")
+        }
     }
 
     /**
@@ -1297,6 +1443,8 @@ class WallpaperRenderer(
     fun unmuteAudioReanchored() {
         if (!audioMutedForOwnUi) return
         audioMutedForOwnUi = false
+        // Lifts the session-level block BEFORE the new audio thread starts.
+        audioSession.clearPolicyMute()
         if (!videoSoundEnabled || !isVideoPlaying || powerSaveMode) return
         val uri = currentVideoUri ?: return
         startAudio(uri, videoGeneration.get(), lastVideoPositionUs)
@@ -1855,6 +2003,17 @@ class WallpaperRenderer(
         private var encoding = VideoSound.PCM_ENCODING
         @Volatile
         private var playing = false
+        /**
+         * Set while the engine must stay silent for a reason OUTSIDE the media
+         * ("our own UI is in the foreground"). [pause] alone is not enough: the
+         * audio thread calls [ensurePlaying]/[resume]/[restart] on every playback
+         * pass, on a decoder format change and on the first visible frame, and any
+         * of those would turn the sound back on behind the UI. Those helpers
+         * therefore refuse to play while this flag is set; only
+         * [clearPolicyMute] (the engine's explicit unmute) lifts it.
+         */
+        @Volatile
+        private var policyMuted = false
 
         fun trackFor(
             wantedSampleRate: Int,
@@ -1885,16 +2044,35 @@ class WallpaperRenderer(
             try {
                 t.pause()
                 t.flush()
-                t.play()
-                playing = true
+                // A new media still drops the previous media's buffered samples
+                // (otherwise they would be heard later, when the UI leaves), but
+                // it does not play while the engine is policy-muted.
+                if (policyMuted) {
+                    playing = false
+                } else {
+                    t.play()
+                    playing = true
+                }
             } catch (_: Throwable) {
             }
         }
 
         /** Make sure a (possibly paused) track is playing again. */
         fun ensurePlaying() {
+            if (policyMuted) return
             if (playing) return
             resume()
+        }
+
+        /** Silence for a reason outside the media (see [policyMuted]). */
+        fun muteForPolicy() {
+            policyMuted = true
+            pause()
+        }
+
+        /** Lift [muteForPolicy]; the caller re-starts the audio itself. */
+        fun clearPolicyMute() {
+            policyMuted = false
         }
 
         fun pause() {
@@ -1904,6 +2082,7 @@ class WallpaperRenderer(
         }
 
         fun resume() {
+            if (policyMuted) return
             val t = track ?: return
             try { t.play() } catch (_: Throwable) {}
             playing = true
@@ -1913,6 +2092,7 @@ class WallpaperRenderer(
             val t = track ?: return
             track = null
             playing = false
+            policyMuted = false
             try { t.pause() } catch (_: Throwable) {}
             try { t.flush() } catch (_: Throwable) {}
             try { t.release() } catch (_: Throwable) {}
@@ -2729,6 +2909,18 @@ class WallpaperRenderer(
                 }
 
                 if (videoGeneration.get() != gen || Thread.interrupted()) break
+                // 视频播完再切: one notification per completed pass, on BOTH
+                // loop paths. The warm path (codec + GL reused, which is the
+                // normal loop of the same file) used to `continue` before the
+                // eof block below, so the callback never ran and a held timed
+                // switch waited forever while the clip looped.
+                if (eof && passFramesPresented > 0L) {
+                    try {
+                        onVideoPassCompleted?.invoke()
+                    } catch (t: Throwable) {
+                        AppLog.e(TAG, "onVideoPassCompleted callback failed", t)
+                    }
+                }
                 if (keepWarm) {
                     // The warm session already has its GL resources; cleaning
                     // them here would also break the codec's surface, and the

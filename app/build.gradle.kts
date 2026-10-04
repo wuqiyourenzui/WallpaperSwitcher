@@ -88,6 +88,22 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
     implementation("io.coil-kt:coil-compose:2.5.0")
+    // Media3/ExoPlayer: 阅读-style video playback (mp4 + HLS + custom headers).
+    implementation("androidx.media3:media3-exoplayer:1.3.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.3.1")
+    implementation("androidx.media3:media3-ui:1.3.1")
+    // WebDAV PROPFIND: the platform HttpURLConnection rejects the method on
+    // Android. Already on the classpath transitively through Coil; pinned here
+    // because the online sources use it directly.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // 阅读 (Legado) 订阅源规则引擎: CSS 选择器 / JSONPath / XPath.
+    // The rule syntax itself is implemented in this project (engine/legado);
+    // these are the underlying parsers the format relies on.
+    implementation("org.jsoup:jsoup:1.16.2")
+    implementation("com.jayway.jsonpath:json-path:2.10.0")
+    implementation("cn.wanghaomiao:JsoupXpath:2.5.3")
+    // 阅读 JS 规则 (@js: / <js>): Rhino, the engine Legado itself builds on.
+    implementation("org.mozilla:rhino:1.8.1")
     implementation("io.coil-kt:coil-video:2.5.0")  // 视频帧缩略图
 
     implementation("androidx.core:core-ktx:1.12.0")
@@ -100,3 +116,4 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation(kotlin("test-junit"))
 }
+

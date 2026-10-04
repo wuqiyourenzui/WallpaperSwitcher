@@ -1,0 +1,30 @@
+[
+  {
+    "articleStyle": 2,
+    "cacheFirst": true,
+    "concurrentRate": "10",
+    "customOrder": 0,
+    "enableJs": true,
+    "enabled": true,
+    "enabledCookieJar": false,
+    "header": "{\"User-Agent\": \"Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36\", \"Referer\": \"https://w1226.9p58b.com/\", \"Accept\": \"text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8\", \"Accept-Language\": \"zh-CN,zh;q=0.9,en;q=0.8\"}",
+    "lastUpdateTime": 0,
+    "loadWithBaseUrl": true,
+    "preload": true,
+    "ruleArticles": "div.well.well-sm",
+    "ruleContent": "@js:(function(){var html=String(result);var m=html.match(/document\\.write\\(strencode2\\(\\s*[\"']([^\"']+)[\"']\\s*\\)\\)/);if(m){try{var dec=decodeURIComponent(m[1]);var s=dec.match(/src=['\"]([^'\"]+)['\"]/);if(s&&s[1])return s[1];}catch(e){}}var m2=html.match(/<source[^>]+src=[\"']([^\"']+)[\"']/);if(m2)return m2[1];var m3=html.match(/<video[^>]+src=[\"']([^\"']+)[\"']/);if(m3)return m3[1];return '';})()",
+    "ruleImage": "img.img-responsive@src",
+    "ruleLink": "a.0@href",
+    "ruleNextPage": "div#paging a:contains(»)@href||a:contains(More)@href",
+    "rulePubDate": "",
+    "ruleTitle": "span.video-title@text",
+    "showWebLog": false,
+    "singleUrl": false,
+    "sortUrl": "最新::/index.php\n看片::/v.php?next=watch\n熟女::/search_result.php?search_id=熟女\n人妻::/search_result.php?search_id=人妻\n学生::/search_result.php?search_id=学生\n巨乳::/search_result.php?search_id=巨乳\n内射::/search_result.php?search_id=内射\n肛交::/search_result.php?search_id=肛交\n偷情::/search_result.php?search_id=偷情\n自慰::/search_result.php?search_id=自慰\n调教::/search_result.php?search_id=调教\n颜射::/search_result.php?search_id=颜射\n少妇::/search_result.php?search_id=少妇\n露脸::/search_result.php?search_id=露脸\n黑人::/search_result.php?search_id=黑人\n3p::/search_result.php?search_id=3p",
+    "sourceGroup": "视频",
+    "sourceIcon": "https://w1226.9p58b.com/favicon.ico",
+    "sourceName": "91porn视频",
+    "sourceUrl": "https://w1226.9p58b.com/index.php",
+    "type": 2
+  }
+]

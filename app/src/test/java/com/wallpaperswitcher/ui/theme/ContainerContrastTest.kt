@@ -10,11 +10,14 @@ import org.junit.Test
 /**
  * Regression test for the *real* backdrop of accent-coloured text.
  *
- * The custom scheme draws `onPrimaryContainer` / `onSurfaceVariant` text on
- * translucent containers (`primary.copy(alpha = …)` painted over the surface), not
- * on the bare surface. The earlier test asserted against `scheme.surface`, so it
- * could not see that a saturated accent leaves those labels below WCAG AA - these
- * assertions use the composited backdrop instead, which is what the user sees.
+ * The custom accent scheme paints `onPrimaryContainer` text on
+ * `primaryContainer` (an OPAQUE tone derived from the picked colour, see
+ * `accentScheme`), while `onSurfaceVariant` stays a neutral Material role and is
+ * drawn on the neutral `surfaceVariant`. Asserting against `scheme.surface`
+ * measured neither backdrop, so these checks use the containers the text is
+ * actually rendered on. [ColorContrast.composite] is the helper the app used
+ * when those containers were translucent (`primary.copy(alpha = …)`), kept and
+ * covered here because the engine still exposes it.
  */
 class ContainerContrastTest {
 
@@ -44,41 +47,44 @@ class ContainerContrastTest {
     }
 
     @Test
-    fun `light scheme keeps container labels readable on the composited container`() {
+    fun `light scheme keeps container labels readable on their own containers`() {
         for (hex in accents) {
             val scheme = customLightColorScheme(Color(hex.toInt()))
-            val surface = scheme.surface.toArgb()
-            val container = composite(hex.toInt(), surface, CONTAINER_ALPHA_LIGHT)
-            val onContainer = scheme.onPrimaryContainer.toArgb()
-            val ratio = ColorContrast.contrastRatio(onContainer, container)
+            val ratio = ColorContrast.contrastRatio(
+                scheme.onPrimaryContainer.toArgb(), scheme.primaryContainer.toArgb()
+            )
             assertTrue(
                 "light: %08X on its container gives %.2f:1".format(hex, ratio),
                 ratio >= ColorContrast.AA_NORMAL
             )
-            val variant = composite(hex.toInt(), surface, SURFACE_VARIANT_ALPHA_LIGHT)
-            val onVariant = ColorContrast.contrastRatio(scheme.onSurfaceVariant.toArgb(), variant)
+            // The neutral pair must stay readable too - it is what most secondary
+            // text and the settings icons are drawn with.
+            val onVariant = ColorContrast.contrastRatio(
+                scheme.onSurfaceVariant.toArgb(), scheme.surface.toArgb()
+            )
             assertTrue(
-                "light: %08X on surfaceVariant gives %.2f:1".format(hex, onVariant),
+                "light: %08X on the neutral surface gives %.2f:1".format(hex, onVariant),
                 onVariant >= ColorContrast.AA_NORMAL
             )
         }
     }
 
     @Test
-    fun `dark scheme keeps container labels readable on the composited container`() {
+    fun `dark scheme keeps container labels readable on their own containers`() {
         for (hex in accents) {
             val scheme = customDarkColorScheme(Color(hex.toInt()))
-            val surface = scheme.surface.toArgb()
-            val container = composite(hex.toInt(), surface, CONTAINER_ALPHA_DARK)
-            val ratio = ColorContrast.contrastRatio(scheme.onPrimaryContainer.toArgb(), container)
+            val ratio = ColorContrast.contrastRatio(
+                scheme.onPrimaryContainer.toArgb(), scheme.primaryContainer.toArgb()
+            )
             assertTrue(
                 "dark: %08X on its container gives %.2f:1".format(hex, ratio),
                 ratio >= ColorContrast.AA_NORMAL
             )
-            val variant = composite(hex.toInt(), surface, SURFACE_VARIANT_ALPHA_DARK)
-            val onVariant = ColorContrast.contrastRatio(scheme.onSurfaceVariant.toArgb(), variant)
+            val onVariant = ColorContrast.contrastRatio(
+                scheme.onSurfaceVariant.toArgb(), scheme.surface.toArgb()
+            )
             assertTrue(
-                "dark: %08X on surfaceVariant gives %.2f:1".format(hex, onVariant),
+                "dark: %08X on the neutral surface gives %.2f:1".format(hex, onVariant),
                 onVariant >= ColorContrast.AA_NORMAL
             )
         }

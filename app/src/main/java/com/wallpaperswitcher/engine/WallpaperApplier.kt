@@ -21,6 +21,7 @@ import com.wallpaperswitcher.data.WallpaperImage
 import com.wallpaperswitcher.data.WallpaperImageDao
 import com.wallpaperswitcher.data.getBool
 import com.wallpaperswitcher.data.getLong
+import com.wallpaperswitcher.data.incrementLong
 import com.wallpaperswitcher.data.getString
 import com.wallpaperswitcher.data.setString
 import com.wallpaperswitcher.data.setLong
@@ -35,6 +36,9 @@ import com.wallpaperswitcher.data.setLong
 object WallpaperApplier {
 
     private const val TAG = "WallpaperApplier"
+
+    /** 顺序=新的在前 (see WallpaperGroup.sortOrder). */
+    private const val SORT_NEWEST = "NEWEST"
     /**
      * The user's "自动旋转适配" preferences, used for static (full-bleed) writes
      * too: the engine reads them on every live switch, and the static path used
@@ -430,7 +434,8 @@ object WallpaperApplier {
                 } else {
                     result.set(bmp)
                     // Timed out between the check above and this store: the caller
-                    // already returned null, so nobody else would recycle it.
+                    // also empties the reference (below), and getAndSet() makes
+                    // sure exactly ONE side ends up holding the bitmap.
                     if (abandoned.get()) {
                         val stored = result.getAndSet(null)
                         if (stored != null && !stored.isRecycled) stored.recycle()
@@ -449,10 +454,17 @@ object WallpaperApplier {
         }
         if (thread.isAlive) {
             abandoned.set(true)
+            // The other half of the handshake above: the worker may have stored the
+            // bitmap in the window between its `abandoned` check and this flag. Not
+            // taking it here (the old behaviour) left a full-screen bitmap alive
+            // until the next GC - and reported the tick as FAILED for nothing.
+            val stored = result.getAndSet(null)
+            if (stored != null && !stored.isRecycled) stored.recycle()
             thread.interrupt()
             return null
         }
-        return result.get()
+        // Finished within the budget: take it and clear the reference.
+        return result.getAndSet(null)
     }
 
     /**
@@ -491,8 +503,9 @@ object WallpaperApplier {
             WallpaperManager.FLAG_LOCK
         } else {
             WallpaperManager.FLAG_SYSTEM
-        }
-    ): Long? = applyNextOutcome(context, slot, which).imageId.takeIf { it > 0L }
+        },
+        groupId: Long = 0L
+    ): Long? = applyNextOutcome(context, slot, which, groupId).imageId.takeIf { it > 0L }
 
     /** What one static tick actually did (see [applyNextOutcome]). */
     internal enum class StaticTickOutcome {
@@ -527,7 +540,8 @@ object WallpaperApplier {
             WallpaperManager.FLAG_LOCK
         } else {
             WallpaperManager.FLAG_SYSTEM
-        }
+        },
+        groupId: Long = 0L
     ): StaticTickResult {
         val db = AppDatabase.getInstance(context)
         // No "are there any enabled groups" query here: every pick query below
@@ -541,12 +555,36 @@ object WallpaperApplier {
         val imageDao = db.wallpaperImageDao()
         val shuffleDao = db.shuffleDao()
         val dao = db.settingsDao()
-        val lastId = dao.getLong(lastIdKey)
-        val mode = try {
+        // Group-scoped tick (see GroupPacing): stay inside the chosen group, use
+        // its own cursor/mode and fall back to the screen-wide path when the
+        // group was disabled or retargeted since the tick was scheduled.
+        val scopedGroup = if (groupId > 0L) {
+            try {
+                db.wallpaperGroupDao().getGroupById(groupId)?.takeIf {
+                    it.isEnabled && WallpaperTarget.fromName(it.target).suitsSlot(slot)
+                }
+            } catch (_: Exception) {
+                null
+            }
+        } else null
+        val scopedGroupId = scopedGroup?.id ?: 0L
+        val scopedFilter = scopedGroup?.let {
+            com.wallpaperswitcher.engine.GroupRules.mediaFilter(it)
+        } ?: ""
+        val lastId = if (scopedGroupId > 0L) {
+            try {
+                db.groupScheduleDao().get(scopedGroupId, slot)?.lastMediaId ?: 0L
+            } catch (_: Exception) {
+                0L
+            }
+        } else dao.getLong(lastIdKey)
+        val globalMode = try {
             SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
         } catch (_: Exception) {
             SwitchMode.RANDOM
         }
+        // 切换模式是全局设置（分组级模式已取消）。
+        val mode = globalMode
 
         // SHUFFLE bookkeeping is persisted here (static mode has no in-memory
         // deck): the shown set is only written back AFTER a successful apply,
@@ -562,8 +600,30 @@ object WallpaperApplier {
         var shuffleDeckCleared = false
 
         // Honor the global switch mode the same way the live engine does.
-        val image = when (mode) {
-            SwitchMode.RANDOM -> MediaPick.random(imageDao, slot, lastId)
+        // Same pick seed as the preview: the applied-switch counter (it only
+        // moves below, once this tick really wrote the wallpaper).
+        val pickSeq = try {
+            dao.getLong(SettingsKeys.PICK_SEQ)
+        } catch (_: Exception) {
+            0L
+        }
+        // 收藏优先 / 最近 N 张不重复 (same helpers the engine + preview use).
+        val favoriteWeight = PickOptions.favoriteWeight(dao)
+        val recentIds = PickOptions.recentIds(db, slot, PickOptions.recentWindow(dao))
+        val picked: WallpaperImage? = if (scopedGroupId > 0L) {
+            GroupPick.pick(
+                db, slot, scopedGroupId, mode, lastId, pickSeq = pickSeq,
+                filter = scopedFilter,
+                favoriteWeight = favoriteWeight,
+                recentIds = recentIds,
+            ) ?: db.groupPickDao().getFirstInGroup(
+                slot, scopedGroupId, scopedFilter
+            )
+        } else when (mode) {
+            SwitchMode.RANDOM -> MediaPick.random(
+                imageDao, slot, lastId, pickSeq = pickSeq,
+                favoriteWeight = favoriteWeight, recentIds = recentIds
+            )
             SwitchMode.SEQUENTIAL -> {
                 val count = imageDao.countByEnabledGroups(slot)
                 if (count == 0) null else {
@@ -582,7 +642,7 @@ object WallpaperApplier {
             SwitchMode.SHUFFLE -> {
                 val total = imageDao.countByEnabledGroups(slot)
                 if (total == 0) null else {
-                    val shown = shuffleDao.getShownIds(slot).toMutableSet()
+                    val shown = shuffleDao.getShownIds(slot, scopedGroupId).toMutableSet()
                     // Only a finished pass restarts (see shouldResetShuffleDeck):
                     // an enabled-set change keeps the pass going, the next pick
                     // simply filters the enabled ids by the shown ones.
@@ -596,7 +656,11 @@ object WallpaperApplier {
                         imageDao = imageDao,
                         slot = slot,
                         shownIds = shown,
-                        excludeId = lastId
+                        excludeId = lastId,
+                        generation = MediaScanner.currentGeneration(context),
+                        knownCount = total,
+                        pickSeq = pickSeq,
+                        favoriteWeight = favoriteWeight
                     )
                     if (candidate == null) {
                         // The pass is over (or only one media exists): start a
@@ -610,9 +674,12 @@ object WallpaperApplier {
                     candidate
                 }
             }
-        } ?: imageDao.getFirstFromEnabledGroups(slot) ?: run {
+        }
+        val image: WallpaperImage = picked
+            ?: (if (scopedGroupId > 0L) null else imageDao.getFirstFromEnabledGroups(slot))
+            ?: run {
             // No media targets this screen: leave that wallpaper untouched.
-            AppLog.d(TAG, "No media for $slot; skipping")
+            AppLog.d(TAG, "No media for $slot (group=$scopedGroupId); skipping")
             return StaticTickResult(StaticTickOutcome.NO_MEDIA)
         }
 
@@ -650,11 +717,26 @@ object WallpaperApplier {
         // every tick) were pure SQLite journal/fsync work.
         db.withTransaction {
             recordWrite(dao, slot, image.id)
+            // Advance the pick seed for the next tick / preview.
+            dao.incrementLong(SettingsKeys.PICK_SEQ)
+            // 最近 N 张不重复 (no-op while the window is off).
+            PickOptions.recordShown(db, slot, image.id)
+            if (scopedGroupId > 0L) {
+                val scheduleDao = db.groupScheduleDao()
+                scheduleDao.ensureRow(scopedGroupId, slot)
+                scheduleDao.updateLastMedia(
+                    scopedGroupId, slot, image.id, System.currentTimeMillis()
+                )
+            }
             if (mode == SwitchMode.SHUFFLE && image.id != 0L) {
                 // One tiny row (plus one indexed DELETE when the pass restarted)
                 // instead of re-writing the whole deck as a comma-separated string.
-                if (shuffleDeckCleared) shuffleDao.clearSlot(slot)
-                shuffleDao.insertShown(listOf(ShuffleShown(slot = slot, mediaId = image.id)))
+                if (shuffleDeckCleared) shuffleDao.clearSlot(slot, scopedGroupId)
+                shuffleDao.insertShown(
+                    listOf(
+                        ShuffleShown(slot = slot, groupId = scopedGroupId, mediaId = image.id)
+                    )
+                )
             }
         }
         return StaticTickResult(StaticTickOutcome.APPLIED, image.id)

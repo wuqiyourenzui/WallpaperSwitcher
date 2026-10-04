@@ -7,6 +7,12 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.widget.Toast
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -43,6 +49,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,6 +62,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import coil.decode.VideoFrameDecoder
 import androidx.core.content.ContextCompat
+import com.wallpaperswitcher.R
 import com.wallpaperswitcher.data.*
 import com.wallpaperswitcher.engine.ScannedFolder
 import com.wallpaperswitcher.engine.MediaTypes
@@ -63,6 +72,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.wallpaperswitcher.ui.theme.HiEmptyState
+import com.wallpaperswitcher.ui.theme.HiLoadingHint
+import com.wallpaperswitcher.ui.theme.HiLoadingState
+import com.wallpaperswitcher.ui.theme.HiMotion
 import com.wallpaperswitcher.ui.theme.LocalAccentColor
 
 // Grid thumbnails decode deliberately below the ~312px cell (3x density) so
@@ -96,7 +109,9 @@ private fun buildGridThumbnailRequest(context: Context, image: WallpaperImage, s
 fun GroupDetailScreen(
     viewModel: WallpaperViewModel,
     groupId: Long,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    /** 进「大图浏览」：九宫格适合整理，那个页面适合一张一张挑。 */
+    onBrowse: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val group by viewModel.selectedGroup.collectAsStateWithLifecycle()
@@ -166,7 +181,7 @@ fun GroupDetailScreen(
     ) { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
             val names = uris.map { uri ->
-                uri.lastPathSegment ?: "未命名"
+                uri.lastPathSegment ?: context.getString(R.string.item_untitled)
             }
             viewModel.addImages(groupId, uris, names)
             // 持久化权限
@@ -185,7 +200,11 @@ fun GroupDetailScreen(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         uri?.let {
-            viewModel.addImage(groupId, it, it.lastPathSegment ?: "untitled")
+            viewModel.addImage(
+                groupId,
+                it,
+                it.lastPathSegment ?: context.getString(R.string.item_untitled)
+            )
             try {
                 context.contentResolver.takePersistableUriPermission(
                     it, Intent.FLAG_GRANT_READ_URI_PERMISSION
@@ -219,6 +238,16 @@ fun GroupDetailScreen(
                 imageCount = totalCount,
                 loadedCount = images.size,
                 onTargetChange = { target -> viewModel.setGroupTarget(currentGroup.id, target) },
+                onIntervalChange = { ms -> viewModel.setGroupInterval(currentGroup.id, ms) },
+                onWindowChange = { from, to ->
+                    viewModel.setGroupActiveWindow(currentGroup.id, from, to)
+                },
+                onDaysChange = { mask ->
+                    viewModel.setGroupActiveDays(currentGroup.id, mask)
+                },
+                onMediaChange = { filter ->
+                    viewModel.setGroupMediaFilter(currentGroup.id, filter)
+                },
                 onRename = { newName -> viewModel.updateGroup(currentGroup.copy(name = newName)) },
                 onDeleteClick = {
                     viewModel.deleteGroup(currentGroup)
@@ -231,6 +260,27 @@ fun GroupDetailScreen(
         // 内边距，避免窄屏上按钮文字被挤压；进入批量模式后整栏替换为选择工具
         // 栏（不再叠加两行），选择模式用“退出/全选/已选/删除”管理。
         if (!isSelectionMode) {
+            if (images.isNotEmpty()) {
+                // 「大图浏览」入口：网格适合整理，一张一张挑要走这个。
+                // 放在操作栏上方而不是塞进那一行 —— 那一行三个按钮已经排满，
+                // 再加一个会把四语言的长标签挤成省略号（见下面的注释）。
+                FilledTonalButton(
+                    onClick = onBrowse,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, top = 8.dp)
+                        .heightIn(min = 44.dp),
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Icon(
+                        Icons.Outlined.PlayCircleOutline,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(stringResource(R.string.browse_title))
+                }
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -243,16 +293,28 @@ fun GroupDetailScreen(
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 44.dp),
+                        shape = RoundedCornerShape(14.dp),
                     contentPadding = PaddingValues(horizontal = 8.dp)
                 ) {
-                    Icon(Icons.Filled.Add, "添加", modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("添加壁纸", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        stringResource(R.string.action_add_wallpaper),
+                        // Two lines instead of an ellipsis: on a 400dp phone the
+                        // English/Russian/Korean labels ("Add wallpapers",
+                        // "Добавить обои", "배경 화면 추가") need ~280px while the
+                        // button leaves ~230px for text - measured on the
+                        // tablet, all three buttons rendered "Добавить об…".
+                        // The row still uses one line per button; only the label
+                        // wraps, and only in the languages that need it.
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
 
                 if (images.isNotEmpty()) {
                     // 次要操作：批量操作
-                    OutlinedButton(
+                    FilledTonalButton(
                         onClick = {
                             selectedMap.clear()
                             isSelectionMode = true
@@ -260,15 +322,24 @@ fun GroupDetailScreen(
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 44.dp),
+                        shape = RoundedCornerShape(14.dp),
                         contentPadding = PaddingValues(horizontal = 8.dp)
                     ) {
-                        Icon(Icons.Filled.Checklist, "选择", modifier = Modifier.size(18.dp))
+                        Icon(
+                            Icons.Filled.Checklist,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("批量操作", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            stringResource(R.string.action_batch_ops),
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
 
                     // 次要操作：清理失效
-                    OutlinedButton(
+                    FilledTonalButton(
                         onClick = {
                             if (!cleaningBroken) {
                                 cleaningBroken = true
@@ -276,7 +347,11 @@ fun GroupDetailScreen(
                                     val broken = viewModel.scanBrokenMedia(groupId)
                                     cleaningBroken = false
                                     if (broken.isEmpty()) {
-                                        Toast.makeText(context, "没有失效媒体", Toast.LENGTH_SHORT).show()
+                                        Toast.makeText(
+                                            context,
+                                            context.getString(R.string.toast_no_broken_media),
+                                            Toast.LENGTH_SHORT
+                                        ).show()
                                     } else {
                                         brokenMedia = broken
                                     }
@@ -287,13 +362,21 @@ fun GroupDetailScreen(
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(min = 44.dp),
+                        shape = RoundedCornerShape(14.dp),
                         contentPadding = PaddingValues(horizontal = 8.dp)
                     ) {
-                        Icon(Icons.Outlined.BrokenImage, "清理", modifier = Modifier.size(18.dp))
+                        Icon(
+                            Icons.Outlined.BrokenImage,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            if (cleaningBroken) "清理中…" else "清理失效",
-                            maxLines = 1,
+                            stringResource(
+                                if (cleaningBroken) R.string.action_cleaning
+                                else R.string.action_clean_broken
+                            ),
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
                     }
@@ -330,18 +413,12 @@ fun GroupDetailScreen(
             if (isLoadingImages || totalCount > 0) {
                 // First page is still loading (or a refresh is in progress):
                 // show a loading hint instead of flashing "还没有壁纸".
-                Box(
+                HiLoadingState(
+                    text = stringResource(R.string.state_loading),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(vertical = 60.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        "正在加载...",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                        .padding(vertical = 60.dp)
+                )
             } else {
                 EmptyImagesHint()
             }
@@ -395,7 +472,7 @@ fun GroupDetailScreen(
                             selectionMode = isSelectionMode,
                             onClick = onClick,
                             onDelete = onDelete,
-                            onSetWallpaper = onSetWallpaper
+                            onSetWallpaper = onSetWallpaper,
                         )
                     }
                 }
@@ -427,7 +504,7 @@ fun GroupDetailScreen(
         } else {
             Toast.makeText(
                 context,
-                "需要存储权限才能扫描设备文件夹，可在系统设置中开启后重试",
+                context.getString(R.string.permission_scan_denied),
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -450,17 +527,31 @@ fun GroupDetailScreen(
                 folderPickerLauncher.launch(null)
             },
             onScanFolders = {
-                val missing = buildList {
+                val needed = buildList {
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                         add(Manifest.permission.READ_MEDIA_IMAGES)
                         add(Manifest.permission.READ_MEDIA_VIDEO)
+                        // Android 14+ "选择部分照片": requesting it (and having it
+                        // declared) is what keeps the partial grant usable - see
+                        // the manifest's comment and MediaProbe.
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                            add(Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+                        }
                     } else {
                         add(Manifest.permission.READ_EXTERNAL_STORAGE)
                     }
-                }.filter {
+                }
+                // ANY of them granted is enough to scan: that is the same rule
+                // MediaProbe and the permission callback use, so a user who
+                // granted only "选择部分照片" is not asked again.
+                val anyGranted = needed.any {
+                    ContextCompat.checkSelfPermission(context, it) ==
+                        PackageManager.PERMISSION_GRANTED
+                }
+                val missing = needed.filter {
                     ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
                 }
-                if (missing.isEmpty()) {
+                if (missing.isEmpty() || anyGranted) {
                     showAddDialog = false
                     showFolderPicker = true
                 } else {
@@ -494,23 +585,32 @@ fun GroupDetailScreen(
     brokenMedia?.let { broken ->
         AlertDialog(
             onDismissRequest = { brokenMedia = null },
-            title = { Text("清理失效媒体") },
+            title = { Text(stringResource(R.string.dialog_clean_broken_title)) },
             text = {
-                Text("发现 ${broken.size} 个无法读取的媒体（文件可能已被删除或移动）。确定从分组中删除吗？")
+                Text(stringResource(R.string.dialog_clean_broken_message, broken.size))
             },
             confirmButton = {
                 TextButton(
                     onClick = {
                         viewModel.deleteImages(broken)
-                        Toast.makeText(context, "已删除 ${broken.size} 个失效媒体", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.toast_broken_deleted, broken.size),
+                            Toast.LENGTH_SHORT
+                        ).show()
                         brokenMedia = null
                     }
                 ) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
+                    Text(
+                        stringResource(R.string.action_delete),
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
             },
             dismissButton = {
-                TextButton(onClick = { brokenMedia = null }) { Text("取消") }
+                TextButton(onClick = { brokenMedia = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
             }
         )
     }
@@ -523,6 +623,10 @@ private fun GroupInfoHeader(
     imageCount: Int,
     loadedCount: Int,
     onTargetChange: (WallpaperTarget) -> Unit,
+    onIntervalChange: (Long) -> Unit,
+    onWindowChange: (Int, Int) -> Unit,
+    onDaysChange: (Int) -> Unit,
+    onMediaChange: (String) -> Unit,
     onRename: (String) -> Unit,
     onDeleteClick: () -> Unit
 ) {
@@ -533,9 +637,9 @@ private fun GroupInfoHeader(
         modifier = Modifier
             .fillMaxWidth()
             .padding(16.dp),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
     ) {
         Box(
             modifier = Modifier
@@ -576,14 +680,20 @@ private fun GroupInfoHeader(
                             )
                             Spacer(modifier = Modifier.width(5.dp))
                             Text(
-                                buildString {
-                                    append("$imageCount 个媒体")
+                                pluralStringResource(
+                                    R.plurals.group_image_count,
+                                    imageCount,
+                                    imageCount
+                                ) +
                                     if (loadedCount in 1 until imageCount) {
-                                        append("（已加载 $loadedCount）")
-                                    }
-                                    append(" · ")
-                                    append(WallpaperTarget.fromName(group.target).shortLabel)
-                                },
+                                        stringResource(R.string.group_loaded_count, loadedCount)
+                                    } else {
+                                        ""
+                                    } +
+                                    " · " +
+                                    stringResource(
+                                        WallpaperTarget.fromName(group.target).shortLabelRes
+                                    ),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.72f),
                                 maxLines = 1,
@@ -593,13 +703,15 @@ private fun GroupInfoHeader(
                     }
 
                     // 重命名 / 删除：紧凑图标按钮，按在右上角
+                    // 48dp touch targets (audit a11y): the icons stay 20dp, the
+                    // tappable box grows to the Material minimum.
                     IconButton(
                         onClick = { showRenameDialog = true },
                         modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                     ) {
                         Icon(
                             Icons.Filled.Edit,
-                            "重命名",
+                            stringResource(R.string.action_rename),
                             tint = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.85f),
                             modifier = Modifier.size(20.dp)
                         )
@@ -610,7 +722,7 @@ private fun GroupInfoHeader(
                     ) {
                         Icon(
                             Icons.Filled.Delete,
-                            "删除",
+                            stringResource(R.string.action_delete),
                             tint = MaterialTheme.colorScheme.error,
                             modifier = Modifier.size(20.dp)
                         )
@@ -638,7 +750,7 @@ private fun GroupInfoHeader(
                         contentAlignment = Alignment.CenterStart
                     ) {
                         Text(
-                            "应用位置",
+                            stringResource(R.string.label_target),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.72f)
                         )
@@ -649,7 +761,7 @@ private fun GroupInfoHeader(
                             onClick = { onTargetChange(option) },
                             label = {
                                 Text(
-                                    option.shortLabel,
+                                    stringResource(option.shortLabelRes),
                                     style = MaterialTheme.typography.labelMedium
                                 )
                             },
@@ -657,6 +769,17 @@ private fun GroupInfoHeader(
                         )
                     }
                 }
+
+                Spacer(modifier = Modifier.height(6.dp))
+                // 分组独立节奏：间隔 / 模式 / 时间规则。每一项都有"跟随全局"
+                // 状态（存的是 0 / "" / -1），所以默认轮换完全不变。
+                GroupRhythmSection(
+                    group = group,
+                    onIntervalChange = onIntervalChange,
+                    onWindowChange = onWindowChange,
+                    onDaysChange = onDaysChange,
+                    onMediaChange = onMediaChange,
+                )
             }
         }
     }
@@ -664,8 +787,10 @@ private fun GroupInfoHeader(
     if (showDeleteConfirm) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
-            title = { Text("删除分组") },
-            text = { Text("确定删除「${group.name}」及其所有壁纸？此操作不可撤销。") },
+            title = { Text(stringResource(R.string.dialog_delete_group_title)) },
+            text = {
+                Text(stringResource(R.string.dialog_delete_group_message, group.name))
+            },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -673,11 +798,16 @@ private fun GroupInfoHeader(
                         onDeleteClick()
                     }
                 ) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
+                    Text(
+                        stringResource(R.string.action_delete),
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteConfirm = false }) { Text("取消") }
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
             }
         )
     }
@@ -686,12 +816,12 @@ private fun GroupInfoHeader(
         var newName by remember { mutableStateOf(group.name) }
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
-            title = { Text("重命名分组") },
+            title = { Text(stringResource(R.string.dialog_rename_group_title)) },
             text = {
                 OutlinedTextField(
                     value = newName,
                     onValueChange = { newName = it },
-                    label = { Text("分组名称") },
+                    label = { Text(stringResource(R.string.label_group_name)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -703,10 +833,12 @@ private fun GroupInfoHeader(
                         showRenameDialog = false
                         onRename(newName.trim())
                     }
-                ) { Text("保存") }
+                ) { Text(stringResource(R.string.action_save)) }
             },
             dismissButton = {
-                TextButton(onClick = { showRenameDialog = false }) { Text("取消") }
+                TextButton(onClick = { showRenameDialog = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
             }
         )
     }
@@ -724,6 +856,7 @@ private fun GroupInfoHeader(
  * list result cannot overwrite a selection the user already changed (e.g. they
  * left selection mode meanwhile).
  */
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun SelectionToolbar(
     selectedMap: androidx.compose.runtime.snapshots.SnapshotStateMap<Long, Boolean>,
@@ -738,68 +871,87 @@ private fun SelectionToolbar(
     // Snapshot reads: they subscribe THIS composable only.
     val selectedCount = selectedMap.size
     val isAllSelected = selectedCount == totalCount && totalCount > 0
-    Row(
+    // 两行布局（与首页分组多选一致）：「退出 / 全选 / 已选 n/m」在第一行，
+    // 动作按钮固定换到第二行。之前所有控件挤在一行，俄语下计数被压到 58px
+    // （显示成"…"）；两行后每个控件都有足够宽度。
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(start = 8.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically
+        verticalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        IconButton(
-            modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-            onClick = onExit
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Icon(Icons.Filled.Close, "退出选择", modifier = Modifier.size(20.dp))
-        }
-        TextButton(
-            modifier = Modifier.heightIn(min = 40.dp),
-            contentPadding = PaddingValues(horizontal = 10.dp),
-            onClick = {
-                if (isAllSelected) {
-                    selectedMap.clear()
-                } else {
-                    scope.launch {
-                        val ids = viewModel.getAllImageIds(groupId)
-                        // Guard against a late result overwriting a selection the
-                        // user already changed (e.g. they toggled out of selection
-                        // mode meanwhile).
-                        if (isSelectionModeNow()) {
-                            selectedMap.clear()
-                            ids.forEach { selectedMap[it] = true }
+            IconButton(
+                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+                onClick = onExit
+            ) {
+                Icon(
+                    Icons.Filled.Close,
+                    stringResource(R.string.cd_exit_selection),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            TextButton(
+                modifier = Modifier.heightIn(min = 40.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp),
+                onClick = {
+                    if (isAllSelected) {
+                        selectedMap.clear()
+                    } else {
+                        scope.launch {
+                            val ids = viewModel.getAllImageIds(groupId)
+                            // Guard against a late result overwriting a selection the
+                            // user already changed (e.g. they toggled out of selection
+                            // mode meanwhile).
+                            if (isSelectionModeNow()) {
+                                selectedMap.clear()
+                                ids.forEach { selectedMap[it] = true }
+                            }
                         }
                     }
                 }
+            ) {
+                Icon(
+                    if (isAllSelected) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank,
+                    null,
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    stringResource(if (isAllSelected) R.string.selection_none else R.string.selection_all)
+                )
             }
-        ) {
-            Icon(
-                if (isAllSelected) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank,
-                null,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(if (isAllSelected) "取消全选" else "全选")
-        }
         Text(
-            "已选 $selectedCount/$totalCount",
+            stringResource(R.string.selection_count, selectedCount, totalCount),
             style = MaterialTheme.typography.bodyMedium,
             color = LocalAccentColor.current,
-            textAlign = TextAlign.End,
             maxLines = 1,
+            textAlign = TextAlign.End,
             modifier = Modifier.weight(1f)
         )
+        }
         if (selectedCount > 0) {
-            Button(
-                onClick = onDelete,
-                modifier = Modifier.heightIn(min = 40.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer
-                )
+            FlowRow(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                Icon(Icons.Filled.Delete, "删除", modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("删除所选")
+                Button(
+                    onClick = onDelete,
+                    modifier = Modifier.heightIn(min = 40.dp),
+                    contentPadding = PaddingValues(horizontal = 12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                        contentColor = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                ) {
+                    Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(stringResource(R.string.action_delete_selected))
+                }
             }
         }
     }
@@ -815,7 +967,13 @@ private fun SelectionToolbar(
 @Composable
 private fun ScanProgressCard(viewModel: WallpaperViewModel) {
     val scanProgress by viewModel.scanProgress.collectAsStateWithLifecycle()
-    if (scanProgress.isEmpty()) return
+    // 扫描进度卡的进出也做成展开收起：没有进度时完全不占位，出现/结束时
+    // 不再整块闪现。
+    AnimatedVisibility(
+        visible = scanProgress.isNotEmpty(),
+        enter = fadeIn(HiMotion.enter()) + expandVertically(HiMotion.enter()),
+        exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
+    ) {
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -846,6 +1004,7 @@ private fun ScanProgressCard(viewModel: WallpaperViewModel) {
             )
         }
     }
+    }
 }
 
 @Composable
@@ -870,11 +1029,15 @@ private fun ImageGridItem(
     Box(
         modifier = Modifier
             .aspectRatio(1f)
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
             .then(
                 if (isSelected)
-                    Modifier.border(3.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(14.dp))
+                    Modifier.border(
+                        2.5.dp,
+                        LocalAccentColor.current,
+                        RoundedCornerShape(12.dp),
+                    )
                 else
                     Modifier
             )
@@ -921,7 +1084,11 @@ private fun ImageGridItem(
                 )
                 Spacer(modifier = Modifier.width(3.dp))
                 Text(
-                    if (image.mediaType == MediaTypes.VIDEO) "视频" else "GIF",
+                    if (image.mediaType == MediaTypes.VIDEO) {
+                        stringResource(R.string.media_type_video)
+                    } else {
+                        "GIF"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = Color.White
                 )
@@ -966,7 +1133,7 @@ private fun ImageGridItem(
                 ) {
                     Icon(
                         Icons.Filled.MoreVert,
-                        contentDescription = "更多",
+                        contentDescription = stringResource(R.string.cd_more),
                         tint = Color.White.copy(alpha = 0.9f),
                         modifier = Modifier.size(18.dp)
                     )
@@ -982,12 +1149,7 @@ private fun ImageGridItem(
                         onDismissRequest = { showMenu = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("设为壁纸") },
-                            onClick = { showMenu = false; onSetWallpaper() },
-                            leadingIcon = { Icon(Icons.Filled.Wallpaper, null) }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("删除") },
+                            text = { Text(stringResource(R.string.action_delete)) },
                             onClick = { showMenu = false; onDelete() },
                             leadingIcon = { Icon(Icons.Filled.Delete, null, tint = MaterialTheme.colorScheme.error) }
                         )
@@ -1000,31 +1162,13 @@ private fun ImageGridItem(
 
 @Composable
 private fun EmptyImagesHint() {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 60.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Icon(
-            Icons.Outlined.AddPhotoAlternate,
-            contentDescription = null,
-            modifier = Modifier.size(64.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-        )
-        Spacer(modifier = Modifier.height(12.dp))
-        Text(
-            "还没有壁纸",
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            "点击「添加壁纸」开始",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-        )
-    }
+    // 与首页、订阅共用同一套容器式空态（原来是 64dp 裸图标 + 更淡的文字）。
+    HiEmptyState(
+        title = stringResource(R.string.empty_images_title),
+        hint = stringResource(R.string.empty_images_hint),
+        icon = Icons.Outlined.AddPhotoAlternate,
+        modifier = Modifier.padding(vertical = 60.dp),
+    )
 }
 
 @Composable
@@ -1037,47 +1181,76 @@ fun AddWallpaperDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("添加壁纸") },
+        title = {
+            Text(
+                stringResource(R.string.dialog_add_wallpaper_title),
+                style = MaterialTheme.typography.titleLarge,
+            )
+        },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(
+            // Miuix 式选项行：强调色图标 + 文字 + 行尾箭头，整行可点。
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                AddWallpaperOption(
+                    icon = Icons.Outlined.Image,
+                    label = stringResource(R.string.action_pick_single),
                     onClick = onAddSingle,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Outlined.Image, null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("选择单张图片/视频", modifier = Modifier.weight(1f))
-                }
-                TextButton(
+                )
+                AddWallpaperOption(
+                    icon = Icons.Outlined.PhotoLibrary,
+                    label = stringResource(R.string.action_pick_multiple),
                     onClick = onAddMultiple,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Outlined.PhotoLibrary, null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("选择多张图片/视频", modifier = Modifier.weight(1f))
-                }
-                TextButton(
+                )
+                AddWallpaperOption(
+                    icon = Icons.Outlined.FolderOpen,
+                    label = stringResource(R.string.action_scan_folders),
                     onClick = onScanFolders,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Outlined.FolderOpen, null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("扫描到的文件夹（可多选）", modifier = Modifier.weight(1f))
-                }
-                TextButton(
+                )
+                AddWallpaperOption(
+                    icon = Icons.Outlined.Folder,
+                    label = stringResource(R.string.action_add_from_folder),
                     onClick = onAddFolder,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Outlined.Folder, null, modifier = Modifier.size(20.dp))
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Text("从文件夹添加", modifier = Modifier.weight(1f))
-                }
+                )
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         }
     )
+}
+
+@Composable
+private fun AddWallpaperOption(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = LocalAccentColor.current,
+            modifier = Modifier.size(22.dp),
+        )
+        Spacer(modifier = Modifier.width(14.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f),
+        )
+        Icon(
+            Icons.Outlined.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+    }
 }
 
 /**
@@ -1125,18 +1298,31 @@ fun FolderPickerDialog(
                     context,
                     when {
                         result.isEmpty() ->
-                            "扫描完成：未找到文件夹（请确认已授予照片/视频权限）"
+                            context.getString(R.string.toast_scan_empty)
                         added > 0 ->
-                            "扫描完成：${result.size} 个文件夹 / $media 个媒体（新增 $added 个文件夹）"
+                            context.getString(
+                                R.string.toast_scan_added,
+                                result.size,
+                                media,
+                                added
+                            )
                         else ->
-                            "扫描完成：${result.size} 个文件夹 / $media 个媒体（没有新增）"
+                            context.getString(
+                                R.string.toast_scan_no_change,
+                                result.size,
+                                media
+                            )
                     },
                     Toast.LENGTH_LONG
                 ).show()
             } catch (e: Exception) {
                 // MediaScanner.scanFolders() never throws (returns emptyList on
                 // failure); this is just a safety net.
-                Toast.makeText(context, "扫描失败：${e.message}", Toast.LENGTH_LONG).show()
+                Toast.makeText(
+                    context,
+                    context.getString(R.string.toast_scan_failed, e.message.orEmpty()),
+                    Toast.LENGTH_LONG
+                ).show()
             } finally {
                 scanning = false
             }
@@ -1195,11 +1381,11 @@ fun FolderPickerDialog(
                     .heightIn(max = (screenHeightDp * 0.92f).toInt().dp)
             ) {
                 Text(
-                    "选择文件夹",
-                    style = MaterialTheme.typography.headlineSmall,
+                    stringResource(R.string.title_select_folders),
+                    style = MaterialTheme.typography.titleLarge,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.padding(
-                        start = 24.dp, end = 24.dp, top = 24.dp, bottom = 4.dp
+                        start = 24.dp, end = 24.dp, top = 20.dp, bottom = 6.dp
                     )
                 )
             Column(
@@ -1209,38 +1395,67 @@ fun FolderPickerDialog(
                     .padding(horizontal = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                OutlinedTextField(
+                // Miuix 式搜索框：填充底、无描边、14dp 圆角（原来是 Material
+                // 描边输入框，和新的卡片语言不一致）。
+                TextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
                     singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
                     leadingIcon = {
-                        Icon(Icons.Outlined.Search, contentDescription = null)
+                        Icon(
+                            Icons.Outlined.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     },
-                    placeholder = { Text("搜索文件夹名称或路径") },
+                    placeholder = { Text(stringResource(R.string.hint_search_folder)) },
                     modifier = Modifier.fillMaxWidth(),
                     trailingIcon = {
                         if (searchQuery.isNotEmpty()) {
                             IconButton(onClick = { searchQuery = "" }) {
-                                Icon(Icons.Filled.Close, contentDescription = "清空")
+                                Icon(
+                                    Icons.Filled.Close,
+                                    contentDescription = stringResource(R.string.cd_clear)
+                                )
                             }
                         }
-                    }
+                    },
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = com.wallpaperswitcher.ui.theme.hiCardColor(),
+                        unfocusedContainerColor = com.wallpaperswitcher.ui.theme.hiCardColor(),
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    )
                 )
-                Row(
+                // FlowRow: "共 N 个文件夹 · 已选 M" + 全选 + 重新扫描 do not fit
+                // on one 400dp line in Russian/Spanish ("Проверить снова"),
+                // and the count used to lose that fight - it wrapped into a tall
+                // single-character column. Now the buttons drop to a second line.
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
                     Text(
                         if (scanning) {
                             // Visible progress while the MediaStore scan runs.
-                            "正在重新扫描…（请稍候）"
+                            stringResource(R.string.state_rescanning)
                         } else {
-                            buildString {
-                                append("共 ${displayFolders.size} 个文件夹")
+                            pluralStringResource(
+                                R.plurals.folder_count,
+                                displayFolders.size,
+                                displayFolders.size
+                            ) +
                                 if (selectedPaths.isNotEmpty()) {
-                                    append(" · 已选 ${selectedPaths.size}")
+                                    stringResource(
+                                        R.string.folder_selected_count,
+                                        selectedPaths.size
+                                    )
+                                } else {
+                                    ""
                                 }
-                            }
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = if (scanning) {
@@ -1250,10 +1465,11 @@ fun FolderPickerDialog(
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         },
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier.align(Alignment.CenterVertically)
                     )
                     if (displayFolders.isNotEmpty()) {
                         TextButton(
+                            modifier = Modifier.align(Alignment.CenterVertically),
                             onClick = {
                                 selectedPaths = if (allVisibleSelected) {
                                     selectedPaths - displayFolders.map { it.path }.toSet()
@@ -1262,7 +1478,12 @@ fun FolderPickerDialog(
                                 }
                             }
                         ) {
-                            Text(if (allVisibleSelected) "取消全选" else "全选")
+                            Text(
+                                stringResource(
+                                    if (allVisibleSelected) R.string.selection_none
+                                    else R.string.selection_all
+                                )
+                            )
                         }
                     }
                     // 「重新扫描」是动作而不是排序条件：单独放在工具行右侧，
@@ -1270,7 +1491,8 @@ fun FolderPickerDialog(
                     // 挤到换行、把下面的列表压矮）。
                     TextButton(
                         onClick = { startScan() },
-                        enabled = !scanning && !loading
+                        enabled = !scanning && !loading,
+                        modifier = Modifier.align(Alignment.CenterVertically)
                     ) {
                         Icon(
                             Icons.Outlined.Sync,
@@ -1278,7 +1500,11 @@ fun FolderPickerDialog(
                             modifier = Modifier.size(16.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text(if (scanning) "扫描中…" else "重新扫描")
+                        Text(
+                            stringResource(
+                                if (scanning) R.string.action_scanning else R.string.action_rescan
+                            )
+                        )
                     }
                 }
                 // 排序项单行横向滚动：窄屏（手机上）也不会折成两行。
@@ -1292,17 +1518,20 @@ fun FolderPickerDialog(
                     FilterChip(
                         selected = sortMode == 0,
                         onClick = { sortMode = 0 },
-                        label = { Text("媒体多优先") }
+                        shape = RoundedCornerShape(12.dp),
+                        label = { Text(stringResource(R.string.sort_media_first)) }
                     )
                     FilterChip(
                         selected = sortMode == 1,
                         onClick = { sortMode = 1 },
-                        label = { Text("名称排序") }
+                        shape = RoundedCornerShape(12.dp),
+                        label = { Text(stringResource(R.string.sort_name)) }
                     )
                     FilterChip(
                         selected = sortMode == 2,
                         onClick = { sortMode = 2 },
-                        label = { Text("时间排序") }
+                        shape = RoundedCornerShape(12.dp),
+                        label = { Text(stringResource(R.string.sort_time)) }
                     )
                 }
                 Divider(
@@ -1316,20 +1545,12 @@ fun FolderPickerDialog(
                             .heightIn(min = 96.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Outlined.Sync,
-                                contentDescription = null,
-                                modifier = Modifier.size(28.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "正在扫描文件夹...",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        HiLoadingHint(
+                            text = stringResource(R.string.state_scanning_folders),
+                            icon = Icons.Outlined.Sync,
+                            iconSize = 28.dp,
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
                     }
                     displayFolders.isEmpty() -> Box(
                         modifier = Modifier
@@ -1338,16 +1559,27 @@ fun FolderPickerDialog(
                         contentAlignment = Alignment.Center
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Outlined.FolderOpen,
-                                contentDescription = null,
-                                modifier = Modifier.size(28.dp),
-                                tint = MaterialTheme.colorScheme.outline
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
+                            // 对话框里的紧凑版容器式空态（与首页/订阅同一套观感）。
+                            Box(
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(20.dp))
+                                    .background(com.wallpaperswitcher.ui.theme.hiCardColor()),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Outlined.FolderOpen,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(30.dp),
+                                    tint = LocalAccentColor.current,
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(10.dp))
                             Text(
-                                if (folders.isNullOrEmpty()) "未扫描到包含图片或视频的文件夹"
-                                else "没有匹配的文件夹",
+                                stringResource(
+                                    if (folders.isNullOrEmpty()) R.string.folder_empty_scan
+                                    else R.string.folder_empty_filter
+                                ),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1362,33 +1594,40 @@ fun FolderPickerDialog(
                     ) {
                         LazyColumn(
                             state = listState,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .heightIn(max = 340.dp),
+                            // 不钉高度：列表用满对话框剩下的空间（对话框本身有 92%
+                            // 屏高的上限）。这里原来写死 `heightIn(max = 340.dp)`，
+                            // 而右侧 ListFastScroller 是 fillMaxHeight —— 长列表时
+                            // 滚动条把外层 Box 撑高、列表却停在 340dp，列表和操作行
+                            // 之间就空出一大片（用户截图反馈）。
+                            modifier = Modifier.fillMaxWidth(),
                             verticalArrangement = Arrangement.spacedBy(4.dp),
                             // Keep the row-end checkboxes clear of the fast
                             // scroller's right-edge hit strip.
-                            contentPadding = PaddingValues(end = 28.dp)
+                            contentPadding = PaddingValues(end = 28.dp, bottom = 8.dp)
                         ) {
                             items(displayFolders, key = { it.path }) { folder ->
                                 val isSelected = folder.path in selectedPaths
+                                // 选中底色跟随主题强调色，并用颜色过渡代替硬切。
+                                val rowBackground by animateColorAsState(
+                                    targetValue = if (isSelected) {
+                                        LocalAccentColor.current.copy(alpha = 0.12f)
+                                    } else {
+                                        Color.Transparent
+                                    },
+                                    animationSpec = HiMotion.standard(),
+                                    label = "folderRowBackground",
+                                )
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .clip(RoundedCornerShape(12.dp))
-                                        .background(
-                                            if (isSelected) {
-                                                MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
-                                            } else {
-                                                Color.Transparent
-                                            }
-                                        )
+                                        .background(rowBackground)
                                         .clickable {
                                             selectedPaths = if (isSelected) selectedPaths - folder.path
                                             else selectedPaths + folder.path
                                         }
-                                        .heightIn(min = 52.dp)
-                                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                                        .heightIn(min = 56.dp)
+                                        .padding(horizontal = 10.dp, vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     val sample = folder.sampleUris.firstOrNull()
@@ -1414,13 +1653,13 @@ fun FolderPickerDialog(
                                             contentScale = ContentScale.Crop,
                                             modifier = Modifier
                                                 .size(44.dp)
-                                                .clip(RoundedCornerShape(8.dp))
+                                                .clip(RoundedCornerShape(10.dp))
                                         )
                                     } else {
                                         Box(
                                             modifier = Modifier
                                                 .size(44.dp)
-                                                .clip(RoundedCornerShape(8.dp))
+                                                .clip(RoundedCornerShape(10.dp))
                                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                                         )
                                     }
@@ -1440,21 +1679,28 @@ fun FolderPickerDialog(
                                                 .trim('/')
                                         }
                                         Text(
-                                            buildString {
-                                                append(
-                                                    "${folder.imageCount} 张图片 · " +
-                                                        "${folder.videoCount} 个视频"
-                                                )
+                                            stringResource(
+                                                R.string.folder_media_summary,
+                                                folder.imageCount,
+                                                folder.videoCount
+                                            ) +
                                                 if (location.isNotEmpty() && location != folder.name) {
-                                                    append(" · $location")
-                                                }
-                                            },
+                                                    " · $location"
+                                                } else {
+                                                    ""
+                                                },
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             maxLines = 1
                                         )
                                     }
-                                    Checkbox(checked = isSelected, onCheckedChange = null)
+                                    Checkbox(
+                                        checked = isSelected,
+                                        onCheckedChange = null,
+                                        colors = CheckboxDefaults.colors(
+                                            checkedColor = LocalAccentColor.current
+                                        )
+                                    )
                                 }
                             }
                         }
@@ -1478,16 +1724,19 @@ fun FolderPickerDialog(
                 horizontalArrangement = Arrangement.End,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                TextButton(onClick = onDismiss) { Text("取消") }
-                Spacer(modifier = Modifier.width(4.dp))
-                TextButton(
+                TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+                Spacer(modifier = Modifier.width(8.dp))
+                FilledTonalButton(
                     enabled = selectedPaths.isNotEmpty(),
                     onClick = {
                         val selected = folders.orEmpty().filter { it.path in selectedPaths }
                         viewModel.importScannedFolders(groupId, selected)
                         onDismiss()
-                    }
-                ) { Text("导入所选 (${selectedPaths.size})") }
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                ) {
+                    Text(stringResource(R.string.action_import_selected, selectedPaths.size))
+                }
             }
             }
         }
@@ -1506,7 +1755,7 @@ fun WallpaperPreviewDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("设为壁纸") },
+        title = { Text(stringResource(R.string.dialog_set_wallpaper_title)) },
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -1545,11 +1794,13 @@ fun WallpaperPreviewDialog(
                 Spacer(modifier = Modifier.height(8.dp))
 
                 Text(
-                    when (image.mediaType) {
-                        MediaTypes.VIDEO -> "将此视频设置为壁纸"
-                        MediaTypes.GIF -> "将此 GIF 设置为壁纸"
-                        else -> "将此图片设置为壁纸"
-                    },
+                    stringResource(
+                        when (image.mediaType) {
+                            MediaTypes.VIDEO -> R.string.set_wallpaper_video
+                            MediaTypes.GIF -> R.string.set_wallpaper_gif
+                            else -> R.string.set_wallpaper_image
+                        }
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1557,12 +1808,12 @@ fun WallpaperPreviewDialog(
         },
         confirmButton = {
             TextButton(onClick = onConfirm) {
-                Text("确定")
+                Text(stringResource(R.string.action_ok))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text(stringResource(R.string.action_cancel))
             }
         }
     )

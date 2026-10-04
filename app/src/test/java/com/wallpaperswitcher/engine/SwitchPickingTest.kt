@@ -2,6 +2,7 @@ package com.wallpaperswitcher.engine
 
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -42,14 +43,107 @@ class SwitchPickingTest {
     @Test
     fun randomOffsetStaysWithinBounds() {
         repeat(500) {
-            val offset = SwitchPicking.randomOffset(7)
+            val offset = SwitchPicking.randomOffset(7, it.toLong())
             assertTrue(offset in 0..6)
         }
     }
 
     @Test(expected = IllegalArgumentException::class)
     fun randomOffsetRejectsZeroCount() {
-        SwitchPicking.randomOffset(0)
+        SwitchPicking.randomOffset(0, 0L)
+    }
+
+    // --- 下一张预览 must agree with the switch (see SwitchPicking.stableIndex) ---
+
+    @Test
+    fun theSameSeedAlwaysYieldsTheSameIndex() {
+        // The preview and the switch that follows it compute the pick from the
+        // same state; without this, RANDOM/SHUFFLE previews disagreed with the
+        // switch AND changed on every click.
+        repeat(50) { i ->
+            val seed = SwitchPicking.pickSeed(cursor = i.toLong(), deckSize = 3, universeSize = 97)
+            assertEquals(
+                SwitchPicking.stableIndex(97, seed),
+                SwitchPicking.stableIndex(97, seed)
+            )
+        }
+    }
+
+    @Test
+    fun aMovedCursorChangesTheIndex() {
+        // After a switch the cursor (and for SHUFFLE the deck) has moved, so the
+        // next pick must differ - otherwise every switch would repeat the same
+        // media.
+        val seen = (1L..40L).map { cursor ->
+            SwitchPicking.stableIndex(
+                1000,
+                SwitchPicking.pickSeed(cursor, deckSize = 0, universeSize = 1000)
+            )
+        }
+        assertTrue("expected several distinct indexes, got $seen", seen.toSet().size > 5)
+    }
+
+    @Test
+    fun theAppliedSwitchCounterBreaksShortCycles() {
+        // Seeding on the cursor alone makes the walk a fixed function: on a
+        // small group a random mapping repeats after ~0.6*sqrt(N) steps, so a
+        // 20-image group would loop through the same 2-3 pictures. The
+        // applied-switch counter is part of the seed, so a long run must keep
+        // producing fresh indexes.
+        val universe = 20
+        val indexes = (0L until 400L).map { seq ->
+            SwitchPicking.stableIndex(
+                universe,
+                SwitchPicking.pickSeed(cursor = 7L, deckSize = 0, universeSize = universe, seq = seq)
+            )
+        }
+        // The last 200 picks must not be a short repeating cycle: a 2-cycle
+        // would produce at most 2 distinct values there.
+        val tail = indexes.drop(200).toSet()
+        assertTrue("expected a varied tail, got $tail", tail.size >= 10)
+    }
+
+    @Test
+    fun pickSeedDependsOnEveryPart() {
+        val base = SwitchPicking.pickSeed(cursor = 1L, deckSize = 2, universeSize = 3, seq = 4L)
+        assertNotEquals(base, SwitchPicking.pickSeed(cursor = 2L, deckSize = 2, universeSize = 3, seq = 4L))
+        assertNotEquals(base, SwitchPicking.pickSeed(cursor = 1L, deckSize = 5, universeSize = 3, seq = 4L))
+        assertNotEquals(base, SwitchPicking.pickSeed(cursor = 1L, deckSize = 2, universeSize = 9, seq = 4L))
+        assertNotEquals(base, SwitchPicking.pickSeed(cursor = 1L, deckSize = 2, universeSize = 3, seq = 5L))
+    }
+
+    @Test
+    fun indexesStayInBounds() {
+        repeat(200) { i ->
+            val index = SwitchPicking.stableIndex(7, i.toLong() * 7919)
+            assertTrue(index in 0..6)
+        }
+        assertEquals(0, SwitchPicking.stableIndex(1, 12345L))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun stableIndexRejectsZeroCount() {
+        SwitchPicking.stableIndex(0, 0L)
+    }
+
+    @Test
+    fun shufflePickIsReproducibleForTheSameDeck() {
+        // Same deck + same cursor -> same media, twice in a row (the preview
+        // clicked twice must not re-roll)...
+        val enabled = listOf(1L, 2L, 3L, 4L, 5L, 6L)
+        val shown = setOf(1L, 2L)
+        val seed = SwitchPicking.pickSeed(cursor = 9L, deckSize = shown.size, universeSize = enabled.size)
+        val first = SwitchPicking.pickUnseen(enabled, shown, 9L, seed)
+        val second = SwitchPicking.pickUnseen(enabled, shown, 9L, seed)
+        assertEquals(first, second)
+        // ...and a deck that grew by one (a card really dealt) picks differently.
+        val firstId = requireNotNull(first)
+        val grown = shown + firstId
+        val nextSeed = SwitchPicking.pickSeed(
+            cursor = firstId, deckSize = grown.size, universeSize = enabled.size
+        )
+        val next = SwitchPicking.pickUnseen(enabled, grown, firstId, nextSeed)
+        assertTrue(next != null && next !in grown)
     }
 
     // --- SHUFFLE pass pick (see MediaPick.shuffleUnseen) ---
@@ -111,6 +205,64 @@ class SwitchPickingTest {
         // open, so it is overdue and switches immediately (catch-up).
         assertFalse(
             SwitchPicking.shouldIdleWhileAppInForeground(appInForeground = false)
+        )
+    }
+
+    // --- 视频播完再切: timed ticks while a video is on screen ---
+
+    @Test
+    fun firstTimedTickHoldsUntilTheVideoPassEnds() {
+        assertEquals(
+            SwitchPicking.VideoEndHold.HOLD_PENDING,
+            SwitchPicking.videoEndHold(
+                optionEnabled = true, videoPlaying = true, holdPending = false
+            )
+        )
+    }
+
+    @Test
+    fun laterTimedTicksAreDroppedWhileAHoldIsPending() {
+        // The reported bug: the SECOND interval was let through (the guard
+        // required !holdPending), so it cut the clip off mid-pass.
+        assertEquals(
+            SwitchPicking.VideoEndHold.DROP_TICK,
+            SwitchPicking.videoEndHold(
+                optionEnabled = true, videoPlaying = true, holdPending = true
+            )
+        )
+        // Even if isVideoPlaying blinks false between passes, a waiting hold
+        // must keep swallowing the ticks until onVideoPassCompleted runs it.
+        assertEquals(
+            SwitchPicking.VideoEndHold.DROP_TICK,
+            SwitchPicking.videoEndHold(
+                optionEnabled = true, videoPlaying = false, holdPending = true
+            )
+        )
+    }
+
+    @Test
+    fun disablingTheOptionReleasesAWaitingHold() {
+        assertEquals(
+            SwitchPicking.VideoEndHold.SWITCH_NOW,
+            SwitchPicking.videoEndHold(
+                optionEnabled = false, videoPlaying = true, holdPending = true
+            )
+        )
+    }
+
+    @Test
+    fun ticksSwitchNormallyWhenNoVideoIsPlaying() {
+        assertEquals(
+            SwitchPicking.VideoEndHold.SWITCH_NOW,
+            SwitchPicking.videoEndHold(
+                optionEnabled = true, videoPlaying = false, holdPending = false
+            )
+        )
+        assertEquals(
+            SwitchPicking.VideoEndHold.SWITCH_NOW,
+            SwitchPicking.videoEndHold(
+                optionEnabled = false, videoPlaying = false, holdPending = false
+            )
         )
     }
 }

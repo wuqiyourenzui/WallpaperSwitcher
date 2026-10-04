@@ -1,6 +1,8 @@
 package com.wallpaperswitcher.data
 
 object SettingsKeys {
+    /** Set once the built-in subscription source has been seeded. */
+    const val RSS_DEFAULT_SEEDED = "rss_default_seeded"
     const val SERVICE_ENABLED = "service_enabled"
     const val DOUBLE_TAP_ENABLED = "double_tap_enabled"
     /**
@@ -13,6 +15,14 @@ object SettingsKeys {
     // Floating double-tap button fallback for launchers that do not forward
     // touches to the live wallpaper window (Android 16/17 devices).
     const val FLOATING_BUTTON_ENABLED = "floating_button_enabled"
+    /**
+     * 悬浮按钮「长按预览下一张」：按住看下一张、松手应用、拖开取消。
+     *
+     * 默认关：这是新增手势，长按以前什么都不做，不该突然改变行为；而且它需要
+     * 悬浮窗权限，首次开启要提示用户。
+     */
+    const val FLOATING_BUTTON_PREVIEW_ON_HOLD = "floating_button_preview_on_hold"
+    const val FLOATING_BUTTON_PREVIEW_ON_HOLD_DEFAULT = false
     // Floating button appearance: base color as "#RRGGBB" and opacity as a
     // percentage (5..100, default 10 = the original 90%-transparent look).
     const val FLOATING_BUTTON_COLOR = "floating_button_color"
@@ -69,6 +79,21 @@ object SettingsKeys {
     const val LOCK_TIMER_LAST_SWITCH_WALL_MS = "lock_timer_last_switch_wall_ms"
     // Global wallpaper settings
     const val GLOBAL_INTERVAL_MS = "global_interval_ms"
+    /**
+     * 一键暂停 ("稍后切换"): wall-clock ms until which BOTH timed loops hold
+     * their ticks. 0 (or a time in the past) = running normally. The tick is
+     * never consumed while paused, so resuming switches immediately once the
+     * pause expires - even if the app was closed the whole time.
+     */
+    const val PAUSE_UNTIL = "pause_until"
+    /** Wall-clock ms of the pause start, for the "paused for X" line in the UI. */
+    const val PAUSE_STARTED_AT = "pause_started_at"
+    /** 场景规则: hold the timed loops while the system battery saver is on. */
+    const val SCENE_PAUSE_ON_POWER_SAVE = "scene_pause_on_power_save"
+    /** 场景规则: hold the timed loops while the battery is at/below [SCENE_LOW_BATTERY_PERCENT]. */
+    const val SCENE_PAUSE_ON_LOW_BATTERY = "scene_pause_on_low_battery"
+    /** Battery percentage at or below which [SCENE_PAUSE_ON_LOW_BATTERY] pauses. */
+    const val SCENE_LOW_BATTERY_PERCENT = 15
     // Wall-clock (ms) the current switch interval counts from: the last timed
     // switch. Kept across a lock/unlock pause (and across service restarts) so
     // an overdue tick catches up as soon as the screen comes back instead of
@@ -85,10 +110,44 @@ object SettingsKeys {
     const val ROTATE_MISMATCH_CW = "rotate_mismatch_cw"
     // Fade-in-from-black transition after each switch (default on).
     const val SWITCH_FADE_ENABLED = "switch_fade_enabled"
+    /**
+     * 过渡动画: which transition the renderer plays on a switch.
+     * "fade" (default, the historical cross-fade) / "slide" / "zoom" / "none".
+     */
+    const val SWITCH_TRANSITION = "switch_transition"
+    const val SWITCH_TRANSITION_FADE = "fade"
+    const val SWITCH_TRANSITION_SLIDE = "slide"
+    const val SWITCH_TRANSITION_ZOOM = "zoom"
+    const val SWITCH_TRANSITION_NONE = "none"    /**
+     * 默认过渡动画：无。用户要求"取消过渡动画"后，只有主动在设置里选回来
+     * 才会有过渡；旧版本升级上来的设备如果已经存了 fade/slide/zoom，仍然按
+     * 存的值播放（这是用户自己的选择）。
+     */
+    const val SWITCH_TRANSITION_DEFAULT = SWITCH_TRANSITION_NONE
     // Play the video wallpaper's own audio track while the wallpaper is
     // visible (default OFF: a silent wallpaper is what users expect, and the
     // first switch to a video must not suddenly make noise).
     const val VIDEO_SOUND_ENABLED = "video_sound_enabled"
+    /**
+     * 视频播完再切: a timed switch that arrives while a video is playing waits
+     * for the current pass to finish instead of cutting the video off. Manual
+     * switches ignore it (a tap must act immediately).
+     */
+    const val VIDEO_PLAY_TO_END = "video_play_to_end"
+    /**
+     * 收藏优先: favourites (★) are drawn [FAVORITE_WEIGHT]× as often in
+     * RANDOM / SHUFFLE. On by default - favouriting is an explicit user action -
+     * and can be switched off for a flat distribution.
+     */
+    const val FAVORITE_BOOST = "favorite_boost"
+    /** Extra weight a favourite gets while [FAVORITE_BOOST] is on. */
+    const val FAVORITE_WEIGHT = 3
+    /**
+     * 最近 N 张不重复: how many recently shown media RANDOM avoids per screen
+     * (0 = off, the default). SHUFFLE already plays a full pass without
+     * repeats, SEQUENTIAL is ordered by definition.
+     */
+    const val RECENT_NO_REPEAT = "recent_no_repeat"
     // Periodic folder auto-scan
     const val AUTO_SCAN_ENABLED = "auto_scan_enabled"
     const val AUTO_SCAN_INTERVAL_MS = "auto_scan_interval_ms"
@@ -110,6 +169,20 @@ object SettingsKeys {
      * list re-written on every switch) are deleted by MIGRATION_5_6.
      */
     const val SHUFFLE_ALL_COUNT = "shuffle_all_count"
+    /**
+     * Monotonic counter of APPLIED switches, used as the extra seed of the
+     * RANDOM / SHUFFLE pick.
+     *
+     * 下一张预览 must name the media the next switch will really show, which
+     * means both must derive the pick from the same state ([SwitchPicking]).
+     * Seeding on the cursor alone would make the sequence a fixed function of
+     * the cursor - on a small group that walks into a short cycle and repeats
+     * the same few pictures forever (a random mapping on N nodes cycles after
+     * ~0.6*sqrt(N) steps). This counter only moves when a switch has really
+     * been applied, so a preview and the switch that follows it still agree,
+     * while every switch draws a fresh, never-repeating seed.
+     */
+    const val PICK_SEQ = "pick_seq"
     // Theme
     /** Custom accent colour as "#RRGGBB"; empty = 跟随系统 (Monet on Android 12+). */
     const val THEME_COLOR = "theme_color"
@@ -121,4 +194,21 @@ object SettingsKeys {
     const val THEME_MODE_SYSTEM = "system"
     const val THEME_MODE_LIGHT = "light"
     const val THEME_MODE_DARK = "dark"
+    /**
+     * UI language: a BCP-47 language tag ("en", "ja", "zh-Hant", ...) or
+     * [LOCALE_SYSTEM] to follow the phone. Only locales that actually ship a
+     * translation are offered (see [TRANSLATED_LOCALES]).
+     */
+    const val LOCALE = "app_locale"
+    const val LOCALE_SYSTEM = "system"
+
+    /**
+     * Locales this build actually ships translations for, in picker order.
+     *
+     * Offering a language without a matching `values-<tag>/strings.xml` would
+     * silently fall back to the default resources (Chinese), which reads as a
+     * broken switch - so the picker is driven by THIS list. Add a tag here only
+     * together with its `values-*` folder.
+     */
+    val TRANSLATED_LOCALES: List<String> = listOf("zh", "zh-TW", "en", "ja", "ko", "es", "ru")
 }

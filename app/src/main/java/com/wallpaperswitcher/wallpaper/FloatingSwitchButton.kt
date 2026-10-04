@@ -135,6 +135,24 @@ class FloatingSwitchButton private constructor(context: Context) {
     private var lastRawX = 0f
     private var lastRawY = 0f
     private var dragging = false
+    /** Finger position inside the button when the drag started. */
+    private var grabOffsetX = 0f
+    private var grabOffsetY = 0f
+    /** True when this ROM reports rawX/rawY in display space (see handleTouch). */
+    private var useAbsoluteDrag = false
+    /** Finger position in WINDOW coordinates, refreshed on every move. */
+    private var lastLocalX = 0f
+    private var lastLocalY = 0f
+    /** Window position in SCREEN coordinates when the drag started. */
+    private var windowAtDownX = 0
+    private var windowAtDownY = 0
+    /**
+     * ROM offset between layoutParams.x/y and the real screen position of the
+     * window (0 on devices where they already match; e.g. the status bar height
+     * on MIUI). Measured on every drag start.
+     */
+    private var gravityOffsetX = 0
+    private var gravityOffsetY = 0
     /** Y the window was parked at by [hideOverlay] (null while shown). */
     private var hiddenY: Int? = null
 
@@ -149,6 +167,7 @@ class FloatingSwitchButton private constructor(context: Context) {
     private var opacityPercent: Int = DEFAULT_OPACITY
     private var textValue: String? = FloatingButtonContentPolicy.DEFAULT_TEXT
     private var imageUri: String? = null
+
 
     // Rest-state colors, derived from the current appearance. The drawable's fill
     // color carries the alpha (never Drawable.setAlpha, which would multiply
@@ -207,7 +226,12 @@ class FloatingSwitchButton private constructor(context: Context) {
                     hiddenY = null
                     try {
                         windowManager.updateViewLayout(existing, lp)
-                    } catch (_: Exception) {}
+                    } catch (t: Exception) {
+                        // The window can be gone (the engine was recreated while
+                        // this ran): log it - a silently failed restore is exactly
+                        // the "floating button is invisible / stuck" report.
+                        AppLog.d(TAG, "show: updateViewLayout failed: ${t.message}")
+                    }
                 }
                 AppLog.d(TAG, "Floating button shown (id=${System.identityHashCode(this)})")
             }
@@ -278,8 +302,12 @@ class FloatingSwitchButton private constructor(context: Context) {
         ).apply {
             gravity = Gravity.TOP or Gravity.START
             val displayMetrics = appContext.resources.displayMetrics
-            val maxX = (displayMetrics.widthPixels - sizePx).coerceAtLeast(0)
-            val maxY = (displayMetrics.heightPixels - sizePx).coerceAtLeast(0)
+            // 屏幕真实尺寸（含状态栏/导航栏），不是应用窗口高度：MIUI 上
+            // resources.displayMetrics 给的是应用可用高度，用它当上限会导致
+            // 悬浮按钮永远拖不到屏幕下方（用户报告）。
+            val screen = screenSizePx()
+            val maxX = (screen.x - sizePx).coerceAtLeast(0)
+            val maxY = (screen.y - sizePx).coerceAtLeast(0)
             val savedX = prefs.getInt(KEY_POS_X, -1)
             val savedY = prefs.getInt(KEY_POS_Y, -1)
             if (savedX >= 0 && savedY >= 0) {
@@ -289,9 +317,9 @@ class FloatingSwitchButton private constructor(context: Context) {
                 y = savedY.coerceIn(0, maxY)
             } else {
                 // Default: bottom-right corner, above the dock/nav area.
-                x = (displayMetrics.widthPixels - sizePx - (EDGE_MARGIN_DP * density).toInt())
+                x = (screen.x - sizePx - (EDGE_MARGIN_DP * density).toInt())
                     .coerceIn(0, maxX)
-                y = (displayMetrics.heightPixels - sizePx - (BOTTOM_MARGIN_DP * density).toInt())
+                y = (screen.y - sizePx - (BOTTOM_MARGIN_DP * density).toInt())
                     .coerceIn(0, maxY)
             }
         }
@@ -329,7 +357,9 @@ class FloatingSwitchButton private constructor(context: Context) {
             lp.y = -lp.height
             try {
                 windowManager.updateViewLayout(v, lp)
-            } catch (_: Exception) {}
+            } catch (t: Exception) {
+                AppLog.d(TAG, "hide: updateViewLayout failed: ${t.message}")
+            }
         }
         AppLog.d(TAG, "Floating button hidden (id=${System.identityHashCode(this)})")
     }
@@ -386,7 +416,9 @@ class FloatingSwitchButton private constructor(context: Context) {
         lp.flags = newFlags
         try {
             windowManager.updateViewLayout(v, lp)
-        } catch (_: Exception) {}
+        } catch (t: Exception) {
+            AppLog.d(TAG, "setTouchable: updateViewLayout failed: ${t.message}")
+        }
     }
 
     /**
@@ -513,6 +545,37 @@ class FloatingSwitchButton private constructor(context: Context) {
     }
 
     /** Bounds + sample-size decode, so a huge photo costs a small bitmap. */
+    /**
+     * The real display size in pixels, including the status and navigation bars.
+     *
+     * `resources.displayMetrics` reports the APP's usable area, which on MIUI is
+     * a few hundred pixels shorter than the screen - using it as the drag limit
+     * left a dead zone at the bottom where the floating button could never be
+     * placed. The maximum window metrics (API 30+) / `getRealSize` (older
+     * devices) describe the whole display instead.
+     */
+    private fun screenSizePx(): android.graphics.Point {
+        val fallback = android.graphics.Point(
+            appContext.resources.displayMetrics.widthPixels,
+            appContext.resources.displayMetrics.heightPixels,
+        )
+        return try {
+            val wm = appContext.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+                ?: return fallback
+            val size = android.graphics.Point()
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                val bounds = wm.maximumWindowMetrics.bounds
+                size.set(bounds.width(), bounds.height())
+            } else {
+                @Suppress("DEPRECATION")
+                wm.defaultDisplay.getRealSize(size)
+            }
+            if (size.x > 0 && size.y > 0) size else fallback
+        } catch (_: Throwable) {
+            fallback
+        }
+    }
+
     private fun decodeSampled(uriStr: String, targetPx: Int): Bitmap? {
         return try {
             val uri = Uri.parse(uriStr)
@@ -545,6 +608,32 @@ class FloatingSwitchButton private constructor(context: Context) {
                 lastRawX = x
                 lastRawY = y
                 dragging = false
+                // 手指在按钮内的落点：拖动时用"手指绝对位置 - 落点"直接摆放窗口，
+                // 按钮就会严格跟着手指（增量累加在部分 ROM 上会因为坐标口径不同
+                // 而漂移，用户报告"移动位置和手指位置不一致"）。
+                grabOffsetX = event.x
+                grabOffsetY = event.y
+                // 少数 ROM 的 rawX/rawY 是窗口坐标而不是屏幕坐标；用
+                // 窗口的真实屏幕位置（getLocationOnScreen）来判断：rawX - 落点
+                // 应当正好等于窗口的屏幕左上角。成立就用绝对定位（最跟手），
+                // 否则退回按 raw 位移的增量方式（不做二次纠偏，避免抖动）。
+                val loc = IntArray(2)
+                v.getLocationOnScreen(loc)
+                windowAtDownX = loc[0]
+                windowAtDownY = loc[1]
+                // 部分 ROM（MIUI 等）把悬浮窗的坐标原点放在状态栏下面：真实屏幕
+                // 位置 = lp.x + 偏移。把这个偏移量测出来，绝对定位时再减掉，
+                // 否则一开始拖动窗口就会"往下飘"一个状态栏的高度。
+                gravityOffsetX = loc[0] - (layoutParams?.x ?: 0)
+                gravityOffsetY = loc[1] - (layoutParams?.y ?: 0)
+                useAbsoluteDrag = kotlin.math.abs((x - event.x) - loc[0]) <= 2f &&
+                    kotlin.math.abs((y - event.y) - loc[1]) <= 2f
+                AppLog.d(
+                    TAG,
+                    "drag start: raw=(${x.toInt()},${y.toInt()}) local=(${event.x.toInt()},${event.y.toInt()}) " +
+                        "screen=(${loc[0]},${loc[1]}) offset=(${gravityOffsetX},${gravityOffsetY}) " +
+                        "absolute=$useAbsoluteDrag"
+                )
                 showTouchFeedback()
                 try {
                     v.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
@@ -560,22 +649,52 @@ class FloatingSwitchButton private constructor(context: Context) {
                     // Keep the button fully on screen while dragging: an
                     // unclamped drag could push it off-screen with no way to
                     // grab it again.
-                    val dm = appContext.resources.displayMetrics
-                    val maxX = (dm.widthPixels - lp.width).coerceAtLeast(0)
-                    val maxY = (dm.heightPixels - lp.height).coerceAtLeast(0)
-                    lp.x = (lp.x + dx).toInt().coerceIn(0, maxX)
-                    lp.y = (lp.y + dy).toInt().coerceIn(0, maxY)
+                    // 真实屏幕尺寸，见上面 screenSizePx() 的说明。
+                    val screen = screenSizePx()
+                    val maxX = (screen.x - lp.width).coerceAtLeast(0)
+                    val maxY = (screen.y - lp.height).coerceAtLeast(0)
+                    if (useAbsoluteDrag) {
+                        // 目标位置是"窗口左上角应在的屏幕坐标"；再减掉 ROM 的
+                        // 坐标原点偏移才是 layoutParams 里的值。
+                        val targetScreenX = (x - grabOffsetX + 0.5f).toInt()
+                            .coerceIn(0, screen.x - lp.width)
+                        val targetScreenY = (y - grabOffsetY + 0.5f).toInt()
+                            .coerceIn(0, screen.y - lp.height)
+                        lp.x = (targetScreenX - gravityOffsetX).coerceIn(0, maxX)
+                        lp.y = (targetScreenY - gravityOffsetY).coerceIn(0, maxY)
+                    } else {
+                        // 增量方式：只按 raw 位移推进，不做任何二次纠偏（局部坐标
+                        // 反馈会让窗口超前/滞后一步，看起来就是"抖动"）。
+                        lp.x = (lp.x + dx).toInt().coerceIn(0, maxX)
+                        lp.y = (lp.y + dy).toInt().coerceIn(0, maxY)
+                    }
                     lastRawX = x
                     lastRawY = y
                     try {
                         windowManager.updateViewLayout(v, lp)
-                    } catch (_: Exception) {}
+                        } catch (t: Exception) {
+                            AppLog.d(TAG, "drag: updateViewLayout failed: ${t.message}")
+                        }
                 }
                 return true
             }
             MotionEvent.ACTION_UP -> {
                 hideTouchFeedback()
+                // 长按预览：松手 = 确认（拖开取消由 onMove 记在控制器里）。
+                // **只有真的显示过预览**才吃掉这次按压：长按计时到点后取图/解码/
+                // 建窗都需要时间，这段窗口里松手，以前什么都不做（无预览、无切换、
+                // 无提示）—— 现在回落成一次普通切换。
                 layoutParams?.let { persistPosition(it.x, it.y) }
+                layoutParams?.let {
+                    // 诊断行（真机拖动一次即可确认坐标口径与可用边界）:
+                    // absolute=true 表示用"手指绝对位置"摆放，否则是旧的增量方式。
+                    AppLog.d(
+                        TAG,
+                        "drag end: raw=(${x.toInt()},${y.toInt()}) " +
+                            "pos=(${it.x},${it.y}) absolute=$useAbsoluteDrag " +
+                            "max=(${(screenSizePx().x - it.width)},${(screenSizePx().y - it.height)})"
+                    )
+                }
                 if (!dragging) {
                     // Every tap switches. Rate limiting lives in the engine, which
                     // coalesces triggers that arrive while a switch is running into
@@ -637,4 +756,7 @@ class FloatingSwitchButton private constructor(context: Context) {
             prefs.edit().putInt(KEY_POS_X, x).putInt(KEY_POS_Y, y).apply()
         } catch (_: Exception) {}
     }
+
+    /** 窗口被移除/隐藏时的清理钩子（历史上用于长按预览，现在没有额外状态）。 */
+    fun dismissPreviewIfAny() = Unit
 }

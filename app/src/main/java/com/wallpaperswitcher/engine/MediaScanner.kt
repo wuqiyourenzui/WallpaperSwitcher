@@ -233,14 +233,29 @@ object MediaScanner {
                         try {
                             if (f.isDirectory) {
                                 scanDir(f, depth + 1)
-                            } else if (f.isFile && isSupportedMedia(f.name ?: "")) {
-                                result.add(
-                                    FolderMedia(
-                                        uri = f.uri.toString(),
-                                        displayName = f.name ?: "untitled",
-                                        mediaType = detectMediaType(f.name ?: "")
+                            } else if (f.isFile) {
+                                // Type by the PROVIDER's MIME type first, the file
+                                // name only as a fallback: SAF hands back
+                                // extension-less display names on many devices, and
+                                // the old name-only check silently skipped every
+                                // such video/image (and typed a GIF-less name as
+                                // IMAGE), so "从文件夹添加" imported a subset of the
+                                // folder on those phones.
+                                val name = f.name ?: ""
+                                val mime = try {
+                                    context.contentResolver.getType(f.uri)
+                                } catch (_: Exception) {
+                                    null
+                                }
+                                if (isScannableDocument(name, mime)) {
+                                    result.add(
+                                        FolderMedia(
+                                            uri = f.uri.toString(),
+                                            displayName = name.ifEmpty { "untitled" },
+                                            mediaType = MediaTypes.fromMimeOrName(mime, name)
+                                        )
                                     )
-                                )
+                                }
                             }
                         } catch (_: Exception) { continue }
                     }
@@ -256,6 +271,22 @@ object MediaScanner {
 
     /** See [MediaTypes.isSupportedName]; kept here for the scanner's callers. */
     fun isSupportedMedia(name: String): Boolean = MediaTypes.isSupportedName(name)
+
+    /**
+     * Whether a SAF document is media this app can show.
+     *
+     * The provider's MIME type decides first: SAF returns extension-less display
+     * names on many (non-Xiaomi) devices, and judging by name alone silently
+     * skipped every such file. The name-extension check stays as the fallback for
+     * providers that report `application/octet-stream` for everything. Pure, so
+     * the rule is unit-tested.
+     */
+    internal fun isScannableDocument(name: String, mime: String?): Boolean {
+        val declaredMedia = mime?.let {
+            it.startsWith("image/") || it.startsWith("video/")
+        } ?: false
+        return declaredMedia || MediaTypes.isSupportedName(name)
+    }
 
     /** See [MediaTypes.fromName]; kept here for the scanner's callers. */
     fun detectMediaType(name: String): String = MediaTypes.fromName(name)

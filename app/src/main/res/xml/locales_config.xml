@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Locales this app ships translations for.
+
+  Declared in the manifest (`android:localeConfig`) so Android 13+ lists them in
+  the system's "App language" page; the in-app picker keeps the same list
+  (SettingsKeys.TRANSLATED_LOCALES) so the two can never disagree.
+-->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="zh" />
+    <locale android:name="zh-TW" />
+    <locale android:name="en" />
+    <locale android:name="ja" />
+    <locale android:name="ko" />
+    <locale android:name="es" />
+    <locale android:name="ru" />
+</locale-config>

@@ -1,6 +1,8 @@
 package com.wallpaperswitcher.engine
 
 import android.app.WallpaperManager
+import androidx.annotation.StringRes
+import com.wallpaperswitcher.R
 
 /**
  * Which screen(s) a group's media may be applied to.
@@ -12,13 +14,18 @@ import android.app.WallpaperManager
 enum class WallpaperTarget(
     val nameValue: String,
     val flags: Int,
-    val label: String,
+    @StringRes val labelRes: Int,
     /** Compact form for chips / cards where space is tight. */
-    val shortLabel: String
+    @StringRes val shortLabelRes: Int
 ) {
-    HOME("HOME", WallpaperManager.FLAG_SYSTEM, "桌面", "桌面"),
-    LOCK("LOCK", WallpaperManager.FLAG_LOCK, "锁屏", "锁屏"),
-    BOTH("BOTH", WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK, "桌面和锁屏", "两者");
+    HOME("HOME", WallpaperManager.FLAG_SYSTEM, R.string.target_home, R.string.target_home),
+    LOCK("LOCK", WallpaperManager.FLAG_LOCK, R.string.target_lock, R.string.target_lock),
+    BOTH(
+        "BOTH",
+        WallpaperManager.FLAG_SYSTEM or WallpaperManager.FLAG_LOCK,
+        R.string.target_both,
+        R.string.target_both_short
+    );
 
     val includesHome: Boolean get() = flags and WallpaperManager.FLAG_SYSTEM != 0
     val includesLock: Boolean get() = flags and WallpaperManager.FLAG_LOCK != 0

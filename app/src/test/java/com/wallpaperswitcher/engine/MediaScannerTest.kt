@@ -14,6 +14,25 @@ class MediaScannerTest {
         assertEquals("a\\\\b", MediaScanner.escapeLike("a\\b"))
     }
 
+    /**
+     * SAF returns extension-less display names ("VID_20260101") on many
+     * non-Xiaomi devices. Judging by the name alone dropped those files from
+     * "从文件夹添加" entirely - the provider's MIME type has to decide first.
+     */
+    @Test
+    fun scannableDocumentTrustsTheProviderMimeBeforeTheName() {
+        assertTrue(MediaScanner.isScannableDocument("VID_20260101", "video/mp4"))
+        assertTrue(MediaScanner.isScannableDocument("no-extension", "image/jpeg"))
+        assertTrue(MediaScanner.isScannableDocument("anim", "image/gif"))
+        // Providers that report a useless MIME still work through the extension.
+        assertTrue(MediaScanner.isScannableDocument("photo.JPG", "application/octet-stream"))
+        assertTrue(MediaScanner.isScannableDocument("clip.mp4", null))
+        // Neither source says "media": not imported.
+        assertFalse(MediaScanner.isScannableDocument("notes", "text/plain"))
+        assertFalse(MediaScanner.isScannableDocument("archive.zip", "application/zip"))
+        assertFalse(MediaScanner.isScannableDocument("noext", null))
+    }
+
     @Test
     fun isSupportedMediaAcceptsImagesVideosGifsAndHeic() {
         for (ext in listOf(

@@ -72,6 +72,20 @@ class SwitchScheduleTest {
     }
 
     @Test
+    fun aWiderStalenessWindowKeepsLongIntervalsIntact() {
+        // 自定义间隔 can be weeks long: with a window of twice the interval a
+        // 2-day-old anchor is perfectly healthy and must be kept.
+        val twoDays = 2L * 24 * 60 * 60 * 1000
+        val sevenDays = 7L * 24 * 60 * 60 * 1000
+        assertEquals(
+            now - twoDays,
+            SwitchSchedule.resolveAnchor(now - twoDays, now, maxAgeMs = 2 * sevenDays)
+        )
+        // ...while the default (24h) still restarts it for the legacy paths.
+        assertEquals(now, SwitchSchedule.resolveAnchor(now - twoDays, now))
+    }
+
+    @Test
     fun recentAnchorIsKept() {
         assertEquals(now - 30_000L, SwitchSchedule.resolveAnchor(now - 30_000L, now))
     }

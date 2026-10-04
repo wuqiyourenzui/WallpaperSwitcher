@@ -28,6 +28,9 @@ internal suspend fun dropGoneMedia(context: Context, image: WallpaperImage, tag:
         val db = AppDatabase.getInstance(context)
         db.wallpaperImageDao().delete(image)
         clearMediaCursors(db.settingsDao(), listOf(image.id))
+        // The enabled-media set just shrank: the SHUFFLE deck's cached id list
+        // must not keep offering the dropped row (see MediaPick.enabledIdsFor).
+        MediaPick.invalidateEnabledIds()
         AppLog.w(tag, "Dropped unreadable media ${image.displayName} id=${image.id} (file is gone)")
         true
     } catch (t: Throwable) {

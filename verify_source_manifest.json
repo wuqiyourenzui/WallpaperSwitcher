@@ -1,0 +1,16 @@
+[
+  {
+    "sourceName": "本地视频源校验",
+    "sourceUrl": "http://10.0.2.2:80",
+    "type": 0,
+    "enabled": true,
+    "enableJs": false,
+    "header": "{\"Referer\": \"http://10.0.2.2:80/\", \"User-Agent\": \"WallpaperSwitcherVerify/1.0\"}",
+    "ruleArticles": "$.data[*]",
+    "ruleTitle": "$.title",
+    "ruleLink": "/view?guide={{$.id}}",
+    "ruleImage": "{{$.cover}}",
+    "ruleContent": "$.content",
+    "ruleNextPage": "$.next"
+  }
+]

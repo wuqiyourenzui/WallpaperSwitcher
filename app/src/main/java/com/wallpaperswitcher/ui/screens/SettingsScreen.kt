@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.outlined.RotateRight
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -29,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -40,33 +42,68 @@ import com.wallpaperswitcher.engine.FloatingButtonContentPolicy
 import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.ui.theme.parseHexColor
 import com.wallpaperswitcher.ui.theme.ThemeMode
+import androidx.compose.ui.res.stringResource
+import com.wallpaperswitcher.R
+import com.wallpaperswitcher.ui.AppLocale
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 import java.io.File
 import kotlinx.coroutines.launch
 import com.wallpaperswitcher.ui.theme.LocalAccentColor
 
-/** Preset colors for the floating switch button. */
-private val floatingButtonColors = listOf(
-    "#1E88E5" to "蓝色",
-    "#43A047" to "绿色",
-    "#E53935" to "红色",
-    "#FB8C00" to "橙色",
-    "#8E24AA" to "紫色",
-    "#00ACC1" to "青色",
-    "#D81B60" to "粉色",
-    "#FFFFFF" to "白色",
-    "#212121" to "黑色",
+/**
+ * Preset colors for the floating switch button, as hex + string RESOURCE (the
+ * names are translated, and a top-level list cannot call stringResource).
+ */
+internal val floatingButtonColors = listOf(
+    "#1E88E5" to R.string.button_color_blue,
+    "#43A047" to R.string.button_color_green,
+    "#E53935" to R.string.button_color_red,
+    "#FB8C00" to R.string.button_color_orange,
+    "#8E24AA" to R.string.button_color_purple,
+    "#00ACC1" to R.string.button_color_cyan,
+    "#D81B60" to R.string.button_color_pink,
+    "#FFFFFF" to R.string.button_color_white,
+    "#212121" to R.string.button_color_black,
 )
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun SettingsScreen(viewModel: WallpaperViewModel) {
+fun SettingsScreen(
+    viewModel: WallpaperViewModel,
+    /** 打开设置里的子页面（壁纸设置 / 切换方式 / 悬浮按钮 / 文件夹扫描 / 外观 /
+     *  收藏 / 最近显示 / 存储）。 */
+    onOpenScreen: (com.wallpaperswitcher.ui.Screen) -> Unit = {},
+    /**
+     * 滚动状态由调用方持有：进子页面再返回时这一页会被重建，状态放在这里才不会
+     * 每次都滚回顶部（和订阅列表的 `listState` 同一个理由）。
+     */
+    scrollState: androidx.compose.foundation.ScrollState =
+        androidx.compose.foundation.rememberScrollState(),
+) {
     // Single combined state (see settingsUiState): entering this screen used
     // to subscribe to 13 separate Room-backed flows, each emitting on the main
     // thread at its own time -> up to 13 full-screen recompositions while the
     // tab transition animation was still running (the 首页↔设置 stutter). One
     // combined flow = one emission = one recomposition per settings change.
     val settingsUiState by viewModel.settingsUiState.collectAsStateWithLifecycle()
+    // 场景规则
+    val scenePauseOnPowerSave = settingsUiState.scenePauseOnPowerSave
+    val scenePauseOnLowBattery = settingsUiState.scenePauseOnLowBattery
+    // 订阅下载目录：默认应用私有目录，也可以选相册/文件管理器可见的文件夹。
+    var rssDownloadDir by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) { rssDownloadDir = viewModel.rssDownloadDirValue() }
+    val rssDirPickerContext = LocalContext.current
+    val rssDirPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            com.wallpaperswitcher.engine.RssDownloadDir.persist(rssDirPickerContext, uri)
+            val value = uri.toString()
+            rssDownloadDir = value
+            viewModel.setRssDownloadDir(value)
+        }
+    }
+
     val serviceEnabled = settingsUiState.serviceEnabled
     val doubleTapEnabled = settingsUiState.doubleTapEnabled
     val unlockSwitchEnabled = settingsUiState.unlockSwitchEnabled
@@ -94,6 +131,12 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
     var showIntervalDialog by remember { mutableStateOf(false) }
     var showLockIntervalDialog by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
+    var showLanguageDialog by remember { mutableStateOf(false) }
+    // Its own collect: the root (MainActivity) is what applies the locale - this
+    // screen only has to show which one is active.
+    val localeTag by viewModel.locale.collectAsStateWithLifecycle()
+    // Only used to recreate the Activity when the language changes.
+    val languageContext = androidx.compose.ui.platform.LocalContext.current
     // Free colour choice for the floating button (hue x tone grid + translucency).
     var showButtonColorDialog by remember { mutableStateOf(false) }
     var showAutoScanIntervalDialog by remember { mutableStateOf(false) }
@@ -121,629 +164,129 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
     Column(
         modifier = Modifier
         .fillMaxSize()
-        .verticalScroll(rememberScrollState())
+        .verticalScroll(scrollState)
         .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         // Global wallpaper settings
-        SettingsSection(title = "壁纸设置") {
-            // 排版：选项组统一"标签 + 选项同一行"（与下方"旋转方向"一致）。
-            // 之前标签独占一行、选项另起一行，每组多花约 90px，设置页要滚很久。
-            Row(
-                modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Outlined.Shuffle, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(16.dp))
-                Text("切换模式", modifier = Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    SwitchMode.entries.forEach { mode ->
-                        FilterChip(
-                            selected = globalSwitchMode == mode,
-                            onClick = { viewModel.setGlobalSwitchMode(mode) },
-                            label = { Text(when (mode) { SwitchMode.RANDOM -> "随机"; SwitchMode.SEQUENTIAL -> "顺序"; SwitchMode.SHUFFLE -> "洗牌" }) }
-                        )
-                    }
-                }
-            }
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            // Scale mode (same "label + options in one row" layout as 切换模式).
-            Row(
-                modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Outlined.AspectRatio, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(16.dp))
-                Text("缩放模式", modifier = Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ScaleMode.entries.forEach { mode ->
-                        FilterChip(
-                            selected = globalScaleMode == mode,
-                            onClick = { viewModel.setGlobalScaleMode(mode) },
-                            label = { Text(when (mode) { ScaleMode.FILL -> "填充"; ScaleMode.FIT -> "适应"; ScaleMode.STRETCH -> "拉伸" }) }
-                        )
-                    }
-                }
-            }
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            // Clarity enhancement for low-res media (default "auto" keeps the
-            // current behavior; the option lets users tune it on-device).
-            Row(
-                modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Outlined.HighQuality, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(16.dp))
-                Text("清晰度增强", modifier = Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("auto" to "自动", "off" to "关闭", "strong" to "增强").forEach { (mode, label) ->
-                        FilterChip(
-                            selected = clarityMode == mode,
-                            onClick = { viewModel.setClarityMode(mode) },
-                            label = { Text(label) }
-                        )
-                    }
-                }
-            }
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            SettingsSwitchItem(
-                icon = Icons.AutoMirrored.Outlined.RotateRight,
-                title = "自动旋转适配",
-                subtitle = "方向与屏幕不符时旋转 90°（适应模式显示面积会变大）",
-                checked = rotateMismatchEnabled,
-                onCheckedChange = { viewModel.toggleRotateMismatch(it) }
+        // ==== 设置主界面 = 入口列表 ====
+        // 每一项设置进自己的页面（见 SettingsPageScaffold）：主界面一眼看完，不用
+        // 滚过上千行；每个设置项也各有自己的返回栈位置。
+        SettingsSection(title = stringResource(R.string.title_settings)) {
+            SettingsPageEntry(
+                icon = Icons.Outlined.Wallpaper,
+                title = stringResource(R.string.settings_page_wallpaper),
+                subtitle = stringResource(R.string.settings_page_wallpaper_desc),
+                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.WallpaperSettings) },
             )
-
-            if (rotateMismatchEnabled) {
-                Row(
-                    modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, bottom = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "旋转方向",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.weight(1f)
-                    )
-                    FilterChip(
-                        selected = rotateMismatchClockwise,
-                        onClick = { viewModel.setRotateMismatchClockwise(true) },
-                        label = { Text("顺时针") }
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    FilterChip(
-                        selected = !rotateMismatchClockwise,
-                        onClick = { viewModel.setRotateMismatchClockwise(false) },
-                        label = { Text("逆时针") }
-                    )
-                }
-            }
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsPageEntry(
+                icon = Icons.Outlined.SwapVert,
+                title = stringResource(R.string.settings_page_switch),
+                subtitle = stringResource(R.string.settings_page_switch_desc),
+                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.SwitchMethods) },
+            )
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsPageEntry(
+                icon = Icons.Outlined.AdsClick,
+                title = stringResource(R.string.settings_page_button),
+                subtitle = stringResource(R.string.settings_page_button_desc),
+                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.ButtonAppearance) },
+            )
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsPageEntry(
+                icon = Icons.Outlined.FolderOpen,
+                title = stringResource(R.string.settings_page_scan),
+                subtitle = stringResource(R.string.settings_page_scan_desc),
+                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.FolderScan) },
+            )
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsPageEntry(
+                icon = Icons.Outlined.Palette,
+                title = stringResource(R.string.settings_page_appearance),
+                subtitle = stringResource(R.string.settings_page_appearance_desc),
+                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.Appearance) },
+            )
         }
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Timer, double tap and unlock switches. They are fully independent.
-        // 排版：「切换间隔」紧跟「定时切换」——它的值属于这个开关，之前被放在
-        // 页面最上面的"壁纸设置"里，开关和它的间隔隔着两个区块，很难对应。
-        SettingsSection(title = "切换方式") {
-            SettingsSwitchItem(
-                icon = Icons.Outlined.PlayCircle,
-                title = "定时切换",
-                subtitle = "按设定间隔自动切换壁纸",
-                checked = serviceEnabled,
-                onCheckedChange = { viewModel.toggleService(it) }
-            )
-
-            if (serviceEnabled) {
-                // Only meaningful while the timer runs: hidden otherwise so the
-                // list stays short (the value is kept, turning the timer back on
-                // restores it).
-                Row(
-                    modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showIntervalDialog = true }
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Outlined.Timer,
-                        null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("切换间隔")
-                        Text(
-                            formatInterval(globalIntervalMs),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Text(
-                        "修改",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = LocalAccentColor.current
-                    )
-                }
-            }
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            SettingsSwitchItem(
-                icon = Icons.Outlined.LockOpen,
-                title = "解锁切换",
-                subtitle = "每次解锁屏幕时自动切换壁纸",
-                checked = unlockSwitchEnabled,
-                onCheckedChange = { viewModel.toggleUnlockSwitch(it) }
-            )
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            SettingsSwitchItem(
-                icon = Icons.Outlined.TouchApp,
-                title = "双击切换",
-                subtitle = "双击屏幕切换壁纸（需设置动态壁纸）",
-                checked = doubleTapEnabled,
-                onCheckedChange = { viewModel.toggleDoubleTap(it) }
-            )
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
+        // 悬浮按钮总开关留在主界面（最常用），点进去才是它的外观。
+        SettingsSection(title = stringResource(R.string.settings_section_button)) {
             SettingsSwitchItem(
                 icon = Icons.Outlined.AdsClick,
-                title = "悬浮切换按钮",
-                subtitle = "点一下悬浮按钮即切换（部分启动器不转发双击）",
+                title = stringResource(R.string.settings_floating_button),
+                subtitle = stringResource(R.string.settings_floating_button_hint),
                 checked = floatingButtonEnabled,
                 onCheckedChange = { viewModel.toggleFloatingButton(it) }
             )
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            SettingsSwitchItem(
-                icon = Icons.Outlined.AutoAwesome,
-                title = "切换过渡动画",
-                subtitle = "切换壁纸时淡入显示",
-                checked = switchFadeEnabled,
-                onCheckedChange = { viewModel.setSwitchFadeEnabled(it) }
-            )
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            SettingsSwitchItem(
-                icon = Icons.Outlined.MusicNote,
-                title = "视频壁纸播放声音",
-                subtitle = "桌面可见时播放视频声音（进应用/熄屏/锁屏静音）",
-                checked = videoSoundEnabled,
-                onCheckedChange = { viewModel.setVideoSoundEnabled(it) }
-            )
         }
         Spacer(modifier = Modifier.height(8.dp))
 
-        // 锁屏切换：与桌面的定时/双击/解锁完全独立（Paperize 双屏思路）。
-        // 只从分组「应用位置」包含锁屏的分组里取图，并且有自己的间隔、自己的
-        // 双击/解锁触发，桌面锁屏可以各换各的。
-        // 排版：紧跟"切换方式/悬浮按钮外观"之后——它们都是"什么时候触发切换"，
-        // 锁屏只是其中一条独立触发线。
-        SettingsSection(title = "锁屏切换（独立于桌面）") {
-            SettingsSwitchItem(
-                icon = Icons.Outlined.Timer,
-                title = "锁屏定时切换",
-                subtitle = "按下方间隔单独更换锁屏壁纸",
-                checked = lockTimerEnabled,
-                onCheckedChange = { viewModel.toggleLockTimer(it) }
-            )
-
-            if (lockTimerEnabled) {
-                Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                Row(
-                    modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showLockIntervalDialog = true }
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Outlined.Schedule,
-                        null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("锁屏切换间隔")
-                        Text(
-                            formatInterval(lockIntervalMs),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Text(
-                        "修改",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = LocalAccentColor.current
-                    )
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Folder auto-scan
-        SettingsSection(title = "文件夹自动扫描") {
-            SettingsSwitchItem(
-                icon = Icons.Outlined.Sync,
-                title = "自动扫描文件夹",
-                subtitle = buildString {
-                    append("定期把已导入文件夹中的新增图片/视频自动加入分组")
-                    if (autoScanEnabled) {
-                        // Direct answer to "is it actually running?" - the
-                        // periodic job can be deferred by aggressive ROMs, and
-                        // opening the app now catches up (see the ViewModel).
-                        append("（上次扫描：${formatAgo(autoScanLastRunAt)}）")
-                    }
-                },
-                checked = autoScanEnabled,
-                onCheckedChange = { viewModel.toggleAutoScan(it, autoScanIntervalMs) }
-            )
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            Row(
-                modifier = Modifier
-                .fillMaxWidth()
-                .clickable { showAutoScanIntervalDialog = true }
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Outlined.Schedule, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text("扫描间隔", style = MaterialTheme.typography.bodyLarge)
-                    Text(
-                        formatInterval(autoScanIntervalMs),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Floating button appearance
-        SettingsSection(title = "悬浮按钮外观") {
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Outlined.Opacity,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("透明度", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "数值越低按钮越透明（默认 10%）",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Text(
-                        "$floatingButtonAlpha%",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = LocalAccentColor.current
-                    )
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                // While the finger is on the slider, the local value tracks the
-                // drag and the persisted value must NOT snap the thumb back
-                // mid-drag: the debounced DB write re-emits through the flow,
-                // and syncing during a drag used to yank the thumb to the last
-                // committed value.
-                var sliderAlpha by remember { mutableFloatStateOf(floatingButtonAlpha.toFloat()) }
-                var alphaDragging by remember { mutableStateOf(false) }
-                LaunchedEffect(floatingButtonAlpha) {
-                    if (!alphaDragging) sliderAlpha = floatingButtonAlpha.toFloat()
-                }
-                Slider(
-                    value = sliderAlpha,
-                    onValueChange = {
-                        alphaDragging = true
-                        sliderAlpha = it
-                        viewModel.setFloatingButtonAlpha(it.toInt())
-                    },
-                    onValueChangeFinished = { alphaDragging = false },
-                    valueRange = SettingsKeys.FLOATING_BUTTON_ALPHA_MIN.toFloat()..100f,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Outlined.Palette,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Text("按钮颜色", style = MaterialTheme.typography.bodyLarge)
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    floatingButtonColors.forEach { (hex, name) ->
-                        val isSelected = floatingButtonColor.equals(hex, ignoreCase = true)
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            modifier = Modifier.clickable { viewModel.setFloatingButtonColor(hex) }
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(parseHexColor(hex) ?: Color.Gray)
-                                .then(
-                                    if (isSelected) Modifier.border(
-                                        3.dp,
-                                        MaterialTheme.colorScheme.onSurface,
-                                        CircleShape
-                                    ) else Modifier
-                                ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                if (isSelected) {
-                                    Icon(
-                                        Icons.Filled.Check,
-                                        contentDescription = null,
-                                        // The white swatch needs a dark check mark.
-                                        tint = if (hex.equals("#FFFFFF", ignoreCase = true))
-                                        MaterialTheme.colorScheme.onSurface
-                                        else
-                                        Color.White,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(name, style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                        }
-                    }
-                    // Free choice from the hue x tone grid (see ColorGridPicker),
-                    // for colours the fixed palette above does not cover.
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.clickable { showButtonColorDialog = true }
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    Brush.sweepGradient(
-                                        listOf(
-                                            Color(0xFFF44336), Color(0xFFFFEB3B),
-                                            Color(0xFF4CAF50), Color(0xFF00BCD4),
-                                            Color(0xFF2196F3), Color(0xFF9C27B0),
-                                            Color(0xFFF44336)
-                                        )
-                                    )
-                                )
-                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Outlined.Colorize,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("自定义", style = MaterialTheme.typography.labelSmall, maxLines = 1)
-                    }
-                }
-            }
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            // Custom label / custom picture. A picture REPLACES the label
-            // (FloatingButtonContentPolicy), which is what the user asked for.
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Outlined.Edit,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("按钮文字", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            "最多 4 个字；留空恢复为「${SettingsKeys.FLOATING_BUTTON_TEXT_DEFAULT}」",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                // Local draft so typing does not fight the DB round-trip; the
-                // value is capped to the button's capacity by code points, so an
-                // emoji is never cut in half.
-                var textDraft by remember { mutableStateOf(floatingButtonText) }
-                LaunchedEffect(floatingButtonText) { textDraft = floatingButtonText }
-                OutlinedTextField(
-                    value = textDraft,
-                    onValueChange = { raw ->
-                        val capped = FloatingButtonContentPolicy.capText(raw)
-                        textDraft = capped
-                        viewModel.setFloatingButtonText(capped)
-                    },
-                    singleLine = true,
-                    label = { Text("自定义文字") },
-                    supportingText = {
-                        Text(
-                            if (floatingButtonImageUri.isNotEmpty()) {
-                                "已设置自定义图片：按钮只显示图片，不显示文字"
-                            } else {
-                                "显示在悬浮按钮上的文字"
-                            }
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-            }
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        Icons.Outlined.Image,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("自定义图片", style = MaterialTheme.typography.bodyLarge)
-                        Text(
-                            if (floatingButtonImageUri.isEmpty()) {
-                                "选一张图片当按钮（自动裁成圆形，文字不再显示）"
-                            } else {
-                                "已设置：按钮显示图片，文字隐藏"
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    if (floatingButtonImageUri.isNotEmpty()) {
-                        AsyncImage(
-                            model = floatingButtonImageUri,
-                            contentDescription = null,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .border(
-                                1.dp,
-                                MaterialTheme.colorScheme.outlineVariant,
-                                CircleShape
-                            )
-                        )
-                    }
-                }
-                Spacer(modifier = Modifier.height(12.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedButton(
-                        onClick = { floatingImagePicker.launch(arrayOf("image/*")) }
-                    ) {
-                        Text(if (floatingButtonImageUri.isEmpty()) "选择图片" else "更换图片")
-                    }
-                    if (floatingButtonImageUri.isNotEmpty()) {
-                        Spacer(modifier = Modifier.width(8.dp))
-                        TextButton(onClick = { viewModel.setFloatingButtonImageUri(null) }) {
-                            Text("清除图片")
-                        }
-                    }
-                }
-            }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // Theme
-        SettingsSection(title = "外观") {
-            // 浅色/深色：跟随系统 or 强制其中一种
+        // 订阅下载目录：原来混在「文件自动扫描」里（与扫描无关），单独成组。
+        SettingsSection(title = stringResource(R.string.settings_rss_download_dir)) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .clickable { rssDirPicker.launch(null) }
                     .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(
-                    Icons.Outlined.Brightness4,
+                    Icons.Outlined.FolderOpen,
                     null,
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(24.dp)
                 )
                 Spacer(modifier = Modifier.width(16.dp))
-                Text("主题模式", modifier = Modifier.weight(1f))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ThemeMode.entries.forEach { mode ->
-                        FilterChip(
-                            selected = ThemeMode.from(themeMode) == mode,
-                            onClick = { viewModel.setThemeMode(mode.value) },
-                            label = { Text(mode.label) }
-                        )
-                    }
-                }
-            }
-
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-            Row(
-                modifier = Modifier
-                .fillMaxWidth()
-                .clickable { showColorDialog = true }
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Outlined.Palette, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(24.dp))
-                Spacer(modifier = Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Text("主题颜色", style = MaterialTheme.typography.bodyLarge)
                     Text(
-                        when {
-                            themeColor.isNotEmpty() -> themeColor
-                            // Android 12+ paints the whole UI from the wallpaper's
-                            // palette (Monet); older versions fall back to the
-                            // built-in scheme. Say which one is in effect.
-                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> "跟随系统（Monet）"
-                            else -> "跟随系统"
+                        stringResource(R.string.settings_rss_download_dir),
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        if (rssDownloadDir.isBlank()) {
+                            stringResource(R.string.settings_rss_download_dir_default)
+                        } else {
+                            com.wallpaperswitcher.engine.RssDownloadDir
+                                .displayName(rssDownloadDir)
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                val previewColor = if (themeColor.isNotEmpty()) parseHexColor(themeColor)
-                else MaterialTheme.colorScheme.primary
-                Box(
-                    modifier = Modifier
-                    .size(32.dp)
-                    .clip(CircleShape)
-                    .background(previewColor ?: MaterialTheme.colorScheme.primary)
+                Text(
+                    stringResource(R.string.action_modify),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = LocalAccentColor.current
                 )
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Runtime log export: captures engine/service/UI logs so OEM-specific
-        // issues (black video/GIF, rotation problems) can be analysed without
-        // adb.
-        SettingsSection(title = "运行日志") {
+        SettingsSection(title = stringResource(R.string.settings_scene_rules)) {
+            SettingsSwitchItem(
+                icon = Icons.Outlined.BatterySaver,
+                title = stringResource(R.string.settings_scene_power_save),
+                subtitle = stringResource(R.string.settings_scene_hint),
+                checked = scenePauseOnPowerSave,
+                onCheckedChange = { viewModel.setScenePauseOnPowerSave(it) }
+            )
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsSwitchItem(
+                icon = Icons.Outlined.BatteryAlert,
+                title = stringResource(R.string.settings_scene_low_battery),
+                subtitle = stringResource(R.string.settings_scene_hint),
+                checked = scenePauseOnLowBattery,
+                onCheckedChange = { viewModel.setScenePauseOnLowBattery(it) }
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+
+        SettingsSection(title = stringResource(R.string.settings_section_logs)) {
             val context = androidx.compose.ui.platform.LocalContext.current
             val scope = rememberCoroutineScope()
             var exporting by remember { mutableStateOf(false) }
-            // "保存到手机": SAF create-document so the user picks the folder
+            // stringResource(R.string.action_save_to_phone): SAF create-document so the user picks the folder
             // (Downloads/Documents/...); no storage permission is required.
             val saveLogLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.CreateDocument("text/plain")
@@ -757,7 +300,9 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                         val text = com.wallpaperswitcher.util.AppLog.readPendingExport(context)
                         if (text.isNullOrBlank()) {
                             android.widget.Toast.makeText(
-                                context, "日志内容为空，请重新导出", android.widget.Toast.LENGTH_LONG
+                                context,
+                                context.getString(R.string.toast_log_empty),
+                                android.widget.Toast.LENGTH_LONG
                             ).show()
                             return@launch
                         }
@@ -765,7 +310,9 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                         val stream = context.contentResolver.openOutputStream(uri)
                         if (stream == null) {
                             android.widget.Toast.makeText(
-                                context, "保存失败：无法写入所选位置", android.widget.Toast.LENGTH_LONG
+                                context,
+                                context.getString(R.string.toast_log_no_write),
+                                android.widget.Toast.LENGTH_LONG
                             ).show()
                             return@launch
                         }
@@ -776,12 +323,14 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                         com.wallpaperswitcher.util.AppLog.clearPendingExport()
                         android.widget.Toast.makeText(
                             context,
-                            "日志已保存（${bytes.size / 1024} KB）",
+                            context.getString(R.string.toast_log_saved, bytes.size / 1024),
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                     } catch (t: Throwable) {
                         android.widget.Toast.makeText(
-                            context, "保存失败：${t.message}", android.widget.Toast.LENGTH_LONG
+                            context,
+                            context.getString(R.string.toast_save_failed, t.message.orEmpty()),
+                            android.widget.Toast.LENGTH_LONG
                         ).show()
                     }
                 }
@@ -795,19 +344,25 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                         modifier = Modifier.size(24.dp)
                     )
                     Spacer(modifier = Modifier.width(16.dp))
-                    Text("导出运行日志", modifier = Modifier.weight(1f))
+                    Text(stringResource(R.string.settings_export_logs), modifier = Modifier.weight(1f))
                 }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    "包含设备信息、当前设置与最近的运行日志（含动态壁纸引擎），导出后可直接分享给开发者排查问题",
+                    stringResource(R.string.settings_export_logs_hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(10.dp))
-                Row(
+                // FlowRow: with Russian labels ("Экспорт и отправка" 628px +
+                // "Очистить журнал") both buttons no longer fit on one 400dp
+                // line, and the second one's label wrapped into a 134x240
+                // single-column block inside its button. Wrapping the BUTTONS
+                // instead keeps every label on one line.
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FilledTonalButton(
                         enabled = !exporting,
@@ -821,7 +376,10 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                                 } catch (t: Throwable) {
                                     android.widget.Toast.makeText(
                                         context,
-                                        "导出失败：${t.message}",
+                                        context.getString(
+                                            R.string.toast_log_export_failed,
+                                            t.message.orEmpty()
+                                        ),
                                         android.widget.Toast.LENGTH_LONG
                                     ).show()
                                 } finally {
@@ -832,19 +390,21 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                     ) {
                         Icon(Icons.Filled.Share, null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(if (exporting) "导出中…" else "导出并分享")
+                        Text(if (exporting) stringResource(R.string.action_exporting) else stringResource(R.string.action_export_share))
                     }
                     OutlinedButton(
                         onClick = {
                             com.wallpaperswitcher.util.AppLog.clear()
                             android.widget.Toast.makeText(
-                                context, "日志已清空", android.widget.Toast.LENGTH_SHORT
+                                context,
+                                context.getString(R.string.toast_log_cleared),
+                                android.widget.Toast.LENGTH_SHORT
                             ).show()
                         }
                     ) {
                         Icon(Icons.Filled.DeleteSweep, null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("清空日志")
+                        Text(stringResource(R.string.action_clear_logs))
                     }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
@@ -864,7 +424,10 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                             } catch (t: Throwable) {
                                 android.widget.Toast.makeText(
                                     context,
-                                    "生成日志失败：${t.message}",
+                                    context.getString(
+                                        R.string.toast_log_build_failed,
+                                        t.message.orEmpty()
+                                    ),
                                     android.widget.Toast.LENGTH_LONG
                                 ).show()
                             } finally {
@@ -876,26 +439,26 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
                 ) {
                     Icon(Icons.Filled.SaveAlt, null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("保存到手机")
+                    Text(stringResource(R.string.action_save_to_phone))
                 }
             }
         }
         Spacer(modifier = Modifier.height(8.dp))
 
         // Usage guide
-        SettingsSection(title = "使用指南") {
+        SettingsSection(title = stringResource(R.string.settings_section_guide)) {
             SettingsInfoItem(
                 icon = Icons.Outlined.Info,
-                title = "如何使用",
+                title = stringResource(R.string.guide_title),
                 subtitle = buildString {
                     // Describes the CURRENT flow: groups are filled from the
                     // folder picker, a group's 应用位置 decides which screen it
                     // feeds, and tapping a picture (not the ⋮ menu) is what sets
                     // it - the system dialog then asks for 主屏幕 / 两者.
-                    appendLine("1. 首页「新建分组」，进分组点「添加壁纸」（可多选，或整文件夹导入）。")
-                    appendLine("2. 在分组顶部设置「应用位置」：桌面 / 锁屏 / 两者。")
-                    appendLine("3. 点任意一张图会打开系统动态壁纸界面，按提示选「主屏幕」或「主屏幕和锁定屏幕」才会生效（取消则不变）。")
-                    appendLine("4. 需要自动换：设置 →「切换方式」开定时 / 双击 / 解锁 / 悬浮按钮；只换锁屏在「锁屏切换（独立于桌面）」里单独开启。")
+                    appendLine(stringResource(R.string.guide_step_1))
+                    appendLine(stringResource(R.string.guide_step_2))
+                    appendLine(stringResource(R.string.guide_step_3))
+                    appendLine(stringResource(R.string.guide_step_4))
                 }
             )
 
@@ -903,18 +466,18 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
             SettingsInfoItem(
                 icon = Icons.Outlined.Battery1Bar,
-                title = "电量消耗",
-                subtitle = "使用协程调度，电量消耗极低。"
+                title = stringResource(R.string.settings_section_power),
+                subtitle = stringResource(R.string.settings_power_hint)
             )
         }
         Spacer(modifier = Modifier.height(8.dp))
 
         // About
-        SettingsSection(title = "关于") {
+        SettingsSection(title = stringResource(R.string.settings_section_about)) {
             SettingsInfoItem(
                 icon = Icons.Outlined.Info,
-                title = "壁纸切换 v1.1",
-                subtitle = "轻量级壁纸自动切换工具，支持分组管理和多种切换模式。"
+                title = stringResource(R.string.about_version),
+                subtitle = stringResource(R.string.about_desc)
             )
         }
         Spacer(modifier = Modifier.height(80.dp))
@@ -945,12 +508,31 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
             )
         }
 
+        if (showLanguageDialog) {
+            LanguagePickerDialog(
+                currentTag = localeTag,
+                onDismiss = { showLanguageDialog = false },
+                onSelect = { tag ->
+                    // Synchronous mirror FIRST: the Activity is recreated below,
+                    // and its attachBaseContext must already see the new tag (the
+                    // database write is asynchronous).
+                    AppLocale.store(languageContext, tag)
+                    viewModel.setLocale(tag)
+                    showLanguageDialog = false
+                    // The locale is applied in attachBaseContext, so the Activity
+                    // has to be recreated for it to take effect (the standard
+                    // Android behaviour for an in-app language switch).
+                    (languageContext as? android.app.Activity)?.recreate()
+                }
+            )
+        }
+
         if (showButtonColorDialog) {
             // Same picker as the theme colour, plus the translucency slider that
             // drives the button's rest opacity (the 透明度 slider above shows the
             // same setting, so either control keeps the other in sync).
             ColorGridPickerDialog(
-                title = "按钮颜色",
+                title = stringResource(R.string.settings_button_color),
                 currentHex = floatingButtonColor,
                 withAlpha = true,
                 alphaPercent = floatingButtonAlpha,
@@ -979,21 +561,60 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
 
 
 
+/** 设置主界面里"点一下进子页"的一行：图标 + 标题 + 副标题 + 箭头。 */
 @Composable
-private fun AutoScanIntervalDialog(
+private fun SettingsPageEntry(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(24.dp),
+        )
+        Spacer(modifier = Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Icon(
+            Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+fun AutoScanIntervalDialog(
     currentMs: Long,
     onDismiss: () -> Unit,
     onSelect: (Long) -> Unit
 ) {
     val options = listOf(
-        1L * 60 * 60 * 1000 to "1 小时",
-        6L * 60 * 60 * 1000 to "6 小时",
-        12L * 60 * 60 * 1000 to "12 小时",
-        24L * 60 * 60 * 1000 to "24 小时"
+        1L * 60 * 60 * 1000 to stringResource(R.string.duration_1h),
+        6L * 60 * 60 * 1000 to stringResource(R.string.duration_6h),
+        12L * 60 * 60 * 1000 to stringResource(R.string.duration_12h),
+        24L * 60 * 60 * 1000 to stringResource(R.string.duration_24h)
     )
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("自动扫描间隔") },
+        title = { Text(stringResource(R.string.settings_auto_scan_interval)) },
         text = {
             Column {
                 options.forEach { (ms, label) ->
@@ -1007,19 +628,19 @@ private fun AutoScanIntervalDialog(
                     }
                 }
                 Text(
-                    "系统周期任务最短约 15 分钟，实际执行时间由系统调度",
+                    stringResource(R.string.settings_auto_scan_interval_hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                 )
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } }
     )
 }
 
 @Composable
-private fun SettingsSection(
+fun SettingsSection(
     title: String,
     content: @Composable ColumnScope.() -> Unit
 ) {
@@ -1060,7 +681,7 @@ private fun SettingsSection(
 }
 
 @Composable
-private fun SettingsSwitchItem(
+fun SettingsSwitchItem(
     icon: ImageVector,
     title: String,
     subtitle: String,
@@ -1098,7 +719,7 @@ private fun SettingsSwitchItem(
 }
 
 @Composable
-private fun SettingsInfoItem(
+fun SettingsInfoItem(
     icon: ImageVector,
     title: String,
     subtitle: String
@@ -1136,24 +757,24 @@ fun IntervalPickerDialog(
     onSelect: (Long) -> Unit
 ) {
     val options = listOf(
-        10_000L to "10 秒",
-        30_000L to "30 秒",
-        60_000L to "1 分钟",
-        300_000L to "5 分钟",
-        900_000L to "15 分钟",
-        1800_000L to "30 分钟",
-        3600_000L to "1 小时",
-        7200_000L to "2 小时",
-        21600_000L to "6 小时",
-        43200_000L to "12 小时",
-        86400_000L to "24 小时"
+        10_000L to stringResource(R.string.duration_10s),
+        30_000L to stringResource(R.string.duration_30s),
+        60_000L to stringResource(R.string.duration_1m),
+        300_000L to stringResource(R.string.duration_5m),
+        900_000L to stringResource(R.string.duration_15m),
+        1800_000L to stringResource(R.string.duration_30m),
+        3600_000L to stringResource(R.string.duration_1h),
+        7200_000L to stringResource(R.string.duration_2h),
+        21600_000L to stringResource(R.string.duration_6h),
+        43200_000L to stringResource(R.string.duration_12h),
+        86400_000L to stringResource(R.string.duration_24h)
     )
     var customValue by remember { mutableStateOf("") }
     val scrollState = rememberScrollState()
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("切换间隔") },
+        title = { Text(stringResource(R.string.settings_switch_interval)) },
         text = {
             Column(modifier = Modifier.verticalScroll(scrollState)) {
                 options.forEach { (ms, label) ->
@@ -1169,7 +790,7 @@ fun IntervalPickerDialog(
                 Divider(modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
                 // Custom input
                 Text(
-                    "自定义时间",
+                    stringResource(R.string.interval_custom),
                     style = MaterialTheme.typography.labelLarge,
                     color = LocalAccentColor.current,
                     modifier = Modifier.padding(start = 12.dp, top = 8.dp)
@@ -1180,9 +801,11 @@ fun IntervalPickerDialog(
                 ) {
                     OutlinedTextField(
                         value = customValue,
+                        // ASCII digits only: isDigit() also accepts non-ASCII digits
+                        // (e.g. Arabic-Indic), which toLongOrNull() then rejects.
                         onValueChange = { customValue = it.filter { c -> c in '0'..'9' } },
-                        label = { Text("秒数") },
-                        placeholder = { Text("例如: 45") },
+                        label = { Text(stringResource(R.string.interval_seconds_label)) },
+                        placeholder = { Text(stringResource(R.string.interval_seconds_hint)) },
                         singleLine = true,
                         modifier = Modifier.weight(1f)
                     )
@@ -1196,19 +819,193 @@ fun IntervalPickerDialog(
                         },
                         enabled = (customValue.toLongOrNull() ?: 0L) >= 10
                     ) {
-                        Text("确定")
+                        Text(stringResource(R.string.action_ok))
                     }
                 }
                 Text(
-                    "最少 10 秒",
+                    stringResource(R.string.interval_min_10s),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 12.dp, bottom = 8.dp)
                 )
             }
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) } }
     )
+}
+
+/**
+ * Option chip used by [SettingsChoiceRow].
+ *
+ * The label is single-line: a chip that has to wrap its own text renders the
+ * second line outside the pill (which is the "有些文字显示不全" the user saw in
+ * Russian - "Перемешивание"). Chips are emitted as individual items of the
+ * row's FlowRow so an over-long option moves to the next line INSTEAD of being
+ * squeezed; that is what keeps every label on one line.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SettingsOptionChip(
+    selected: Boolean,
+    onClick: () -> Unit,
+    label: String
+) {
+    androidx.compose.material3.FilterChip(
+        selected = selected,
+        onClick = onClick,
+        label = { Text(label, maxLines = 1) },
+    )
+}
+
+/**
+ * One settings row: "icon + label" on the FIRST line, the option chips on the
+ * SECOND line, both starting at the row's left edge.
+ *
+ * This row went through two failed shapes before this one:
+ *  1. `Row { Icon; Spacer; Text(weight(1f)); Row(chips) }` - the label was
+ *     measured against "whatever is left after the chips", so long translations
+ *     squeezed it to 0dp and a 0-wide Text wraps to ONE CHARACTER PER LINE
+ *     (measured: the Russian 缩放模式 row sat 1825px below 切换模式, with the label
+ *     not rendered at all).
+ *  2. `FlowRow` with the label and chips sharing a line when they fit - nothing
+ *     was squeezed any more, but the chips floated right after each label, so
+ *     the option groups started at a different x per row (measured in Chinese:
+ *     486 / 535 / 340 for three rows on the same page) and in long languages the
+ *     chip labels still had to wrap inside their chips ("Перемешивание" became
+ *     2 lines tall inside a 1-line chip).
+ *
+ * Two lines give every row the whole content width for its options, so no chip
+ * label ever wraps or gets cut, the option groups all start at the same x, and
+ * every label is guaranteed to be readable in every language. The price is one
+ * extra line per row, which is what the user asked for.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun SettingsChoiceRow(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    labelStyle: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyLarge,
+    labelColor: androidx.compose.ui.graphics.Color = androidx.compose.ui.graphics.Color.Unspecified,
+    modifier: Modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+    choices: @Composable FlowRowScope.() -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth().then(modifier)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (icon == null) {
+                // Keep icon-less rows (the sub-row "旋转方向") on the same left
+                // edge as every icon row: 24dp icon + 16dp gap.
+                Spacer(modifier = Modifier.width(40.dp))
+            } else {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp)
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+            }
+            Text(
+                label,
+                style = labelStyle,
+                color = labelColor,
+                // Two lines max: plenty for every translation shipping today,
+                // and the label owns the whole line now, so it can never be
+                // squeezed into a vertical column again.
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        FlowRow(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            choices()
+        }
+    }
+}
+
+/**
+ * Display name of a locale tag, written in that language (endonym): someone who
+ * picked the wrong language by accident still recognises their own.
+ */
+@Composable
+fun localeDisplayName(tag: String): String = when (tag) {
+    SettingsKeys.LOCALE_SYSTEM -> stringResource(R.string.language_system)
+    "zh" -> "简体中文"
+    "zh-TW" -> "繁體中文"
+    "en" -> "English"
+    "ja" -> "日本語"
+    "ko" -> "한국어"
+    "es" -> "Español"
+    "ru" -> "Русский"
+    else -> tag
+}
+
+/**
+ * Language picker: 跟随系统 plus every locale that actually ships a translation
+ * ([SettingsKeys.TRANSLATED_LOCALES]). Selecting one writes the setting; the
+ * root ([com.wallpaperswitcher.ui.ProvideAppLocale]) re-resolves the whole UI, so
+ * the dialog closes already showing the new language.
+ */
+@Composable
+fun LanguagePickerDialog(
+    currentTag: String,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.language_picker_title)) },
+        text = {
+            Column {
+                Text(
+                    stringResource(R.string.language_note),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp)
+                )
+                LanguageOption(
+                    label = stringResource(R.string.language_system),
+                    selected = currentTag == SettingsKeys.LOCALE_SYSTEM
+                ) { onSelect(SettingsKeys.LOCALE_SYSTEM) }
+                SettingsKeys.TRANSLATED_LOCALES.forEach { tag ->
+                    LanguageOption(
+                        label = localeDisplayName(tag),
+                        selected = currentTag == tag
+                    ) { onSelect(tag) }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(android.R.string.cancel)) }
+        }
+    )
+}
+
+@Composable
+private fun LanguageOption(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+        if (selected) {
+            Icon(
+                Icons.Filled.Check,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+    }
 }
 
 @Composable
@@ -1222,7 +1019,7 @@ fun ThemeColorPickerDialog(
     // palette - Monet); the grid covers everything else. Nothing is applied until
     // 保存, so 取消 really cancels.
     ColorGridPickerDialog(
-        title = "主题颜色",
+        title = stringResource(R.string.settings_theme_color),
         currentHex = currentHex,
         systemOption = true,
         onConfirm = onSelect,
@@ -1237,17 +1034,18 @@ private fun shareLogFile(context: Context, file: File) {
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_STREAM, uri)
-            putExtra(Intent.EXTRA_SUBJECT, "壁纸切换运行日志")
-            putExtra(Intent.EXTRA_TEXT, "壁纸切换运行日志，请发送给开发者分析")
+            putExtra(Intent.EXTRA_SUBJECT, context.getString(R.string.log_share_subject))
+            putExtra(Intent.EXTRA_TEXT, context.getString(R.string.log_share_text))
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(
-            Intent.createChooser(intent, "分享日志").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            Intent.createChooser(intent, context.getString(R.string.log_share_chooser))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     } catch (t: Throwable) {
         android.widget.Toast.makeText(
             context,
-            "分享失败，日志文件：${file.absolutePath}",
+            context.getString(R.string.toast_log_share_failed, file.absolutePath),
             android.widget.Toast.LENGTH_LONG
         ).show()
     }

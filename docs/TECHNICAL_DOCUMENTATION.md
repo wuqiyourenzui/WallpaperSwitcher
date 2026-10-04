@@ -2380,7 +2380,7 @@ ON/OFF 常常属于**两个不同实例**（实测同一时刻出现 `ON(visibil
 
 **回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、143 单测 ✓。
 
-#### 4.9.56 未启用分组里的图片不能再被设为壁纸
+#### 4.9.40 未启用分组里的图片不能再被设为壁纸
 
 用户反馈：「当分组图片未启用时，里面的图片仍能设置为壁纸」。
 
@@ -2414,7 +2414,7 @@ ON/OFF 常常属于**两个不同实例**（实测同一时刻出现 `ON(visibil
 
 测试后已把该分组恢复为关闭；构建 + `:app:testDebugUnitTest`（130 条）全绿。
 
-#### 4.9.57 回到桌面 / 退出软件时视频要停一下（可见性恢复被去抖）
+#### 4.9.41 回到桌面 / 退出软件时视频要停一下（可见性恢复被去抖）
 
 用户反馈两件事，其实是同一个根因：
 
@@ -2450,7 +2450,7 @@ ON/OFF 常常属于**两个不同实例**（实测同一时刻出现 `ON(visibil
 按 07:03:55 那次的实测数字推算：新引擎 + 已初始化解码器的情况下，返回桌面到第一帧由约 290ms
 降到约 40ms（去抖残差 + 唤醒），"黑屏一会"与"卡一下"随之消失。
 
-#### 4.9.58 返回桌面时视频停顿 1 秒：app-foreground 标志挂在 onStop 上
+#### 4.9.42 返回桌面时视频停顿 1 秒：app-foreground 标志挂在 onStop 上
 
 用户反馈（承接 §4.9.41）：「设置视频为壁纸后，返回桌面要黑屏一会才开始播放」「进入壁纸软件后，
 再退出，视频会卡一下再播放」。
@@ -2487,7 +2487,7 @@ Video resumed           07:21:53.037
 同样存在这个窗口，只是更晚）。这是"少 1 秒静音/黑屏" 与"多 1 秒后台解码"之间的取舍，与
 `applyAppForeground` 里已记录的乐观恢复注释一致。
 
-#### 4.9.59 为什么"进出壁纸软件"比进出别的应用更容易看到视频卡顿
+#### 4.9.43 为什么"进出壁纸软件"比进出别的应用更容易看到视频卡顿
 
 用户问："壁纸软件进出视频就是比其他软件进出会卡顿"。同一台平板、同一段视频，用同一套
 `am start` / `KEYCODE_HOME` 流程对照测量（Redmi 平板 25102RKBEC）：
@@ -2519,7 +2519,7 @@ Video resumed           07:21:53.037
 ——否则音频会落后约 0.5s（音频线程在静音期间仍会写入并阻塞，恢复后从缓冲开头继续）。这需要动
 音频管线，风险高于收益，先记录方案待确认。
 
-#### 4.9.60 进入我们 App 时不再冻结画面（立即静音 + 延后暂停 + 音频重新对齐）
+#### 4.9.44 进入我们 App 时不再冻结画面（立即静音 + 延后暂停 + 音频重新对齐）
 
 承接 §4.9.43 的对照结论：进入我们 App 时暂停由 `app-foreground` **立即**触发（实测 +105ms），而
 系统"壁纸被覆盖"回调要 +0.6~1.3s——于是视频是在**开启动画仍在进行、壁纸仍然可见**的时候冻住的；
@@ -2549,6 +2549,92 @@ Video resumed           07:21:53.037
 | 退出 App · 画面恢复 | +44~130ms（与关闭动画抢资源） | **+251ms（关闭动画结束后）** |
 | 退出 App · 声音 | 随画面一起恢复（可能落后） | **`Audio unmuted, re-anchored at Nms` 接回当前画面** |
 | 每轮音频线程 | — | 1 次结束 + 1 次启动，无泄漏/无重复线程 |
+
+#### 4.9.62 切到其他应用时视频声音必须"立刻"停：合并延迟只对自己的悬浮窗生效
+
+**现象**：以前切到别的应用（微信/浏览器…）视频壁纸的声音立刻停，后来要等一下才停。
+
+**根因**：`refreshPowerSave()` 的注释写着"A pause is still applied immediately … 声音没立刻关"，
+但实现里对**只有 `visibility` 一个原因**的暂停做了 `VISIBILITY_PAUSE_COALESCE_MS = 600ms` 的合并延迟
+（本意是吸收悬浮按钮窗口 add/remove 引起的 ROM"壁纸被覆盖"抖动，实测抖动 ~250-400ms）。
+**切到其他应用时 reasons 恰好只有 `visibility`**（屏幕亮着、我们的 UI 不在前台、壁纸不可见），
+于是这条真实暂停也被推迟 600ms，声音自然"不能立刻停"。
+
+**修法**：只把"我们自己刚动过悬浮按钮窗口（1.5s 内）"的覆盖报告当作可合并的抖动，其余一律立即暂停：
+
+```kotlin
+val blipPossible = ScreenPowerPolicy.isVisibilityBlipOnly(reasons) &&
+    SystemClock.elapsedRealtime() - floatingWindowChangedAtMs <= BLIP_COALESCE_WINDOW_MS  // 1500ms
+if (blipPossible) { /* postDelayed(600ms) */ } else { applyPowerSave(hint) }
+```
+
+`floatingWindowChangedAtMs` 由 `noteFloatingWindowChange()` 在悬浮按钮 show/hide/remove 时刷新
+（`hideFloatingButtonNow`、`updateFloatingButton` 的显示/隐藏分支、以及去抖隐藏的 runnable）。
+悬浮按钮默认关闭，所以对绝大多数用户来说这条合并路径根本不会触发。
+
+**平板实测（25102RKBEC / Android 17，正在播放带 AAC 音轨的视频壁纸 → 打开微信）**：
+
+```
+19:07:21.4    am start com.tencent.mm
+19:07:21.929  Wallpaper covered: pausing decode/audio      ← 系统"被覆盖"回调
+19:07:21.932  Video audio paused (wallpaper not visible)   ← 3ms 后音频线程暂停
+19:07:21.936  Power save ON (visibility | preview=false)   ← 立即，不再 +600ms
+```
+
+剩下那 ~0.5s 是系统自己上报"壁纸被覆盖"的延迟（应用上层的回调没有更早的信号），不属于本应用可控范围；
+修复前是"系统延迟 + 我们的 600ms"。
+
+**同批次一起修的"进本应用"路径**（用户先反馈的另一半）：`muteAudioKeepingVideo()` 去掉了
+`isVideoPlaying` 判断并改为每次重新断言；引擎/渲染器重建时（安装 APK、MIUI 重建壁纸）若我们的 UI
+已在前台，创建处直接静音；`AudioSession` 增加 `policyMuted`，使音频线程自己的
+`ensurePlaying()/resume()/restart()`（每个播放循环、解码器换格式、首帧可见）无法把声音重新打开。
+平板实测：`onStart` → **2ms** 后 "Audio muted" → 64ms 后音频线程退出；应用在前台时连续切换媒体，
+日志只有 `Video audio paused (wallpaper not visible)`，**没有** `Video audio started`。
+
+#### 4.9.61 审查批次四：Android 14 部分授权 + 失败路径（全量代码审查的落地）
+
+对整个 `app/src/main`（约 2.2 万行 Kotlin）做了一次通读式审查，以下按修复顺序记录。
+共 8 项，全部在本机 `assembleRelease + testDebugUnitTest`（178 例）通过后逐条验证。
+
+1. **`READ_MEDIA_VISUAL_USER_SELECTED` 未声明（High）** —— 代码在 `MediaProbe` 里检查这个权限，
+   但 manifest 没声明它。Android 14 起用户在权限对话框选「选择部分照片」时，**未声明该权限的应用
+   会被系统降级为完全无媒体访问**，媒体库看起来是空的、切换静默失败，只在导出日志里留一行中文。
+   修：manifest 声明该权限；`GroupDetailScreen` 的请求列表在 API 34+ 一并请求它，并把准入条件改成
+   「任一读媒体权限已授予即放行」（与 `MediaProbe`、权限回调的 `any {}` 规则一致）。
+   **AOSP 14 实测**：① `pm grant … READ_MEDIA_VISUAL_USER_SELECTED` 成功（未声明时该命令会以
+   "has not requested permission" 失败）；② 权限对话框出现三项
+   `Select photos and videos / Allow all / Don't allow`；③ 选 1 张并允许后，应用照常打开
+   「选择文件夹」并 `scanFolders: found 1 folders`，首页也不再出现权限提示卡
+   （此时 `VISUAL_USER_SELECTED granted=true`，`READ_MEDIA_IMAGES/VIDEO granted=false`）。
+2. **资源守卫补两条（Medium，测试）** —— `LocaleResourcesTest` 原本只比对**键集合**；
+   占位符写错（`%1$d` 写成 `%1$s`）不会编译失败，只会在**特定语言 + 特定界面**上运行时抛异常。
+   新增：① 同一 key 的 `%n$X` 说明符集合跨 7 种语言必须一致；② 每个 `plurals` 必须有 `other`
+   （缺了会在渲染该数量时抛异常）。本轮手工核对 7 种语言全部一致，现在有了自动守卫。
+3. **`AppLog` 大小上限单位混用（Medium）** —— 计数用 `String.length`（UTF-16 单元），而阈值比较的是
+   `File.length()`（字节）：中文日志一行约 3 字节/字，2MB 上限实际约 6MB 才触发。修：新增纯函数
+   `AppLog.lineBytes()`（UTF-8 字节 + 换行）并单测（`"壁纸"` → 7 字节）。
+4. **SAF 文件夹扫描只认扩展名（Medium）** —— `queryDocumentFolder` 用 `isSupportedMedia(f.name)` 过滤、
+   `detectMediaType(f.name)` 分类；而 `MediaTypes` 自己的注释就写明「非小米设备的 SAF 返回无扩展名
+   display name」，这类文件被**静默跳过**（自动扫描 worker 复用同一函数，双路径受影响）。
+   修：改为 MIME 优先（`isScannableDocument(name, mime)` + `MediaTypes.fromMimeOrName`），扩展名只做
+   兜底；新增单测覆盖「无扩展名 + video/mp4」「无扩展名 + null」等 8 种组合。
+5. **首页权限提示卡（Medium）** —— 权限缺失此前只有日志，用户无从自查。新增与「引擎未运行」同款卡片：
+   仅在「缺权限 **且** 库里存在 `content://media/...` 媒体」时显示（纯 SAF 导入的库不需要该权限，
+   不打扰），带「去授权」按钮跳应用详情页，ON_RESUME 与 5 秒轮询都会刷新。
+   配套 DAO `getMediaStoreRowCount()`（Flow，进 `homeUiState`）。
+6. **导出日志的隐私提示（Low）** —— 报告含设备型号与文件夹名末两段（`LogText` 的刻意折衷），
+   导出前在「运行日志」区块加一行说明；7 种语言都有。
+7. **洗牌 id 列表缓存（Low，性能）** —— 洗牌每次切换都要把整个 id 列表拉进内存（18k 库 = 一次全表
+   id 扫描 + 18k 元素分配）。新增缓存，键 = `(失效版本号, MediaStore generation, 该槽位启用数)`：
+   版本号由 `poke()`、删组/删媒体、`dropGoneMedia` 递增；generation 兜住扫描导入；**启用数**兜住 worker
+   导入这种既不 poke 也不走删除路径的变化。两个调用方本来就已经查过该数量，所以键不额外查库。
+   新增测试用假 DAO 计数断言：未变时 0 次重读、generation 变、显式失效、计数变各触发 1 次重读。
+8. **三个失败路径（Low/Nit）** —— ① `WallpaperApplier.loadMediaBitmapWithTimeout`：超时与线程写回之间
+   存在窗口，调用方可能既没拿到结果、又没回收那张全屏位图（等 GC），并把这次 tick 记成 FAILED；
+   改成「双方各 `getAndSet` 一次」的握手，保证恰好一方持有并回收。② `FirstFrame.video`：先整帧解码再
+   缩放，4K/8K 会瞬时分配 ~33MB；API 27+ 改用 `getScaledFrameAtTime` 直接取屏幕上够用的大小（失败回退）。
+   ③ `FloatingSwitchButton` 里 4 处窗口 `updateViewLayout` 的静默 catch 补日志——「悬浮按钮不见了/卡住」
+   这类反馈此前没有任何线索。
 
 #### 4.9.50 主题色 / 悬浮按钮颜色：Material 风格网格选色器
 
@@ -2616,6 +2702,149 @@ onSurfaceVariant = primary,     // ✗✗ 这是全应用的"次要文字"颜色
 截图"✗；可读性由上述单测保证 ✓（比截图更硬），肉眼确认可以自己选一个淡黄色试一下 ✓。
 
 **回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、**162 单测全绿**（新增 11 条）✓、`lintDebug` 0 error ✓。
+
+## 五、服务与后台组件
+
+### 5.1 WallpaperSwitchService (定时切换服务)
+
+**类型**：前台服务 (Foreground Service)，`foregroundServiceType="specialUse"`，子类型 `wallpaper_auto_switch`。
+
+**通知**：渠道 `wallpaper_switch_service`（IMPORTANCE_LOW，无角标），通知 ID 1001，点击打开 MainActivity。
+
+**工作流程**（基于"调度锚点"而非"固定 delay"）：
+1. 以 `timer_last_switch_wall_ms` 为锚点，下一次切换到期时间 = 锚点 + `global_interval_ms`（下限 10 秒）
+2. 未到期：`delay(剩余时间)` 后重新复查（屏幕/开关/分组/锚点），因此锚点被改动时立即生效
+3. 到期：引擎运行时发 ACTION_SWITCH 广播；引擎未运行时 `WallpaperApplier.applyNext()` 静态切换（`staticApplyInProgress` 防并发 setBitmap）；切换后锚点前移到当前时间
+4. 每次 tick 复查 `service_enabled`，被关闭立即自停（防僵尸）
+5. 连续 3 次无启用分组 → 自动停止并同步开关状态
+6. 异常退避：10 秒 × 失败次数（上限 6 次）
+
+**熄屏暂停 + 从亮屏开始计时（低功耗）**：
+- 熄屏/锁屏：取消两个定时循环（无唤醒、无切换、无解码），**熄屏时长不计入间隔**；同时动态壁纸的视频/GIF 完全暂停（见 §4.5 / §4.6）。
+- 亮屏（`ACTION_SCREEN_ON`）：把桌面与锁屏两个锚点都前移到"现在"，再启动循环 —— 下一次切换是**完整一个间隔之后**。
+  熄屏期间本该到期的那一拍**直接作废**，不会在亮屏瞬间补切一刀（旧行为是保留锚点 + 立即补切）。
+- **表面就绪保护**：切换前等动态壁纸 EGL 表面就绪（`LiveWallpaperService.isRenderSurfaceReady()`，250ms 轮询；普通 tick 最多 5 秒，超时重试的 catch-up 最多 15 秒/3 次），避免渲染层丢弃却标记"已显示"导致壁纸空白。
+- **与"解锁切换"协调（仅 catch-up 时）**：真正迟到的 tick（服务被杀/被冻结后重启，`SwitchSchedule.isCatchUp == true`）且"解锁切换"开启时会先等 3 秒协调期，只有 `ScreenUnlockReceiver` 真的派发（`notifyUnlockSwitchDispatched()`）才让出这一拍；熄屏→亮屏不再产生 catch-up，所以不会和解锁切换重复。解锁切换本身也会把锚点重置为当前时间。
+- **重启续算**：进程被杀重启（自愈/开机/应用更新）后从持久化锚点续算；锚点超过 24 小时视为过期，重新开始计时。
+- **重新开启定时切换**、手动切换、手动设置壁纸都会把锚点重置为当前时间。
+- 纯调度数学集中在 `engine/SwitchSchedule.kt`（`resolveAnchor` / `waitMs` / `isCatchUp`），有单元测试 `SwitchScheduleTest`。
+
+**自愈与已知限制**：
+- `ensureRunning()`（App 回到前台时）+ 引擎侧 watchdog（壁纸可见时）+ `BootReceiver`（开机 / 应用更新 `MY_PACKAGE_REPLACED`）都会在"开关开启但服务已死"时重启服务。
+- **平台限制**：Android 12+ 禁止后台应用启动前台服务，所以静态壁纸模式下若 OEM 在锁屏期间强杀了服务，代码层面无法在解锁瞬间自动拉起（动态壁纸模式有系统绑定的 WallpaperService 常驻进程，不受此限制）。此时需要用户手动打开一次 App（会立刻按锚点补切），或在系统里给应用加省电白名单/自启动。
+
+### 5.2 BootReceiver (开机自启动)
+
+**监听**：`ACTION_BOOT_COMPLETED` / `ACTION_MY_PACKAGE_REPLACED`（manifest 注册）
+- `goAsync()` + `withTimeout(8000ms)` 保护
+- 读取 `service_enabled`，为 true 则 `startForegroundService`
+
+### 5.3 ScreenUnlockReceiver (解锁切换)
+
+**监听**：`ACTION_USER_PRESENT`（在 `WallpaperSwitcherApp.onCreate` 中动态注册 —— manifest 注册的隐式广播在 Android 8+ 不会投递；API 33+ 用 `RECEIVER_EXPORTED`）
+
+**逻辑**：
+1. `goAsync()` + `withTimeout(8000ms)` 保护
+2. 读取 `unlock_switch_enabled`，为 true 且引擎已运行（最多等待 1.2s 重试）则发送 ACTION_SWITCH 广播，并调用 `WallpaperSwitchService.notifyUnlockSwitchDispatched()` 通知定时器：这一拍由解锁切换处理，且锚点从当前时间重新计时
+3. 引擎未运行（静态模式）时跳过 —— 设置页开启时已有 Toast 提示（此时定时器会自行补切）
+
+### 5.4 LiveWallpaperService (动态壁纸服务)
+
+**类型**：Android `WallpaperService`（`BIND_WALLPAPER` 权限，manifest 注册）
+
+**引擎生命周期**：
+```
+onCreate → onCreateEngine → onSurfaceCreated → onSurfaceChanged
+    → onVisibilityChanged(true/false) ↔ onVisibilityChanged(true/false)
+    → onSurfaceDestroyed → onDestroy
+```
+
+**广播接收器**（引擎 onCreate 动态注册，onDestroy 注销）：
+- `ACTION_SWITCH`：RECEIVER_NOT_EXPORTED（仅本应用可触发切换），携带可选 `EXTRA_TARGET_ID`
+- `ACTION_SCREEN_OFF/ON`：熄屏/亮屏功率节省
+
+**触摸事件**：`setTouchEventsEnabled(true)` 在引擎 `onCreate` 开启一次；`onSurfaceCreated` 里通过 `reassertTouchEvents()` **异步 + 防重入**重设（部分启动器在表面重建时清除触摸标志）。不可在主线程同步重设：在 `onSurfaceCreated` 里同步调用 `setTouchEventsEnabled(true)` 会在部分设备（Android 16 平板/HyperOS）同步重入 `updateSurface()` → 再次触发 `onSurfaceCreated`，造成无限递归 → `StackOverflowError`（小米平板实测崩溃/黑屏根因）。双击检测是自定义 DOWN/UP 双向判定（部分启动器吞掉一个 DOWN 事件时从 UP 对识别），300ms 窗口 + 40dp 容差。
+
+**悬浮按钮**：`FloatingSwitchButton` 为 `TYPE_APPLICATION_OVERLAY` 窗口，需 `SYSTEM_ALERT_WINDOW` 权限；可拖拽（位置持久化）、颜色/透明度可配置、实时更新；仅在壁纸可见且无应用遮挡时显示；双击直接调用引擎 `requestSwitchFromOutside()`（免广播回环）。
+
+**状态保护**：
+- 切屏/旋转后 EGL 表面重建，渲染线程与 GL 资源存活
+- 可见性切换只降速不停止播放；恢复可见时按 `LAST_IMAGE_ID` 重绘
+- 洗牌状态在 onDestroy 时以 800ms 上限写回数据库（防主线程 ANR）
+- 全局运行标志 `engineRunning`/`activeEngine` 只由**真实**引擎认领：系统动态壁纸对话框会创建本服务的 **preview 引擎**（`isPreview=true`），旧实现让预览引擎也认领并在对话框关闭时清空这两个标志，于是真实引擎还活着、应用却以为没运行 —— 下一次定时切换就走静态路径，把用户刚设置的动态壁纸覆盖成静态图片（"设置后又要重新设置"）。现在 `onCreate` 里 `if (!isPreview)` 才认领。
+- 所有**桌面**静态写入前都会调用 `LiveWallpaperService.isHomeLiveWallpaper()`（基于 `WallpaperManager.getWallpaperInfo()`）：只要当前桌面就是本应用的动态壁纸，就拒绝静态写入、改为把切换交给引擎。引擎进程被 ROM 后台杀掉而壁纸仍是"动态"的这段时间，这条保护能避免动态壁纸被静态图片替换；锁屏（FLAG_LOCK）不受影响，仍按设计写静态图。
+- 失效媒体自动清理：加载失败时先用 `contentResolver.openInputStream()` 区分「文件已被删除/移动/权限被回收」与临时错误（提供方忙、解码超时）。前者 `dropMediaIfGone()` 直接删除该行并复位 `LAST_IMAGE_ID`，避免每次定时切换都重新读取一个已失效的 URI（平板日志里同一张丢失图片被重试 50+ 次）；后者只做本次会话内的 `failedMediaIds` 屏蔽，媒体行保留
+
+### 5.5 FolderAutoScanWorker (文件夹自动扫描)
+
+- `PeriodicWorkRequest`，间隔下限 15 分钟，约束 `BatteryNotLow`，唯一工作名 `folder_auto_scan`
+- 扫描所有 `isFromFolder=1` 的已导入文件夹（SAF content:// 走 DocumentFile，MediaStore 路径走 MediaStore 查询），按 URI 去重后插入新文件
+- 每个文件夹一个事务，100 行一批，原子提交
+
+---
+
+## 六、UI 界面
+
+### 6.1 导航结构
+
+```
+WallpaperSwitcherApp (Scaffold)
+├── TopAppBar (标题 + 返回按钮)
+├── NavigationBar (首页 / 设置)
+└── Content
+    ├── Screen.Home → HomeScreen
+    ├── Screen.GroupDetail → GroupDetailScreen
+    └── Screen.Settings → SettingsScreen
+```
+
+使用 sealed class `Screen` 管理导航状态（`rememberSaveable` + 自定义 Saver，跳系统动态壁纸选择器后仍返回原页面），不使用 Navigation 组件。
+
+### 6.2 HomeScreen (首页)
+
+- 服务总开关卡片（运行中/已停止 + 渐变背景 + "立即切换壁纸"按钮）
+- 引擎未运行时的醒目警告卡片（定时/双击/解锁切换无法生效）
+- 分组列表：名称 + 媒体数徽章 + 启用开关 + 类型图标
+- "新建分组"对话框
+- **分组多选**：标题右侧的清单图标（或长按任意分组卡片）进入多选模式，顶栏换成工具条
+  ——退出 / 全选（`allIds` 直接来自列表，不需额外查询）/ 已选 N/M / **批量启用** / **批量删除**。
+  选中卡片用主色边框 + 主色底高亮，右侧开关换成只读 `Checkbox`（点卡片本身切换选中，避免与开关抢点击）。
+  选择状态用 `SnapshotStateMap<Long, Boolean>` per-key 读取，勾选一项只重组那一张卡片。
+  批量删除带确认对话框（分组里的媒体记录会一起移除，手机里的文件不动）；
+  `WallpaperViewModel.deleteGroups()` / `setGroupsEnabled()` 分别复用单条删除的游标清理逻辑
+  （`clearCursorsOfDeletedMedia()`：HOME/锁屏/最近写入/手动选择五处 id 若已悬空则清零）与一次
+  `WallpaperSwitchService.poke()`（批量启用只唤醒一次定时循环，而不是每个分组一次）。
+
+### 6.3 GroupDetailScreen (分组详情)
+
+- 分组信息头部（名称、媒体数、删除按钮 + 确认对话框）
+- 操作栏："添加壁纸" / "批量操作" / "清理失效"（扫描无法打开的媒体并批量删除）
+- 媒体网格：`LazyVerticalGrid` 自适应列宽（104dp），**打开时全量加载**（不分页），**返回前台（ON_RESUME）自动刷新**（自动扫描新增的图片立即可见），Coil 200px 缩略图（视频用 VideoFrameDecoder）
+- 选择模式：per-key 快照选择（不整屏重算），全选/取消全选/删除所选（500 一批 DELETE 防 SQL 变量上限）
+- 右侧快速滚动条（Grid/List 通用，拖拽/点按跳转）
+- 添加对话框：单张 / 多张 / 扫描到的文件夹（可搜索、排序、多选、样本缩略图、**一键重新扫描**媒体库）/ 系统文件夹
+- 壁纸预览对话框（设为壁纸确认）
+- 「选择文件夹」对话框排版：搜索框 → **工具行**（`共 N 个文件夹 · 已选 M` + `全选` + `重新扫描`）→ **单行横向滚动的排序 chip**（媒体多优先/名称排序/时间排序）→ 分隔线 → 文件夹列表 → 取消/导入所选。`重新扫描` 属于动作而非排序条件，原先与排序 chip 混排既容易被误认成排序项、也会把那一行挤到换行并把列表压矮；排序 chip 现在放在 `horizontalScroll` 容器里，窄屏（手机上）也不会折成两行。列表项第二行在数量之后补上相对路径（`Pictures/wstest`），用于区分同名文件夹（例如同时存在 `Pictures/wstest` 与 `Movies/wstest`）。
+- 「选择文件夹」不用 Material3 `AlertDialog` 的标准按钮区：它会把内容与按钮之间撑开（文本区 24dp + 按钮区 8dp ≈ 32dp）并在按钮下方再留 48dp，列表短时看起来就是"列表和导入所选之间一大片空白"。现在改为自绘 Material 表面（`Dialog` + `Surface(shape = extraLarge, surface, tonalElevation = 6dp)`），操作行紧跟列表：列表→按钮 4dp、按钮→底边 12dp，实测（1440×3200 @600dpi，即 384×853dp，与平板一致）列表与按钮文字之间的可见空白约 26dp、对话框整体高度比 AlertDialog 版少约 46dp。
+  宽度用 `LocalConfiguration.screenWidthDp` 显式算出 `min(92% 屏宽, 560dp)`；**不要**用 `fillMaxWidth(...)` 与 `widthIn(...)` 组合（两者会产生互相矛盾的约束，对话框会变成没有内容的白板——"导入所选不见了"就是这个原因）。自定义 `Dialog` 用平台默认宽度时窗口是 `WRAP_CONTENT`，内部 `fillMaxWidth()` 会在无界约束下测量失败，同样要避免。
+  稳健性：外层 Column 限制 `heightIn(max = 92% 屏高)`，中间内容列与列表都用 `weight(1f, fill = false)`，内容放不下时先压缩列表，**操作行（取消/导入所选）永远不会被挤出可视区**（大字号/小屏同样成立）。自绘对话框下 `uiautomator dump` 有时抓不到其节点，验证时以截图/窗口尺寸为准。
+- 设为动态壁纸的提示：`setAsLiveWallpaper` 打开系统对话框前会发出 `hintMessage`，由 `HintOverlay` 显示成**非聚焦、不可触摸的悬浮提示条**（`TYPE_APPLICATION_OVERLAY`，默认 **5 秒**，系统对话框弹出时依然可见、且不遮挡操作）。普通 Toast 只有约 2 秒，且 Android 12+ 会丢弃后台 Toast，用户往往来不及看清"要点哪个按钮"；没有「显示在其他应用上层」权限时自动回退为按 3 秒间隔重复显示的 Toast，保证总时长同为 5 秒。
+  提示词按分组「应用位置」区分：**桌面**分组 →「请选择“主屏幕”（该分组只用于桌面）」；**两者**分组 →「请选择“主屏幕和锁定屏幕”」；**锁屏**分组 →「点击“设置壁纸”即可，锁屏会自动显示为该分组图片」（系统动态壁纸界面没有"锁屏"选项，确认后应用会按分组「应用位置」把图片补写到锁屏槽位，所以只需点确认）。引号内的选项名/按钮名在提示条（及回退 Toast）里自动**加粗强调**（`HintOverlay.emphasize()`，无需在文案里写标记）。
+  提示条会在**离开系统动态壁纸界面时立即消失**：应用回到前台（`ON_RESUME`）时 `HintOverlay.dismiss()`；真实壁纸引擎被创建（= 已点「设为壁纸」）时也会立即消失，不必等到 5 秒到期。
+
+### 6.4 SettingsScreen (设置)
+
+| 分组 | 设置项 | 类型 |
+|------|--------|------|
+| 壁纸设置 | 切换间隔 | 对话框（10 秒~24 小时 + 自定义秒数） |
+| 壁纸设置 | 切换模式 | FilterChip（随机/顺序/洗牌） |
+| 壁纸设置 | 缩放模式 | FilterChip（填充/适应/拉伸） |
+| 壁纸设置 | 清晰度增强 | FilterChip（自动/关闭/增强） |
+| 切换方式 | 定时切换 / 解锁切换 / 双击切换 / 悬浮双击按钮 / 切换过渡动画 | Switch |
+| 悬浮按钮外观 | 透明度滑块（5%~100%，200ms 防抖写库）+ 9 色板 | Slider + 色板 |
+| 文件夹自动扫描 | 开关 + 间隔（1/6/12/24 小时） | Switch + 对话框 |
+| 外观 | 主题颜色（16 色 + 跟随系统） | 色板对话框 |
+
+---
 
 #### 4.9.52 审查批次一：不再"把没成功的事当成成功"
 
@@ -2832,6 +3061,178 @@ WallpaperSwitcherApp (Scaffold)
 
 ---
 
+
+#### 4.9.56 未启用分组里的图片不能再被设为壁纸
+
+用户反馈：「当分组图片未启用时，里面的图片仍能设置为壁纸」。
+
+原因：两条用户入口都**没有校验分组状态**——
+
+- `WallpaperViewModel.setAsLiveWallpaper()`（点图片 → 系统动态壁纸界面）
+- `WallpaperViewModel.setImageAsWallpaper()`（三点菜单 →「设为壁纸」→ 预览确认）
+
+而引擎的目标切换曾经刻意"显式选择无视分组启用状态"（避免手动选中的图片被随机图替换），于是
+用户能把已关闭分组里的图片设成壁纸；但轮换、预取、锁屏/桌面定时和 `getFirstFromEnabledGroups`
+都只从**启用**分组里挑，下一次切换/重绘又把它换掉——等于设了个"注定被覆盖"的壁纸。
+
+修法：
+
+1. 两个入口在读取分组后立即判断 `group != null && !group.isEnabled` → 记录
+   `setAsLiveWallpaper ignored: group N is disabled` / `setImageAsWallpaper ignored: ...`
+   并提示「该分组未启用，请先打开分组开关」，**不移动 HOME 游标、不打开系统界面、不写任何状态**
+   （守卫放在最前面，因此也不会留下 pending preview pick）。
+2. 确认路径的兜底目标（预览会话已丢失 pending pick 时用 HOME 游标）新增
+   `homeCursorForConfirmedPick()`：只有游标仍指向**启用且支持桌面**的分组媒体才返回，否则返回 0，
+   确保"确认后推送"也不会复活已关闭分组的图片。
+3. 引擎目标切换处的注释更新为"用户入口已拦截 + 内部调用自带校验"，避免后人误以为这里仍需放行。
+
+**真机实测（Redmi 平板 25102RKBEC / 1200×2608，release 包）**：
+
+| 操作（分组已关闭） | 日志 | 结果 |
+|---|---|---|
+| 点图片 | `setAsLiveWallpaper ignored: group 37 is disabled` | 系统界面不打开，壁纸不变 |
+| 三点 →「设为壁纸」→ 确定 | `setImageAsWallpaper ignored: group 37 is disabled` | 无 `Wallpaper applied` / 无切换 |
+| 打开分组开关后再点图片 | `setAsLiveWallpaper: id=… target=…` | 系统界面正常打开；返回取消 → `pick cancelled` + 游标复原 |
+
+测试后已把该分组恢复为关闭；构建 + `:app:testDebugUnitTest`（130 条）全绿。
+
+#### 4.9.57 回到桌面 / 退出软件时视频要停一下（可见性恢复被去抖）
+
+用户反馈两件事，其实是同一个根因：
+
+- 「设置视频为壁纸后，返回桌面要黑屏一会才开始播放」
+- 「进入壁纸软件后，再退出，视频会卡一下再播放」
+
+真机日志（Redmi 平板 25102RKBEC）里每次回到桌面都固定多出约 250ms：
+
+```
+07:03:54.910 LiveWallpaperService: App UI hidden: re-evaluating wallpaper state
+07:03:55.162 VideoDecode: Video resumed (wallpaper visible again)   ← +252ms
+07:03:55.202 WallpaperRenderer: Video frame rendered                ← 第一帧
+```
+
+原因：`refreshPowerSave()` 对**所有**恢复都套了 `VISIBILITY_DEBOUNCE_MS = 250ms` 去抖，本意是吸收
+窗口/Activity 过渡期间成串的可见性回调（每次翻转在视频路径上都是一次解码器暂停+时钟重锚）。
+但"我们自己的 App 退到后台 / 亮屏"是**确定性**转换——壁纸就在前台且可交互，去抖只会让画面白停
+250ms；如果是刚被系统重建过的新引擎（还没有画过任何一帧），这 250ms 就是**纯黑屏**。
+
+修法（`LiveWallpaperService.refreshPowerSave`）：恢复时先判断
+`!appInForeground && powerSaveVisibleInput && isScreenInteractive()`（即"App 已退到后台、壁纸确实
+可见、屏幕已亮"）→ 立即 `applyPowerSave(hint)`；其余情况仍走 250ms 去抖。抖动保护没有丢：随后
+的 covered 报告由暂停路径处理，短暂 covered 仍会被 `VISIBILITY_PAUSE_COALESCE_MS` 合并
+（日志里 `Visibility blip coalesced: …` 仍然生效）。
+
+**实测（release 包，同一台平板）**：
+
+| | 修改前 | 修改后 |
+|---|---|---|
+| `App UI hidden` → `Power save OFF` | +252ms | **+1ms**（两轮复测：+1ms、0ms） |
+| 每轮进出 App 的暂停/恢复次数 | 1/1 | 1/1（无来回抖动，无 `blip` 误报） |
+
+按 07:03:55 那次的实测数字推算：新引擎 + 已初始化解码器的情况下，返回桌面到第一帧由约 290ms
+降到约 40ms（去抖残差 + 唤醒），"黑屏一会"与"卡一下"随之消失。
+
+#### 4.9.58 返回桌面时视频停顿 1 秒：app-foreground 标志挂在 onStop 上
+
+用户反馈（承接 §4.9.41）：「设置视频为壁纸后，返回桌面要黑屏一会才开始播放」「进入壁纸软件后，
+再退出，视频会卡一下再播放」。
+
+实测把 HOME 按键和日志时间对齐后，问题非常具体（Redmi 平板 25102RKBEC）：
+
+```
+HOME 按下                07:21:51.931
+App UI hidden           07:21:53.035   ← 1104ms 之后
+Video resumed           07:21:53.037
+```
+
+原因：引擎的"我们自己的 UI 在前台"标志由 `MainActivity.onStop()` 翻转，而 MIUI 要等**退出动画
+走完**才回调 onStop（实测 +1104ms）。这段时间里 launcher 已经在前面、壁纸已经可见，但解码仍被
+`app-foreground` 判为暂停，所以画面停住（新引擎还没画过一帧时就是黑屏）。壁纸自身的
+`onVisibilityChanged` 在这台 ROM 上要晚 1.5-2.5s（这正是当初引入该标志的原因），所以只能换触发点。
+
+修法：把 `setAppForeground(false)` 与 `WallpaperSwitchService.poke()` 从 `onStop()` 移到
+`MainActivity.onPause()`——onPause 与窗口切换同拍触发（实测 +84~127ms）；`onStop()` 只保留缩略图
+缓存回收（本来就有 60s 延迟）。引擎侧无需改动：§4.9.41 的"立即恢复"判断
+(`!appInForeground && 可见 && 屏幕亮`) 现在能在正确的时刻生效。
+
+**实测（release 包）**：
+
+| | 修改前 | 修改后 |
+|---|---|---|
+| HOME → `onPause` | —（挂在 onStop） | **+84ms / +127ms** |
+| HOME → 引擎恢复 | +1104ms | **+128ms** |
+| HOME → 首帧 | ~+1123ms | **+158ms** |
+| 两轮进出 App 的暂停/恢复次数 | 1/1 | 1/1（无抖动、无 blip 误报） |
+
+注意（既有策略的延伸）：引擎对"回到桌面"采用**乐观恢复**——先恢复，等系统可见性回调到达再纠正，
+所以"从我们 App 里打开别的应用"这种情况会比以前早约 1s 恢复解码/声音（原来是在 onStop 时恢复，
+同样存在这个窗口，只是更晚）。这是"少 1 秒静音/黑屏" 与"多 1 秒后台解码"之间的取舍，与
+`applyAppForeground` 里已记录的乐观恢复注释一致。
+
+#### 4.9.59 为什么"进出壁纸软件"比进出别的应用更容易看到视频卡顿
+
+用户问："壁纸软件进出视频就是比其他软件进出会卡顿"。同一台平板、同一段视频，用同一套
+`am start` / `KEYCODE_HOME` 流程对照测量（Redmi 平板 25102RKBEC）：
+
+| | 进入（视频暂停） | 退出（视频恢复） |
+|---|---|---|
+| 我们 App | **+105ms**（app-foreground 输入立即生效） | **+44~130ms**（onPause / 可见性回调） |
+| 系统设置 | +649ms 收到"被覆盖"，+1253ms 真正暂停 | +126ms（可见性回调） |
+
+差异来自两件**只有我们自己的 App 才会发生**的事：
+
+1. **进入我们 App 时，暂停比系统回调早约 1.1s**。引擎把"我们自己的 UI 在前台"
+   （`appInForeground`，由 `MainActivity.onStart/onPause` 维护）当作最快的暂停输入——这是为了
+   「打开应用时声音立刻关闭」。代价是：**MIUI 的开启动画还没结束、壁纸仍然可见的时候，视频就冻住了**。
+   别的应用不会有这个输入，暂停要等系统"壁纸被覆盖"回调（+0.6~1.3s），等它到达时壁纸早已被完全
+   遮住，所以用户看不到那一帧的停顿。
+2. **退出我们 App 时，引擎和动画在同一个进程里抢资源**。恢复由 onPause/可见性回调触发
+   （+44~130ms），而此刻**我们自己 Activity 的关闭动画还在跑**——解码器、GL 上传、音频轨道重建
+   都要和这个动画争 CPU/GPU，所以视频头几帧不均匀。别的应用退出时它的动画不牵扯我们的进程，
+   引擎恢复时 GPU 是空的。
+
+改动（退出侧）：新增 `APP_EXIT_RESUME_GRACE_MS = 250ms`——`appLeftAtMs` 记录 UI 离开的时刻，
+`refreshPowerSave()` 里的恢复（无论先到的是 app-left 还是可见性回调）都不早于该时刻 +250ms，
+让关闭动画先跑完。实测 HOME → 恢复由 +44ms 变为 **+350ms（= onPause + 252ms）**，动画期间不再有
+解码竞争；两轮复测仍是各一次暂停/恢复。
+
+进入侧**暂未改动**：要让画面在开启动画期间继续播放，必须把"立即静音"与"暂停解码"拆开
+（立即 `audioSession.pause()`，解码延后到被覆盖），并在恢复时把音频**重新对齐到视频当前位置**
+——否则音频会落后约 0.5s（音频线程在静音期间仍会写入并阻塞，恢复后从缓冲开头继续）。这需要动
+音频管线，风险高于收益，先记录方案待确认。
+
+#### 4.9.60 进入我们 App 时不再冻结画面（立即静音 + 延后暂停 + 音频重新对齐）
+
+承接 §4.9.43 的对照结论：进入我们 App 时暂停由 `app-foreground` **立即**触发（实测 +105ms），而
+系统"壁纸被覆盖"回调要 +0.6~1.3s——于是视频是在**开启动画仍在进行、壁纸仍然可见**的时候冻住的；
+别的应用没有这个输入，等回调到达时壁纸早已被遮住，所以看不到那一顿。用户选择方案 A：进我们 App
+时**画面继续播、声音立刻静音**。
+
+实现（三处）：
+
+1. **只静音、不停画面**：新增 `WallpaperRenderer.muteAudioKeepingVideo()`——立刻 `stopAudio()`
+   （音频线程停、`AudioTrack.pause()` 立即无声），但**不动** `powerSaveMode`，解码与渲染继续。
+   引擎侧 `applyAppForeground(true)` 改为此调用 + **延后** `refreshPowerSave()` 到
+   `APP_ENTRY_PAUSE_GRACE_MS = 600ms`（若系统"被覆盖"回调更早到达，则按回调立即暂停，符合实际遮挡）。
+2. **恢复时把音频重新对齐到画面**：新增 `unmuteAudioReanchored()`，用
+   `startAudio(uri, gen, lastVideoPositionUs)`（与"视频声音开关"同一条 re-anchor 路径）。静音期间
+   画面一直在走，若让音频从原处继续就会落后整个静音时长。
+3. **顺序修正（实测发现）**：解除静音必须发生在 `powerSaveMode = false` **之后**——写在前面时
+   `unmuteAudioReanchored()` 会因为 `powerSaveMode` 仍为 true 而提前返回，声音再也回不来；同时把
+   "状态没有变化但需要解除静音"（快速进出 App，从未真正暂停）也覆盖。`startVideo()`/`release()`
+   清掉该状态，避免跨视频泄漏。
+
+**实测（release 包，两轮复测一致）**：
+
+| 阶段 | 改前 | 改后 |
+|---|---|---|
+| 进入 App · 静音 | +105ms（同时冻结画面） | **+155ms 静音，画面继续播** |
+| 进入 App · 画面暂停 | +105ms（动画中，可见） | **+535ms（系统"被覆盖"回调后，不可见）** |
+| 退出 App · 画面恢复 | +44~130ms（与关闭动画抢资源） | **+251ms（关闭动画结束后）** |
+| 退出 App · 声音 | 随画面一起恢复（可能落后） | **`Audio unmuted, re-anchored at Nms` 接回当前画面** |
+| 每轮音频线程 | — | 1 次结束 + 1 次启动，无泄漏/无重复线程 |
+
+
 #### 6.4 悬浮按钮在"别的应用"里晚 0.6~0.8s 消失（决定：维持现状）
 
 现象（用户报告）：进我们自己的 App 时悬浮按钮瞬间消失，进别的应用却要过一会。
@@ -2867,7 +3268,9 @@ WallpaperSwitcherApp (Scaffold)
    dynamicLight/DarkColorScheme(context)` 的分支，但只有"主题颜色"为空时才会走到，界面上写着"跟随系统"
    ——用户看不出它其实是 Monet。现在：设置行在该分支生效时显示 **「跟随系统（Monet）」**，颜色对话框的
    第一项也标成 **「跟随系统 Monet」**（旧版本显示"跟随系统"，走内置配色）；自定义颜色仍然优先于 Monet。
-3. **更多配色**：选色器改为**色相 × 明度网格**（12 列 × 6 行 = 72 色，见 4.9.50），原来的 16 个命名色板（紫罗兰/翡翠绿/朝霞红…）已被取代 —— 取舍是**少数低饱和的柔和色不再可选**（网格固定 saturation = 1.0，只有明度轴），要补回低饱和色需要给网格加一条饱和度轴。
+3. **更多配色**：颜色选择器换成 `ColorGridPicker`——**12 个色相 × 6 档色调**（0.95 近白 → 0.20 近黑）
+   的网格（`engine/ColorPickerGrid.kt`，纯数学、有单测），另有「跟随系统 Monet」一行；网格本身
+   `verticalScroll`，小屏可滚动查看，并且只有点「保存」才生效（取消真的取消）。
 
 **真机验证（Redmi 平板 25102RKBEC）**：
 
@@ -2876,7 +3279,2800 @@ WallpaperSwitcherApp (Scaffold)
 | 主题模式 = 浅色 | 截图平均亮度 **179.7** |
 | 主题模式 = 深色 | **62.8** |
 | 主题模式 = 跟随系统 | 随系统深色 → 53.9（设置项回到默认，行为与改动前一致） |
-| 打开颜色对话框 | 网格 12×6 全部可见；设置行副标题显示「跟随系统（Monet）」 |
+| 打开颜色对话框 | 色相×色调网格 + 「跟随系统 Monet」可见、可滚动；设置行副标题显示「跟随系统（Monet）」 |
+
+#### 6.6 主题色只影响"强调色"，不再染指中性文字与图形
+
+用户报告：「软件界面有些文字和图形会随主题颜色变化，影响观感」。
+
+原因：`customLight/DarkColorScheme()` 除了强调角色之外，还把 **`onSurfaceVariant`** 与
+`surfaceVariant` 设成了主题色。本 App 大量次要文字、卡片副标题、设置项图标都是
+`tint = MaterialTheme.colorScheme.onSurfaceVariant`（全仓库上百处），所以一旦选自定义颜色，
+界面上一大片文字与图形跟着变色——这正是用户看到的现象。
+
+修法（`ui/theme/Theme.kt`）：
+
+- 新增 `accentScheme(base, dark, accent)`：**只覆盖强调角色**——`primary`/`onPrimary`、
+  `primaryContainer`/`onPrimaryContainer`、`secondaryContainer`/`onSecondaryContainer`、
+  `inversePrimary`、`surfaceTint`；其余角色（`onSurface`、**`onSurfaceVariant`**、`surface`、
+  `background`、`surfaceVariant`、`outline`、`error`…）**逐位沿用内置 `LightColorScheme` /
+  `DarkColorScheme`**。
+- 深浅两套由同一个 hex 向白/黑混合得到（迷你色调板）：深色模式把深色号提亮到约 M3 tone 80，
+  容器用 tone 90/30、其上的文字用 tone 10/90 —— 修掉了旧实现"深色容器上放原始深色 hex"几乎没有
+  对比度的问题（旧的 `readableAccent` 只能补救文字，救不了容器）。
+- `LocalAccentColor`（少数**故意**用强调色的文字，如批量选择栏的「已选 N/M」）改为提供
+  `readableAccent(选中色, 表面色)`，不再借用 `onSurfaceVariant`：可读性保住了，"哪些文字用强调色"
+  也变成显式选择，而不是顺带把全局次要文字染色。
+
+测试：重写 `CustomColorSchemeTest`（现共 162 条单测）——对 9 个极端色号（淡黄、纯白、浅灰、默认紫、
+默认蓝、纯黑、近黑、高饱和绿、品红）断言：
+
+1. `onSurfaceVariant` / `surfaceVariant` / `onSurface` / `surface` / `outline` / `error` 与内置方案
+   **逐位相等**（这就是"文字和图形不再随主题色变化"的回归测试）；
+2. 强调色自身的对比度：`onPrimary` vs `primary`（≥AA_LARGE）、`onPrimaryContainer` vs
+   `primaryContainer`、`onSecondaryContainer` vs `secondaryContainer`（≥AA_NORMAL，深浅两套都测）；
+3. `readableAccent()` 的结果在表面色上 ≥AA_NORMAL。
+
+真机验证（Redmi 25102RKBEC）：把主题色设成自定义色后，首页副标题（`onSurfaceVariant`）实测色度
+**chroma ≈ 9**（中性；默认 Monet 下为 8.3，两者一致），不再被主题色染色；测完已把主题色恢复为
+「跟随系统（Monet）」。
+
+#### 6.7 悬浮按钮"按钮颜色 → 自定义 → 保存"后对话框不关闭
+
+用户报告：「悬浮按钮选择自定义颜色保存后界面不退出」。
+
+原因：`ColorGridPickerDialog`（主题色与按钮颜色共用的色相×色调选择器）的「保存」只回调
+`onConfirm` / `onConfirmAlpha`，**自己从不关闭**，把关闭交给每个调用方：
+
+```kotlin
+// 主题色：调用方顺手关了 → 看起来正常
+ThemeColorPickerDialog(onSelect = { viewModel.setThemeColor(it); showColorDialog = false })
+// 按钮颜色：调用方只写设置、没关 → 对话框一直停在屏幕上
+ColorGridPickerDialog(onConfirm = { viewModel.setFloatingButtonColor(it) },
+                      onDismiss = { showButtonColorDialog = false })
+```
+
+修法：让「保存」= 应用 **且** 关闭——在 `ColorGridPicker.kt` 的 confirm 分支里，回调之后追加
+`onDismiss()`。已经在自己回调里关闭的调用方（主题色）不受影响（同一个标志位再置一次是空操作），
+以后新增调用方也不会再踩这个坑。取消仍然只走 `onDismiss`，不写任何设置。
+
+真机验证（Redmi 25102RKBEC）：悬浮按钮外观 → 按钮颜色 → **自定义** → 保存 → 对话框中只剩设置页本身
+（`按钮颜色` 行仍在、对话框标题与「保存/取消」都已消失）；保存写入的值与打开前一致（本次只点保存
+未改色，所以按钮颜色没有被改动）。
+
+#### 6.8 语言切换（多语言）——7 种语言，全界面已本地化
+
+目标：界面可切换语言，支持多国语言。
+
+**机制（已完成）**
+
+- 设置项 `app_locale`：`"system"`（跟随手机）或某个语言标签（如 `"en"`）。
+  `WallpaperViewModel.locale` 走和主题色/主题模式同一条 Room flow。
+- `ui/AppLocale.kt`：语言按 Android 的标准方式应用 —— 在
+  `MainActivity.attachBaseContext()` 里用选定 locale 包一层 Context，然后 `recreate()` 让新语言
+  生效（不需要 AppCompat，也不需要重建整个进程）。
+  **注意（踩过的坑）**：最初是用 `CompositionLocalProvider` 覆盖 `LocalContext`/`LocalConfiguration`
+  实现的（"即时切换、不重建"），结果**打开设置页必崩**：没有原始 Activity Context，
+  `rememberLauncherForActivityResult` 解析不到 `ActivityResultRegistryOwner`，
+  抛 `IllegalStateException: No ActivityResultRegistryOwner was provided via
+  LocalActivityResultRegistryOwner`（真机 dropbox 里 10 条崩溃记录，最早一条正好是那次安装之后）。
+  改成 `attachBaseContext` 后不再有副作用，而且对"非 Compose 环境"（通知文案、提示条等）同样有效。
+  设置值另外镜像一份到 SharedPreferences：`attachBaseContext` 早于 Room 可用，语言标签必须在
+  数据库打开之前就能读到；点击语言时先**同步写镜像**（`commit()`）再 `recreate()`，否则新
+  Activity 会读到旧值（实测过这个竞态）。
+- `"system"` 时优先跟随手机；“多语言系统设置”里如果给本 App 单独设过语言（Android 13+ 的
+  「应用语言」页），也会被采纳（`LocaleManager.getApplicationLocales()`，API 33+，
+  因为我们没用 AppCompatDelegate，否则这个值会被忽略）。
+- `res/xml/locales_config.xml` + manifest 的 `android:localeConfig`：让 Android 13+ 的
+  「应用语言」页列出我们支持的语言；App 内的选择器用同一份列表
+  （`SettingsKeys.TRANSLATED_LOCALES`），两处不会打架。
+- **选择器只列出真正带翻译的语言**（`values-<tag>/strings.xml` 存在）。列一个没有翻译的 tag 会
+  静默回落到默认（中文），用户会以为切换坏了。语言名用**该语言自己的写法**（`简体中文` / `English`），
+  选错语言的人也能认出来。
+
+**文案抽取（已完成）**
+
+原本 319 条界面文案硬编码在 Kotlin 里，资源文件只有 7 条。现在**整屏文案全部走资源**，
+7 个语言文件各 **268 条 string + 4 条 plurals = 272 个键，键集完全一致**：
+
+`values/`（简体中文，默认）、`values-zh-rTW/`、`values-en/`、`values-ja/`、`values-ko/`、
+`values-es/`、`values-ru/`。
+
+抽取覆盖：底部导航与顶栏、设置页整屏、**首页**（服务状态卡三种状态与提示、引擎未运行警告、
+「没有分组应用桌面」警告、分组列表标题与计数、多选工具栏、删除分组对话框、新建分组对话框、
+空态）、**分组详情**（分组信息头与「应用位置」chips、操作栏、批量选择工具栏、清理失效对话框、
+删除/重命名对话框、添加壁纸对话框、扫描到的文件夹对话框全部文案与三种排序、壁纸预览对话框、
+空态）、**颜色选择器**（透明度/保存/取消/跟随系统 Monet）、**Toast 与悬浮提示**（ViewModel 里
+22 处 emit 全部改为 `str(R.string.…)`）、**时长与相对时间**（`formatInterval`/`formatAgo`）。
+
+抽取过程中顺带修掉的"资源化后必然踩到"的坑：
+
+- 悬浮按钮颜色预设表 `List<Pair<String,String>>` → `List<Pair<String,Int>>`（`stringResource`
+  不能在顶层 val 里调用），分享日志的纯函数改用 `context.getString(...)`；
+- `ThemeMode` / `WallpaperTarget` 的标签改为 `@StringRes`（分组卡片的「两者」chip 与
+  「已设为桌面壁纸！」Toast 都从这里取）；
+- `formatInterval` / `formatAgo` 拆成「纯函数算数量与单位」+「Composable 查资源」两层：
+  原实现把中文字面量写在纯函数里（不可本地化），现在仍可单测边界；
+- **数量用 `<plurals>`**：写成 `<string>` 会在英语/西班牙语/俄语出现 `1 groups` / `1 группа`…
+  中文/日文/韩文只给 `other`，英语/西语给 `one`+`other`，俄语给 `one/few/many/other`。
+
+**新增守卫测试 `LocaleResourcesTest`（3 例）**：语言选择器只列出
+`SettingsKeys.TRANSLATED_LOCALES`，而 Android 对缺失的键会**静默回落中文**——看起来就是
+「切换坏了」。所以测试直接比对资源文件：默认文件无重复键、每个可切换语言与默认文件的键集
+完全相同（多一个少一个都失败）、没有"有翻译却没人能选"的文件夹。`app/src/test` 仍在
+168 → **171** 例，全绿。
+
+**模拟器验证（AOSP 14，2560×1600 平板）**
+
+```
+# 系统「应用语言」（模拟外部切语言）
+adb shell cmd locale set-app-locales com.wallpaperswitcher --locales {zh-TW,ja,ko,es,ru}
+→ 冷启动界面逐语言核对：首页（状态卡/分组列表/空态）、设置页整屏、分组详情、
+  添加壁纸对话框、文件夹选择器（含三种排序与「导入所选 (n)」）、批量工具栏、
+  颜色选择器（「透明度 10%」/「Отмена」/「Сохранить」）                          ✓
+
+# App 内选择器（选择器列出 跟随系统 + 7 种语言，名称用各自语言写法）
+→ English → 日本語 → Español → Русский 依次切换，界面即时变、语言行回显所选语言   ✓
+→ 再选「跟随系统」+ 清空系统应用语言 → 回到手机语言                                ✓
+
+# 回归：切语言后设置页可正常打开（ActivityResultRegistry 崩溃已不复现）、
+#       分组数据保留、服务开关与「立即切换」正常（日志 "Wallpaper applied (home)"）
+```
+
+实测：`1 group`（英文单数）、`3 файла · Оба`（俄语 few）等数量文案均正确。
+
+**已知取舍**：悬浮按钮默认文字仍是 `切`（`SettingsKeys.FLOATING_BUTTON_TEXT_DEFAULT`）。
+它是按钮的固定标识，且该值参与"用户是否清空过输入框"的判断，改成随语言变化会牵动
+引擎侧渲染与设置语义，故保持不变。
+
+#### 6.9 语言切换的两个后续修复（提示词语言 / 设置页排版）
+
+用户反馈三条：①系统壁纸界面的提示词没换语言；②「未启用分组」的提示没换语言；
+③换语言后设置页排版出问题。前两条同一根因，第三条是布局问题。
+
+**① ② 只在 Compose 之外读字符串的地方**（ViewModel 的 Toast / 浮动提示气泡、前台服务的通知）
+
+这些文案不在 composition 里，走的是 `getApplication().getString(...)`。语言只应用在
+`MainActivity.attachBaseContext`，**Application 的上下文永远跟随系统语言**，于是提示词一律
+回落默认（中文）。实测证据（真机运行日志）：
+
+```
+10-01 10:46:23 HintOverlay: Hint shown for 5000ms: “홈 화면 및 잠금 화면”을 선택하세요
+```
+
+界面已经是俄语，提示词还是上一次启动时的韩语。修复分三层：
+
+- `AppLocale.localized(context)`：给 ViewModel / 服务用的取词入口，按**当前**存储的 tag
+  （每次重新读，换语言立刻生效）返回一个包好 locale 的 Context，并按 tag 缓存，Toast 不会
+  每次新建 Context；
+- `WallpaperSwitcherApp.attachBaseContext()` 也包一层 locale，让进程启动阶段就正确的还有
+  通知渠道名/描述；
+- **`systemBase`**：`localized()` 在「跟随系统」时必须用**未包装**的 base 来解析。`attachBaseContext`
+  里的包装会跟随整个进程生命周期，直接用 Application 会卡在「启动时的语言」——上面那条日志
+  就是这么来的。所以 `attachBaseContext` 先把原始 base 交给 `AppLocale.rememberSystemBase()`
+  存起来，「跟随系统」时用它（它带系统的/系统的按应用语言）。
+
+前台服务通知同样改为 `AppLocale.localized(this)` 取词。
+
+**③ 设置页：标签被挤成 0 宽 → 每行一个字 → 近 900px 空行**
+
+`Row { Icon; Spacer; Text(weight(1f)); Row(chips) }` 里，标签量到的是"chip 之后剩下的宽度"。
+俄语/西语/英语的 chip 文字很长，chip 占满整行后标签宽度为 0，而 **0 宽的 Text 会按"一行一个
+字符"排版**：标签既看不见，行高还被撑到 12 行。真机测得（1200×2608，俄语）：
+
+| | 中文 | 俄语（修复前） |
+|---|---|---|
+| 「切换模式」行 | y=531 | y=804（标签不渲染） |
+| 「缩放模式」行 | y=750 | y=1825（与上一行相差 1025px） |
+
+像素统计也确认 973→1825 整条带没有任何墨迹（纯空白）。修复：抽出
+`SettingsChoiceRow()`，用 `FlowRow` 排「标签 + 选项」：放得下就是一行（标签左、chip 右，
+中文/韩文/日文观感与之前完全一致），放不下 chip 自动换到第二行，标签用
+`maxLines = 1 + Ellipsis` 保证永远不会变成竖排单字。应用位置：切换模式、缩放模式、
+清晰度增强、旋转方向、主题模式五行。
+
+实测（同一台平板，设置页首屏行距）：
+
+| 语言 | 切换模式行 | 缩放模式行 | 观感 |
+|---|---|---|---|
+| 简体中文 | 501 / chips 541 | 720 / chips 760 | 一行（与修复前一致） |
+| 한국어 | 501 / 541 | 720 / 760 | 一行 |
+| 日本語 | 501 / 541 | 720 / chips 850 | 显示模式换行，标签可见 |
+| English | 501 / chips 631 | 810 / chips 850 | 两行 |
+| Español | 501 / 631 | 810 / 940 | 两行 |
+| Русский | 501 / 631 | 810 / 940 | 两行 |
+
+**回归验证（真机 25102RKBEC + 模拟器）**
+
+- 提示词：俄语下点击分组图片 → 日志 `Hint shown for 5000ms: Выберите «Главный экран и
+  экран блокировки»` ✓（修复前是韩语）
+- 未启用分组的 Toast：同一句提示词，俄语弹窗窗口 **960×212**（两行），中文 **852×164**
+  （一行）—— 长度与换行都符合两种语言的文本 ✓
+- 7 种语言设置页逐屏 dump：标签全部可见、无异常空行；中文行距与修复前逐像素一致（无回归）✓
+- `assembleRelease` + 171 条单测通过；真机安装后进程启动、通知、分组数据（12 组）均正常 ✓
+
+#### 6.10 全语言排版审查（按钮被截断 / 计数被挤没）
+
+在 1200×2608 的平板（**400dp 宽**，和手机同量级）上，把 7 种语言的
+首页 / 设置页（6 屏）/ 分组详情 / 加壁纸弹窗 / 文件夹选择器 / 时长弹窗 / 颜色弹窗
+逐个 dump（uiautomator 的 text+bounds）并配合截图像素分析，找出三处同类问题：
+**一行里放多个控件时，把"会伸缩的那个"挤到 0 宽或截断**。
+
+| 位置 | 表现（真机实测） | 修复 |
+|---|---|---|
+| 分组详情操作栏（添加壁纸/批量操作/清理失效） | 俄语三个按钮文字节点宽度都=228（可用宽上限），墨迹在 314 处断开、322-352 是三颗省略号点 → 实际显示 `Добавить об…`；英语 `Add wallpap…` / `Clean brok…`；韩语 `배경 화면 추가` 同理 | 标签 `maxLines = 2`（**不截断**，只换行）。中文/日文仍是一行 60px 高；英/西/俄/韩 120px 两行 |
+| 分组详情 / 首页的批量选择工具栏 | 俄语 `Выбрано 303/303` 节点只有 **58px**（显示成"…"）；首页那条更严重——计数**整个消失**（权重被按钮吃掉） | 改用 `FlowRow`：每个控件保留自身宽度，按钮放不下就换第二行。中文仍是单行（`取消全选 / 已选 303/303 / 删除所选` 同一行，与之前一致）；俄语第二行放 `Удалить выбранное` |
+| 设置 → 运行日志两个按钮 | 俄语 `Очистить журнал` 在按钮内被压成 **134×240** 的单列（每行一个字），整行被撑到 288px 高 | 两个按钮改 `FlowRow`，各自占一行、标签不再换行（`Экспорт и отправка` / `Очистить журнал` 各 60px 高） |
+
+同时确认**没有问题**的地方：设置页 5 组"标签+chip"（6.9 已修）、分组详情头部的应用位置
+chip、加壁纸弹窗四个选项、文件夹选择器的搜索框/排序 chip/列表行、时长弹窗的 radio 列表、
+颜色选择器的文字与滑块、首页分组卡片的名称与计数（`9 файлов` / `303 файла` / `12395 файлов`
+俄语复数正确）。
+
+验证方式：7 种语言各 dump 首页 + 设置页 + 分组详情 + 批量工具栏，
+用「宽度 < 220 且高度 > 100」筛"竖排单字"型异常节点 —— **全部为 0 条**；
+关键行逐条比对节点宽度与可用宽度，确认不再出现 `w == 上限`（=被截断）的情况。
+中文/繁体/日文/韩文的行高与修复前逐项一致，没有为长语言牺牲紧凑排版。
+
+#### 6.11 设置页列对齐（"排版不整齐"）
+
+6.9 把设置行的"标签 + 选项"改成 FlowRow 后修掉了竖排单字，但顺手破坏了对齐：标签用了
+`weight(1f, fill = false)`，只占自己的固有宽度，于是 **chip 跟着标签长度左右漂**
+（实测中文：3 个字的「切换模式」chip 从 x=486 开始，5 个字的「清晰度增强」从 x=535 开始，
+「旋转方向」从 x=340 开始 —— 同一页三组选项三个起始位置）。真机逐行量出来的其余三处：
+
+| 问题 | 实测 | 修复 |
+|---|---|---|
+| chip 起始位置随标签长度变化 | 486 / 535 / 340 三种 | 标签改回 `weight(1f)`（填满剩余空间）→ 所有 chip 组右端对齐到同一条边（1056）。中文与改造前逐像素一致，俄语仍是"标签一行 + chip 第二行" |
+| 「旋转方向」标签比其他行左移 120px | x=96，其余行 x=216 | 无图标行补 40dp（24 图标 + 16 间距）占位，标签回到 x=216 |
+| 「扫描间隔」行没有「修改」，另两行有 | 该行右端空着 | 补上 `action_modify`，右侧动作列（跟随系统 / 修改 / 修改 / 82%）统一贴到 x=1104 |
+
+重构后实测（中文）：`切换模式 / 缩放模式 / 清晰度增强` 三行的 chip 都在 x=558 / 764 / 970，
+「旋转方向」两个 chip 在 680 / 928 且右端同为 1056 —— 四行选项对齐在两条竖直线上；
+标签全部在 x=216。俄语/西语：标签 x=216，chip 换行后统一从 x=144 起排；
+日语/韩语/中文：单行，chip 右端对齐。
+
+#### 6.12 设置行改成"标题一行、选项一行"
+
+6.10/6.11 之后仍有两个问题，用户反馈"有些文字显示不全，标题与选项应该换行显示"：
+
+1. **chip 里的文字被裁掉**：`切换模式` 那组三个 chip 原本是被调用方包在一个普通 `Row` 里交给
+   FlowRow 的，FlowRow 只看到一个整体，放不下时就压缩最后一个 chip 而不是让它换行 ——
+   Material3 的 chip 高度是固定的，标签在 chip 内换到第二行就画到胶囊外面（俄语实测
+   `Перемешивание` 文字节点 109px 高，同排另外两个 chip 是 49px）。中文/日/韩/英/西/俄里
+   只有俄语触发，但根因对所有语言成立。
+2. **标题和选项在同一行时两边都不宽裕**：长语言里标题被压、选项被压，观感也不整齐。
+
+改法（用户要求）：`SettingsChoiceRow` 变成两行 ——
+第一行 `图标 + 标题`（占满整行，`maxLines = 2` + 省略号兜底），第二行是选项 chip。
+同时把五个调用点里的 `Row { chips }` 去掉，chip 直接作为 FlowRow 的项，这样**选项放不下时是
+chip 之间换行，而不是 chip 内部换行**，标签永远是单行完整显示。
+
+窄屏（1200×2608 @480dpi = 400dp，模拟器改成与平板同参数）7 种语言实测：
+
+| | 标题 | 选项 |
+|---|---|---|
+| 中文/繁中 | `切换模式` x=216 h=70（单行） | 随机/顺序/洗牌 都在 y=577、h=61 ✓ |
+| 日本語 | `切り替えモード` h=70 | ランダム/順番/シャッフル 同一行 ✓ |
+| 한국어 | `전환 모드` h=70 | 무작위/순차/셔플 同一行 ✓ |
+| English | `Switch mode` h=57 | Random/Sequential/Shuffle 同一行 ✓ |
+| Español | `Modo de cambio` h=57 | Aleatorio/En orden/Barajar 同一行 ✓ |
+| Русский | `Режим смены` h=57 | Случайно/По порядку 一行，**Перемешивание 换到第二行**（h=49，单行完整）✓ |
+
+整页（7 屏 × 3 种语言）再扫一遍"高 > 75 且窄"的节点：只有顶栏标题和俄语
+`Интервал для экрана блокировки`（两行完整显示）——**没有任何被裁掉的文字**。
+
+代价是每组多一行（中文每行约 +100px），这是用户明确要求的取舍。
+
+#### 6.13 多选工具栏：「启用 / 删除」固定第二行
+
+首页分组多选（以及分组内的媒体多选）工具栏原来把所有控件塞在一行：退出 / 全选 / 已选 n/m /
+启用 / 删除。长语言下要么计数被压成"…"（俄语 58px），要么按钮文字被截断；即使用 FlowRow
+让它按需换行，位置也随语言变化。按要求改成固定两行：
+
+- 第一行：`✕` / 全选 / `已选 n/m`（计数 `weight(1f)` + 右对齐，这行只有三个控件，永远挤不到）
+- 第二行：动作按钮（首页是「启用 / 删除」，分组内是「删除所选」），右对齐；用 FlowRow 兜底，
+  万一某个语言的动作名太长就再往下换，而不是被裁
+
+400dp 窄屏实测（4 种语言，坐标均为真机 dump）：
+
+| 语言 | 第一行 | 第二行 |
+|---|---|---|
+| 简体中文 | 取消全选 x=264-435、已选 1/1 右对齐到 1152 | 启用 782-868、删除 1030-1116 |
+| 日本語 | すべて解除 264-472、1/1 選択中 到 1152 | 有効化 740-868、削除 1030-1116 |
+| Español | Deseleccionar todo 264-635、1/1 seleccionados 到 1152 | Activar 658-795、Eliminar 957-1116 |
+| Русский | Снять выбор 264-527、Выбрано 1/1 到 1152 | Включить 582-785、Удалить 947-1116 |
+
+计数全部完整显示（修复前俄语只有 58px、显示成"…"）。
+
+#### 4.9.61 七个新功能：分组独立节奏 / 一键暂停 / 下一张预览 / 磁贴与小组件 / 场景规则 / 过渡动画 / 配置备份
+
+本轮一次性补齐了用户列出的 7 项功能。总原则依旧是**默认路径逐字节不变**：每一项都先有一个
+"关闭 / 跟随全局"的状态，只有用户主动打开才走新代码，所以老安装升级后行为与升级前完全一致。
+
+**① 每个分组独立设置间隔 / 模式**
+
+- 数据层：`wallpaper_groups` 增 `intervalMs`（0 = 跟随全局）与 `switchMode`（"" = 跟随全局），
+  新增 `group_schedule(groupId, slot, lastSwitchAt, lastMediaId)` 记录每个分组在各屏幕的上次出图时间
+  与该分组自己的游标；`shuffle_shown` 主键扩为 `(slot, groupId, mediaId)`，让每个分组的洗牌牌堆
+  互不消耗。三者与 `MIGRATION_6_7` 同时落地（v7 尚未发布，改动直接折进同一个迁移）。
+- 调度：`engine/GroupPacing.kt` 是纯函数调度器——只要**存在**一个自己带间隔的分组，服务就切换成
+  "每个分组按各自 `lastSwitchAt + 间隔` 到期，谁先到期谁切"；没有这种分组时仍走原来的屏幕级
+  anchor + 间隔（`nextScreenTick` 里 `groups.none { it.intervalMs > 0 }` 的早退分支）。
+  媒体为空、或不在"时间规则"窗口内的分组不参与竞选（不会占着调度空转）。
+- 出图：定时器广播时带上 `EXTRA_GROUP_ID`，动态壁纸引擎用 `GroupPick`（`GroupPickDao` 的分组内查询）
+  只在该分组内取图，用分组自己的模式与游标；静态路径（锁屏 / 无引擎时的桌面）由
+  `WallpaperApplier.applyNextOutcome(..., groupId)` 走同一套 `GroupPick`。
+- 熄屏语义保持一致：亮屏时 `group_schedule.reanchorAll(now)` 把**已有记录**的分组重新计时
+  （从未出过图的分组保持"立即到期"，不会被推迟一整个间隔）。
+- UI：分组详情头部新增"间隔 / 模式 / 时段"三个 chip（`GroupRhythmSection`），每项都带"跟随全局"。
+
+**② 一键暂停（稍后切换）**
+
+- 新设置 `pause_until`（wall-clock ms，0 = 正常）。两个定时循环在取图之前检查：未到期就
+  `delay(min(剩余, 30s))` 后重新检查，**不消耗 tick**——所以在暂停期间到点的切换会在恢复瞬间补切一次，
+  即使这段时间应用被关掉。解锁切换（`ScreenUnlockReceiver`）同样被暂停拦住；手动按钮 / 悬浮按钮 /
+  磁贴的"切换"仍然可用（那是明确的手动动作）。
+- 入口：首页服务卡片上"暂停 / 立即继续"按钮（15 分钟 / 30 分钟 / 1 小时 / 2 小时 / 到明天 8 点）、
+  快速设置磁贴、桌面小组件（暂停按 24 小时，再点一次立即恢复）。暂停中卡片直接显示"已暂停到 HH:mm"。
+
+**③ 下一张预览**
+
+`engine/NextPreview.nextHome()` 用与真实切换**同一套判定**（跟随全局时用屏幕级模式与游标；存在独立分组时
+先问 `GroupPacing` 下一个该轮到谁）算出下一张媒体，但**只读**：不写游标、不写洗牌牌堆、不写壁纸。
+首页"预览下一张"弹出对话框，用 Coil（视频走 `VideoFrameDecoder`）显示缩略图，可直接"设为壁纸"。
+
+**④ 快速设置磁贴 + 桌面小组件**
+
+- `tile/SwitchWallpaperTileService`：单击 = 立即切换壁纸（与首页按钮同一入口）。
+- `tile/PauseWallpaperTileService`：单击 = 暂停一天 / 立即恢复，磁贴标题与激活态跟随 `pause_until` 实时刷新。
+- `widget/WallpaperWidgetProvider` + `widget_wallpaper.xml`：两个按钮（切换 / 暂停），走显式
+  `PendingIntent` 广播；provider 非导出，系统仍可投递 APPWIDGET_UPDATE。
+
+**⑤ 时间 / 场景规则**
+
+- 时间规则（分组级）：`activeFromMinute` / `activeToMinute`（分钟数，-1 = 全天，支持跨午夜，
+  见 `engine/GroupRules.windowContains`）。窗口内的分组才参与 `GroupPacing` 竞选；只有**所有**分组
+  都跟随全局间隔时，调度才沿用旧的屏幕级路径，因此老用户的行为不变。窗口打开的瞬间由
+  60 秒兜底轮询（`HOME_IDLE_RECHECK_MS`）或任意一次 poke 触发。
+- 场景规则（全局）：`scene_pause_on_power_save`（省电模式暂停）与 `scene_pause_on_low_battery`
+  （电量 ≤15% 暂停），与一键暂停共用"不消耗 tick、恢复即补切"的语义。
+
+**⑥ 过渡动画多样化**
+
+原来只有"黑场淡入"。现在 `switch_transition` 有四个取值：`fade`（默认，历史行为）/ `slide` / `zoom` / `none`，
+旧的 `switch_fade_enabled` 仍被尊重（`none` 会把它写回 false）。滑动与缩放由
+`WallpaperGeometry.applyTransition(quad, mode, progress)` 直接改四边形的 NDC 坐标（纯函数、可测），
+渲染线程按和淡入相同的 8×25ms 节奏重绘：图片从纹理重绘、视频重算 quad，因此图片 / GIF / 视频
+三种媒体拿到一致的动画；`progress = 1` 时与原来的 FIT/FILL/STRETCH 布局完全相同。
+手动切换（悬浮按钮 / 双击 / 立即切换）依旧跳过过渡，保持"点一下立刻换"的手感。
+
+**⑦ 配置导出 / 导入**
+
+`engine/ConfigBackup.kt` 把分组（名称 / 应用位置 / 启用状态 / 独立间隔 / 独立模式 / 时间窗口）与
+壁纸相关的全局设置写成一个 JSON 文件（SAF 保存，无需权限）。刻意**不**导出媒体文件与设备相关设置
+（主题、语言、悬浮按钮外观、日志开关、任何本机 URI）；导入时只接受白名单内的设置键，分组一律
+新建（媒体引用换台手机就失效，因此不做合并）。JSON 读写由本文件内的最小实现完成（不依赖
+`org.json`，因为它在单元测试里是桩），转义、损坏输入、版本过新、字段越界都由 `ConfigBackupTest` 覆盖。
+
+**新增测试**：`GroupPacingTest`（14）、`GroupRulesTest`（6）、`WallpaperGeometryTransitionTest`（6）、
+`ConfigBackupTest`（9），连同原有用例一起在 `testDebugUnitTest` 全绿（合计 213 条）。
+
+**AOSP 14 模拟器实测（release 包，2560×1600）**：
+
+- 首页新增的"暂停 / 预览下一张"按钮渲染正常；暂停对话框选 15 分钟后，卡片显示"已暂停到 02:26"，
+  服务日志 `Paused (899937ms left): home timer holding`，点"立即继续"后 `resumeNow`，
+  定时切换随即补切一次（`sendSwitch(timer)`）。
+- 分组详情头部三个 chip（`Interval / Switch mode / Time window`）正常；把某分组设为 30 秒独立间隔后，
+  日志出现 `Switch requested: timer target=null group=1`，并在 02:23:30 / 02:24:01 按 **31 秒**
+  的节奏切图，且只在这个分组内取图（`wstest1.png → wstest2.png`）。
+- `group_schedule` 表已按分组写入 `(groupId, slot, lastSwitchAt, lastMediaId)`，v6→v7 迁移在真机
+  数据库上成功执行；`pragma foreign_key_list(group_schedule)` 显示 `ON DELETE CASCADE`。
+- 过渡动画选"滑动"后，定时切换的日志为 `Transition requested: slide`（手动切换按设计仍然跳过过渡）。
+- 配置导出：SAF 保存到 Downloads，得到 695B 的 `wallpaper-switcher-config.json`（分组 + 全局设置，
+  含 `intervalMs: 300000`）；导入该文件日志为 `importConfig: 2 groups`，新分组带回了间隔设置。
+- 磁贴与小组件：`dumpsys package` 中两个 `TileService` 均带 `BIND_QUICK_SETTINGS_TILE` 权限注册，
+  `dumpsys appwidget` 中 `WallpaperWidgetProvider` 已被系统登记。
+
+---
+
+#### 4.9.62 分组批量「不启用」、自定义暂停时长、手动点击也走过渡动画
+
+三处按用户反馈的调整：
+
+**① 分组多选增加「不启用」**
+
+首页分组多选的第二行原本只有「启用 / 删除」，现在补上「不启用」（`onDisable` →
+`setGroupsEnabled(ids, false)`，与单个分组的开关走同一条写入路径，最后只 poke 一次服务）。
+视觉上「启用」是实心按钮（主操作）、「不启用」用 tonal 按钮（次要）、「删除」保持错误色，
+三者用 FlowRow 排列，长语言下会整体换行而不是被压扁。
+
+**② 一键暂停支持自定义时间**
+
+「稍后切换」对话框在 15 分钟 / 30 分钟 / 1 小时 / 2 小时 / 到明天早上 8 点之外，新增
+「自定义」输入（单位分钟，只收 ASCII 数字，`1…10080`，即最长 7 天——与 ViewModel 里
+`snooze()` 的钳制范围一致，确定按钮在越界时保持禁用）。做法与「切换间隔」对话框里的
+自定义秒数相同。
+
+**③ 手动点击也播放过渡动画**
+
+`maybeFade()` 原来对用户主动触发（悬浮按钮 / 双击 / 「立即切换壁纸」/ 确认选图）直接返回，
+只有自动切换才播放过渡。现在这条分支被删除（连同只被它使用的 `currentSwitchSource` 字段，
+避免留下死代码），手动触发与自动切换走同一套 `requestTransition(过渡动画设置)`
+（淡入淡出 / 滑动 / 缩放 / 无）。保留的唯一例外是**快速连击**：距上次切换不足
+`RAPID_SWITCH_FADE_SKIP_MS`（700ms）的后续切换仍然跳过过渡，这样连点悬浮按钮不会把动画叠起来。
+
+**平板实测（f617007e，release 包）**
+
+- 多选一张分组后工具栏为 `启用 / 不启用 / 删除`；点「不启用」后
+  `select isEnabled from wallpaper_groups` 由 1 变 0，再点「启用」恢复为 1（用户的原始状态已还原）。
+- 暂停对话框出现「自定义 / 分钟 / 可填 1–10080 分钟（最长 7 天）」；输入 5 并确定后日志
+  `snooze: 300000ms`，卡片显示「已暂停到 10:49」，点「立即继续」后 `resumeNow`。
+- 在桌面点悬浮按钮（浮窗位置取自 `floating_button.xml`：pos_x=1008, pos_y=2281），
+  日志为 `Switch to: 0062.jpg` 紧接 `Transition requested: zoom`——手动切换已进入过渡分支
+  （此前这里只会留下 "Manual switch, skipping fade"）。
+
+---
+
+#### 4.9.63 下一张预览与随机/洗牌一致 + 默认取消过渡动画
+
+**① 为什么预览和实际切换不一致（并且每次点都不一样）**
+
+RANDOM 用 `ORDER BY RANDOM()` / 随机 OFFSET，SHUFFLE 用 `Random.nextInt` 从"未出过的牌"里抽——
+**每次调用都重新掷骰子**。预览调一次、真正的切换再调一次，得到的就是两张不同的图；连点两次预览
+自然也不一样。这不是流程问题，而是"随机源"本身不可复现。
+
+**② 修法：把随机改成"由挑选状态决定"的伪随机（可复现）**
+
+`SwitchPicking.stableIndex(count, seed)` = `Random(seed).nextInt(count)`，种子由
+`pickSeed(cursor, deckSize, universeSize, seq)` 组合：
+
+- `cursor`：屏幕游标（`LAST_IMAGE_ID`）或分组自己的 `lastMediaId`；
+- `deckSize` / `universeSize`：洗牌牌堆大小与候选素材数；
+- `seq`：`SettingsKeys.PICK_SEQ`，**只有真正切换成功后才自增**的计数器
+  （引擎在媒体真的上屏后 `incrementLong`，静态路径在写壁纸成功的事务里自增）。
+
+于是：预览与紧随其后的切换读到**完全相同**的种子 → 同一张图；点两次预览 → 同一张图；
+切换成功后 `seq` 和游标都前进 → 下一次必然换一张。
+
+只把 `cursor` 当种子是不够的：那让"下一张"成为游标的固定函数，而 N 个点上的随机映射期望在
+约 `0.6·√N` 步后进入环——20 张的分组会很快在同样 2~3 张图之间打转。`seq` 单调递增把这条
+环彻底打断，`SwitchPickingTest.theAppliedSwitchCounterBreaksShortCycles` 就是守这条的。
+
+**③ 默认取消过渡动画**
+
+`SWITCH_TRANSITION_DEFAULT = none`：新安装（或清数据后）不再有任何过渡动画，设置里的
+淡入淡出 / 滑动 / 缩放 仍然保留，用户主动选了才会播放；已经有存储值的设备沿用用户自己的选择。
+同时删掉了没有任何调用方的 `WallpaperRenderer.requestFade()`（`requestTransition` 之后它就成了死代码）。
+
+**平板实测（f617007e，release 包，模式=随机）**
+
+| 操作 | 结果 |
+|---|---|
+| 连点两次「预览下一张」 | 两次都是 `0051.jpg`（修复前每次不同） |
+| 立即切换壁纸 | `Switch to: 0051.jpg id=121759` —— 与预览一致 |
+| 再预览一次 | `04_TinyAsa_Zenith_bunny_full_outfit_04.jpg`（已换新的一张） |
+| 立即切换壁纸 | `Switch to: 04_TinyAsa_Zenith_bunny_full_outfit_04.jpg id=58750` —— 一致 |
+
+模式切到「洗牌」后同样验证：两次预览都是 `孔雀海：kongque.org_10.jpg`，实际切换
+`Shuffle pick: deck=47/45965 -> Switch to: 孔雀海：kongque.org_10.jpg id=130250`，完全一致；
+验证完把模式改回用户原来的「随机」（`global_switch_mode=RANDOM`）。
+
+过渡动画：平板上的 `switch_transition=none` / `switch_fade_enabled=false` 保持不变，
+切换日志中不再出现 `Transition requested`（此前会出现 slide/zoom/fade）。
+
+---
+
+#### 4.9.64 过渡动画重写：帧时钟驱动 + 缓动曲线 + 不再从纯黑开始
+
+**问题**：三个动画都由固定 25ms 的 `postDelayed` 步进（8 步 / 200ms）驱动，且首帧是"全黑"
+（淡入 alpha=1、滑动从屏幕外、缩放到 0.85 留 15% 黑边）。步进没和 vsync 对齐，同一档 alpha
+有时占 1 帧有时占 2 帧 → 肉眼可见的抖动；首帧纯黑 → 像闪一下。
+
+**改法**
+
+1. **帧时钟驱动**：`WallpaperRenderer` 用 `Choreographer.FrameCallback` 采样动画，
+   每显示一帧算一次进度（60/90/120Hz 面板各自按自己的刷新率走），不再是 8 个离散档。
+   切换发生时先立刻画出起始帧（`applyTransitionProgress(easeOut(0))`），再交给帧回调推进；
+   动画被新的切换打断时用 `fadeGeneration` + `removeFrameCallback` 干净地替换掉。
+2. **缓动曲线**：`engine/TransitionCurve.kt`（纯函数、可测）给出 `DURATION_MS = 220`、
+   `easeOutCubic` 和 `fadeAlpha`。ease-out 让大部分位移发生在前段，短动画也"跟手"。
+3. **不再有全黑首帧**：
+   - 淡入淡出：黑场起始 alpha 由 1.0 改为 `FADE_START_ALPHA = 0.72`，媒体始终可见；
+   - 滑动：位移由 2.0 NDC（整整一屏，媒体完全在屏幕外）改为
+     `TRANSITION_SLIDE_TRAVEL_NDC = 0.36`（约 18% 宽度，只剩一条窄黑边）；
+   - 缩放：起始比例由 0.85 改为 `TRANSITION_ZOOM_START_SCALE = 0.93`。
+4. 每次过渡结束写一行诊断日志（**每次一条，不是每帧**）：
+   `Transition done: zoom frames=14 duration=220ms`——帧数与耗时之比就是实际采样率，
+   用户导出的日志里可以直接判断是否够顺。
+
+**平板实测（f617007e，120Hz 面板，release 包）**
+
+| 模式 | 日志 | 实际采样 |
+|---|---|---|
+| 缩放 | `Transition done: zoom frames=27 duration=220ms` | ≈123fps（贴近 120Hz） |
+| 缩放（60Hz 场景） | `Transition done: zoom frames=14 duration=220ms` | ≈64fps |
+| 淡入淡出 | `Transition done: fade frames=27 duration=220ms` | ≈123fps |
+
+手动切换（桌面悬浮按钮）与自动切换走同一条帧循环；验证完把过渡动画设置恢复为验证前的「无」。
+
+**测试**：新增 `TransitionCurveTest`（缓动端点/单调性/ease-out 特性/黑场起始值/进度钳制），
+并更新 `WallpaperGeometryTransitionTest`（滑动不再从屏幕外开始、缩放黑边 < 10%、进度钳制）。
+
+---
+
+#### 4.9.65 快速双击不再吞掉过渡动画
+
+**问题**：`maybeFade()` 里有一道"距上次切换不足 700ms 就跳过动画"的规则
+（`RAPID_SWITCH_FADE_SKIP_MS`）。它当初是为了让连点不卡，但用户连点/双击的间隔恰好就在这个
+窗口内，于是第二次之后的切换动画全部消失——"双击切换过快，过渡动画会消失"。
+
+**改法**
+
+- 删除这条规则及只为它服务的 `wasRapidSwitch()` 与常量；`maybeFade()` 不再区分"快/慢"，
+  只保留两条真正"没人看得见"的早退：壁纸不可见（power save）与 EGL 表面未就绪。
+- 视频首帧那条路径原本也用它决定要不要淡入（`fadePendingForFirstFrame = !wasRapidSwitch()`），
+  现在恒为"要"（除转屏重绘 / 省电恢复这两种本来就该抑制的情况）。
+- 连续的切换由渲染器处理：新切换会取消正在跑的帧回调并从起点重新播放
+  （`startTransition()` → `cancelTransition()`），因此每次切换都有完整的 220ms 动画。
+  相邻点击落在同一瞬间时仍由 `requestSwitch` 合并成一次切换（这是刻意保留的，避免堆积解码）。
+- `lastSwitchCompletedAt` 仍保留：预取（prefetch）那条"只在快速连点时预解码"的启发式还在用它。
+
+**平板实测（f617007e，release 包，临时选「缩放」并把某个分组设为 30 秒以制造连续切换）**
+
+```
+11:30:33.671 Switch to: SELF_T (14).jpg
+11:30:33.914 Transition done: zoom frames=28 duration=220ms
+11:30:34.214 Transition requested: zoom      <- 距离上一次结束仅 300ms
+11:30:34.471 Transition done: zoom frames=27 duration=220ms
+11:30:34.635 Switch to: 1 (6).jpg            <- group 24/27 连续到点
+11:30:35.678 Switch to: VID_....mp4 (VIDEO)  <- 与下面这次只隔 27ms
+11:30:35.705 Switch to: 0085.jpg
+11:30:35.795 Transition requested: zoom      <- 每一次切换都有动画
+11:30:35.884 Transition requested: zoom
+11:30:36.144 Transition done: zoom frames=27 duration=220ms
+11:30:37.199 Switch to: 1 (113).jpg
+11:30:37.597 Transition requested: zoom
+11:30:37.856 Transition done: zoom frames=28 duration=220ms
+```
+
+日志中不再出现 `Rapid switch, skipping fade`；验证完把该分组的间隔改回「跟随全局」
+（`select count(*) from wallpaper_groups where intervalMs > 0` = 0），过渡动画也改回用户原来的「无」。
+
+---
+
+#### 4.9.66 悬浮按钮"不跟手"：每次点击都执行 + 手动切换后总是预解码
+
+**从用户会话日志里量出来的两个原因**（11:36:35 那一段，用户连点悬浮按钮）：
+
+1. **没有预取时，点击后要等一次 ~250ms 的整屏解码**：
+
+   ```
+   35.497 Shuffle pick -> 35.497 Switch to: 孔雀海24.jpg
+   35.497 Loading image bitmap: content://media/…/169379
+   35.765 Bitmap loaded: 1955x2608            <- 268ms 的现解码
+   ```
+
+   而预取命中时同一段路只要十几毫秒：
+
+   ```
+   35.250 Floating button tap -> switch
+   35.267 Switch to: ac4c…d4fba534.jpg  (Using prefetched bitmap)   <- 17ms
+   ```
+
+   旧规则里预取只在"距上次切换 <3s"时才做（`PREFETCH_RAPID_GAP_MS`），所以**停顿一下再点
+   的第一下、第二下都要现解码**，只有第三下起才快——这正是"不跟手"。
+
+2. **连点时第 3 下起会被静默合并掉**：所有非定时请求共用一个 `pendingAutoSwitch` 布尔标志，
+   队列里已经有一个待执行的请求时，后续点击只打一行 `Switch coalesced into pending request`
+   就丢掉了（用户日志里 11:36:36.339 / 36.544 各丢了一次）。
+
+**改法**
+
+- `maybePrefetchNext()`：**用户手动切换（悬浮按钮 / 双击 / 立即切换）之后总是预解码下一张**，
+  不再看间隔；定时切换仍然完全不预取（保持"不额外访问照片视频"的既有优化），
+  解锁 / 恢复 / 修类型这些自动来源沿用原来的 3s 启发式。
+- `requestSwitch()`：手动点击走自己的小队列 `pendingUserSwitches`，**每次点击都排一次切换**
+  （含正在执行的那次最多 [MAX_PENDING_USER_SWITCHES]=3 个），超出才折叠，避免连点留下很长的尾巴；
+  队列计数在请求执行完（`consumeSwitches` 的 finally）释放，消费者异常退出时清零，不会把点击永久吞掉。
+  定时 / 解锁 / 恢复仍走原来的合并逻辑（它们不需要"每下都有反应"）。
+
+**效果**（同一份日志里的实测对照）：预取命中时"点击 → 换图"是 17~35ms；没有预取时是 ~270ms。
+改完之后第一次点击之后总会留下预取，因此后续每一次点击都走快路径。
+
+> 备注：平板的悬浮按钮不接受 adb 注入的点击（MIUI 限制），所以这条改动是靠
+> 用户自己那一段日志（点击 → 预取命中 17ms / 未命中 270ms）+ 代码路径确认的；
+> 若真机上第一下仍嫌慢，可以再加"亮屏/回桌面时预解码一张"（代价是每次亮屏多一次媒体读取）。
+
+---
+
+#### 4.9.67 分组间隔支持自定义时间
+
+分组详情里的「间隔」原来只有固定档位（跟随全局 / 30 秒 / 1 分钟 / 5·15·30 分钟 / 1·2·6·12·24 小时）。
+现在对话框底部多了「自定义时间」，和设置里的「切换间隔」同一套做法：
+
+- 只收 ASCII 数字（`isDigit()` 会放过阿拉伯-印度数字，`toLongOrNull()` 又不认，所以按字符过滤），
+  最多 7 位；
+- 单位秒，取值范围 **10 秒 – 7 天（604800 秒）**——下限与引擎的
+  `SwitchSchedule.MIN_INTERVAL_MS` 一致，超出范围时输入框标红且「确定」保持禁用；
+- 当前值不是预设档位时，输入框用它的秒数预填（打开对话框就能看到"当前是多少"）；
+- 确定后写 `wallpaper_groups.intervalMs`，调度器（`GroupPacing`）按该分组自己的节奏到期。
+
+文案 `group_interval_custom_hint` 已加到全部 7 个语言文件（`LocaleResourcesTest` 会校验键集合一致）。
+
+**平板实测（f617007e，release 包）**：在分组详情里输入 `45` → 确定 →
+日志 `setGroupInterval: group=37 interval=45000ms`，分组 chip 显示「间隔: 45秒」，
+数据库 `intervalMs=45000`；验证完改回「跟随全局」（`setGroupInterval: group=37 interval=0ms`，
+`select count(*) from wallpaper_groups where intervalMs > 0` 回到 0）。
+
+---
+
+#### 4.9.68 分组自定义间隔取消 7 天上限（并修掉"超过 24 小时就不生效"的老 bug）
+
+**① 上限取消**：上一版把自定义间隔限制在 10 秒 – 7 天。现在只保留引擎真正需要的下限：
+输入框只收数字（不再截断位数），只要 ≥ **10 秒**（`SwitchSchedule.MIN_INTERVAL_MS`）即可确定，
+提示语改为「最少 10 秒，不设上限」。超长数字（`toLongOrNull()` 溢出）会让「确定」保持禁用。
+
+**② 顺带修掉一个真 bug**：调度器里"锚点太旧就当作没切过"的窗口是固定的 24 小时
+（`SwitchSchedule.MAX_CATCH_UP_AGE_MS`）：
+
+```kotlin
+if (age < 0L || age > SwitchSchedule.MAX_CATCH_UP_AGE_MS) return nowMs   // 旧代码
+```
+
+对 ≤ 24h 的间隔没问题，但**任何超过一天的间隔都会失效**：分组切过一次后，过了 24 小时锚点
+被判定为"陈旧"，于是重新以 now 计时——7 天的间隔实际会变成"每天切一次"，永远到不了它自己的
+到期时刻（前一条 `ancientAnchorMakesTheGroupDueNow` 的用例正是按旧语义写的）。屏幕级的
+`currentScheduleAnchor` 有同样的问题（全局间隔填 > 24h 时定时器会一直顺延，永远不切）。
+
+现在两者都按间隔放大窗口：
+
+```kotlin
+fun staleAfterMs(intervalMs: Long) = maxOf(
+    SwitchSchedule.MAX_CATCH_UP_AGE_MS,       // 至少 24h：设备关一天不会补切一堆
+    intervalMs.coerceAtMost(Long.MAX_VALUE / 2) * 2   // 至少两个完整间隔
+)
+```
+
+分组用 `GroupPacing.staleAfterMs`，屏幕级把间隔传进 `currentScheduleAnchor(dao, key, interval)`。
+
+**测试**：`GroupPacingTest` 新增 4 条（7 天/30 天间隔不会被"陈旧"判定打断、陈旧窗口随间隔放大
+且不会因 `Long.MAX_VALUE` 溢出成负数、超过两倍间隔才重置），`SwitchScheduleTest` 新增 1 条
+（自定义陈旧窗口保留 2 天前的锚点，默认窗口仍然重置）。合计 233 条全绿。
+
+**平板实测（f617007e，release 包）**：分组详情输入 `2592000`（30 天）→ 确定 →
+日志 `setGroupInterval: group=37 interval=2592000000ms`，chip 显示「间隔: 30天」，
+`group_schedule` 写入该分组的 `lastSwitchAt/lastMediaId`；此后 15 秒内（其余分组按全局间隔
+正常轮换）**没有再请求过 group=37**，说明 30 天的到期时间被正确保留、没有被当成陈旧锚点重置。
+验证完改回「跟随全局」（`interval=0ms`，`intervalMs>0` 的分组数为 0）。
+
+---
+
+#### 4.9.69 分组独立模式不生效 + 跟随全局的分组"各切各的"把频率放大
+
+**① 只设了模式、间隔还是「跟随全局」时，模式被忽略**
+
+服务与预览判断"要不要按分组调度"时只看了 `intervalMs > 0`：
+
+```kotlin
+if (groups.none { it.intervalMs > 0L }) { /* 走屏幕级取图 */ }   // 旧代码
+```
+
+而在屏幕级取图里，分组自己的 `switchMode` 从来不参与——它只被 `GroupPick`（分组内取图）读取。
+所以用户把某个分组设成「顺序」，只要间隔还是「跟随全局」，它就一直按**全局模式**（随机）切换：
+这就是"分组的切换模式顺序模式有问题"。
+
+改法：新增 `GroupRules.drivesOwnRhythm(group) = intervalMs > 0 || switchMode != ""`，
+服务和「下一张预览」都用它判断（两边必须一致，否则预览与实际切换又会不一致）。
+
+**② 顺带修掉频率被放大 N 倍的问题**
+
+一旦有分组"自成节奏"，原来的 `GroupPacing` 会给**每个**分组各算一个到期时间：跟随全局的那些
+分组的间隔都是全局间隔，于是每个分组每隔 interval 各切一次 → 12 个分组、10 秒间隔就会变成
+**每秒切一次**（平板日志里能看到两个分组在同一时刻各切一张）。
+
+新的 `engine/GroupSchedulePlan.kt` 把两种时钟分开：
+
+- 有自己间隔的分组：照旧按 `lastSwitchAt + 自己的间隔` 走；
+- 跟随全局（或只设了模式）的分组：**共用屏幕锚点**——到点只切其中一个，并推进屏幕锚点，
+  选谁按"上次出图最早"轮换。屏幕的节奏因此与原来的屏幕级路径一致：每个全局间隔只切一次。
+
+`usesScreenClock` 随 tick 传递：claim / restore 时该动屏幕锚点还是分组自己的行，由它决定；
+分组那一行仍然写入（用于轮换顺序和分组自己的取图游标）。屏幕级与分组级两条路径的
+`currentScheduleAnchor` 也都按间隔放大"陈旧窗口"（见 4.9.68）。
+
+**③ 文案**：分组自定义间隔的说明按要求只保留「最少 10 秒」（`interval_min_10s`），
+上一版新增的 `group_interval_custom_hint` 已从 7 个语言文件里删除。
+
+**平板实测（f617007e，release 包）**
+
+用户自建的两个测试分组：`1`（模式=顺序）、`3`（模式=随机），间隔都是「跟随全局」，全局间隔 10 秒。
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 切换节奏 | 12:17:30、12:17:40 每次 tick 里 group 37 与 40 **各切一张**（约 5 秒一张） | 12:20:55 → 12:21:05 → 12:21:15 → 12:21:25 → 12:21:35，**每 10 秒一张** |
+| 顺序模式 | group 1 的图片乱序（按全局随机） | group 37（=分组「1」）的 id 依次 141983 → 141984 → 141985 → 141986 |
+| 轮换 | 两个分组同时切 | group 37 / 40 交替（按"上次出图最早"轮换） |
+
+验证完把分组「3」的模式恢复成它原来的「随机」（分组「1」保持用户设置的「顺序」）。
+测试：`GroupRulesTest` 新增 2 条（只设模式也算自成节奏 / 普通分组仍走屏幕级），合计 235 条全绿。
+
+---
+
+#### 4.9.70 手动切换（悬浮按钮 / 双击 / 立即切换 / 解锁）也要遵守分组自己的模式
+
+上一版让"只设了模式"的分组进入分组调度，但**定时切换**才走那条路。手动路径
+（`switchNow` → 广播；解锁接收器 → 广播或静态写入）始终发的是"屏幕级"请求
+（`groupId = 0`），于是：
+
+- 取图走 `MediaPick`（屏幕级），用的是**全局模式**；
+- 分组自己的 顺序/洗牌 完全不参与 —— 用户看到的就是"分组选了顺序，全局是随机/洗牌时，
+  这个分组的图片还是随机/洗牌"。
+
+**改法**
+
+1. `GroupSchedulePlan.nextGroupId(db, slot, now)`：把"下一个该切哪个分组"的判断抽出来
+   （与定时循环、下一张预览同一份逻辑，0 = 屏幕级）。`nextHomeGroupId(context)` 是给
+   只有 Context 的调用方的入口。
+2. `WallpaperSwitchService.switchNow()` 改成先在 ioScope 里解析这个分组，再按
+   `dispatchManualSwitch(app, source, groupId)` 分发：动态壁纸走广播时带
+   `EXTRA_GROUP_ID`，静态模式走 `runStaticTick(..., groupId)`。手动切换不再重置/抢占分组
+   的定时节奏，只是显示"下一个到期分组的下一张"。
+3. 解锁切换同理：`ScreenUnlockReceiver` 先取 `nextHomeGroupId`，再
+   `requestSwitchFromOutside(SOURCE_UNLOCK, groupId)` 或
+   `applyStaticTickNow(..., groupId)`（两者都加了 `groupId` 参数，默认 0 保持兼容）。
+4. **预取跟着分组走**：`maybePrefetchNext(source, sincePreviousSwitchMs, groupId)` 现在按
+   该分组的模式与游标预解码它的下一张，缓存记录 `prefetchedGroupId`；消费时只有"同一个分组"
+   （或同为屏幕级）才使用，否则丢弃重解码。否则手动点击会拿到别的分组的预取图，
+   或者为了省一次解码而显示错的图。
+
+**平板实测（f617007e，release 包）**
+
+把全局模式临时改成**随机**，分组「1」(id 37, 模式=顺序) 与分组「3」(id 40, 模式=随机)：
+
+```
+12:37:19.475 Switch (manual): ... (group=40)
+12:37:19.481 Switch to: t2.png id=142294
+12:37:23.595 Switch (manual): ... (group=37)
+12:37:23.600 Switch to: mackg4-project-27-bonus_1080p.mp4 id=141983    <- 顺序：上一张是 141982
+12:37:27.712 Switch (manual): ... (group=40)
+12:37:27.718 Switch to: tn.png id=142293
+```
+
+分组「1」的 id 严格按组内顺序前进（141982 → 141983，中间 141979-141981 属于别的分组，
+数据库核对过），分组「3」在自己的组内随机；两者按"上次出图最早"轮换。
+验证完把全局模式恢复成用户原来的「顺序」，两个分组的模式保持用户设置（1=顺序、3=随机）。
+
+---
+
+#### 4.9.71 取消分组级「切换模式」（模式统一由全局设置决定）
+
+分组级的切换模式来回调整了几轮（只设模式不生效 → 手动点击又不遵守 → 频率被放大），
+用户最终要求取消它。现在：
+
+- **UI**：分组详情头部只剩「应用位置 / 间隔 / 时段」，`GroupModeDialog` 与
+  `onModeChange` 一路从 `GroupRhythmSection`、`GroupDetailScreen` 删除；
+- **逻辑**：`GroupRules.drivesOwnRhythm` 只看 `intervalMs > 0`（模式不再触发分组调度），
+  取图处一律使用全局模式 —— `LiveWallpaperService.executeSwitch`、
+  预取 `maybePrefetchNext`、`WallpaperApplier.applyNextOutcome`、`NextPreview.nextHome`
+  里的"分组模式优先"分支全部去掉；`WallpaperViewModel.setGroupSwitchMode` 与
+  `WallpaperGroupDao.updateSwitchMode` 随之成为死代码，一并删除；
+- **数据**：`switchMode` 列保留（删列要做整表重建，会通过外键级联删掉所有媒体行，
+  `Entities.kt` 早有这条注释），但新增 **MIGRATION_7_8** 把历史值清空
+  （`UPDATE wallpaper_groups SET switchMode = ''`），实体字段标注为 LEGACY / inert，
+  以后不会有旧值"复活"。
+
+**平板实测（f617007e，release 包）**
+
+- 分组详情头部：只剩 `应用位置 / 间隔: 跟随全局 / 时段: 全天`（切换模式 chip 已消失）；
+- 安装后数据库 `pragma user_version` = 8，两个测试分组的 `switchMode` 都被清空
+  （`37||0`、`40||0`）；
+- 悬浮按钮点击的日志回到屏幕级取图：`Switch requested: floating-tap target=null group=0`
+  → `Switch to: 097.jpg id=142296`，即完全按全局模式轮换，不再被分组模式分流。
+
+测试：`GroupRulesTest` 里"只设模式也算自成节奏"的用例改成反向断言（存了模式的旧分组
+也只能跟随全局），连同其余用例 **235 条全绿**。
+
+---
+
+#### 4.9.72 新功能：视频播完再切 / 按星期 / 跟随深色模式 / 收藏权重 / 分组筛选与顺序
+
+本轮按用户清单实现 1、2、3、5、6 五项（7 小组件增强、12 运行状态面板待续），
+数据库一次性升到 **v9**（`MIGRATION_8_9`），所有新列默认值与旧行为一致：
+
+| 新列 | 位置 | 默认 | 作用 |
+|---|---|---|---|
+| `activeDays` | groups | 0 | 星期掩码（bit0=周一…bit6=周日；0/0x7F=每天） |
+| `activeThemeMode` | groups | '' | 跟随深色模式：'' 不限 / 'LIGHT' / 'DARK' |
+| `filterMode` | groups | '' | 筛选：'' 全部 / 'IMAGE' / 'MOTION' / 'FAVORITE' |
+| `sortOrder` | groups | '' | 顺序：'' 加入顺序 / 'NEWEST' 新的在前 |
+| `isFavorite` | images | 0 | 收藏 ★ |
+| `recent_shown` | 新表 | — | "最近 N 张不重复"历史（slot, mediaId, shownAt） |
+
+**① 视频播完再切（设置里可开关）**：新增设置 [VIDEO_PLAY_TO_END]。渲染器在每次视频播完一遍时
+回调 `onVideoPassCompleted`；引擎收到**定时**切换请求时，若正在放视频且该开关打开，就把它挂起
+（`pendingVideoEndSwitch`），等这一遍播完再执行。手动点击 / 解锁不受影响（点了就换），
+转屏 / 省电恢复这类本来就不做过渡的情况也不受影响。
+
+**② 时间规则 · 星期 + ③ 跟随深色模式**：`GroupRules.isActiveAt(group, now, isDarkMode)` 现在串联
+三个过滤器——时段 → 星期（`dayAllowed`，周一为 bit0）→ 主题（`themeAllowed`）。
+时段对话框里加了七个星期 chip（全选=每天，存 0），分组头部新增「主题: 不限/仅浅色/仅深色」chip。
+服务和「下一张预览」都从 `ThemeState.isDark(context)` 读取手机当前模式，两者判断一致。
+
+**⑤ 收藏与权重 + 最近 N 张不重复**：媒体三点菜单可「加入收藏 / 取消收藏」，批量收藏留给
+`setFavorites()`。`SettingsKeys.FAVORITE_BOOST`（默认开）让 ★ 在随机/洗牌里权重 ×3
+（`SettingsKeys.FAVORITE_WEIGHT`），`RECENT_NO_REPEAT`（默认关，可选 5/10/20/50）让随机模式避开
+最近出现过的图片——两者都由 `PickOptions` 统一读取、`PickOptions.recordShown()` 在切换成功后写历史
+（关闭时不写任何数据）。加权抽取走 `MediaPick.weightedPick()` / `SwitchPicking.pickUnseen(..., favoriteIds, favoriteWeight)`，
+仍然是"确定性种子"，所以下一张预览与实际切换继续一致。
+
+**⑥ 分组筛选 / 顺序**：`GroupPickDao` 的所有查询都加了 `:filter`（'' / IMAGE / MOTION / FAVORITE）
+与两个新查询（`getNewestInGroup` / `getSequentialInGroupBefore`），顺序模式可按"新的在前"切换，
+与分组网格的显示顺序一致；带筛选或顺序的分组自动进入分组调度（`GroupRules.drivesOwnRhythm`），
+屏幕节奏仍由 4.9.69 的共享时钟控制。
+
+**验证**：`assembleRelease` + `testDebugUnitTest` 全绿（239 条，含星期/主题新用例）；
+平板上装了一版（v8→v9 迁移成功）后 USB 掉线，随后在 AOSP 14 模拟器复验：安装成功、
+启动无崩溃、`pragma user_version = 9`、`recent_shown` 表与上述新列都已创建。
+
+---
+
+#### 4.9.73 运行状态面板 + 小组件增强（4.9.72 的第 7、12 项）
+
+**运行状态面板**（设置 → 运行状态）：`WallpaperViewModel.statusSnapshot()` 一次性读取
+引擎是否运行（`LiveWallpaperService.engineRunning`）、当前壁纸（`LAST_IMAGE_ID` → 名称）、
+累计切换次数（`PICK_SEQ` 计数器）、距下次桌面切换（`TIMER_LAST_SWITCH_WALL_MS + GLOBAL_INTERVAL_MS`）、
+内存（`Debug.MemoryInfo.totalPss`），由刷新按钮重新采集。出问题时不必翻日志就能看出瓶颈。
+
+**小组件**：`widget_wallpaper.xml` 增加当前壁纸名称与一个倒计时 `Chronometer`
+（`setChronometerCountDown(true)`，基准 = 下次切换的墙上时间）——倒计时由小组件自己每秒刷新，
+不需要应用频繁更新小组件（RemoteViews 更新很贵且受系统限流）。`WallpaperWidgetProvider.fillStatus()`
+填充这两行，定时循环每完成一次切换后会 fire-and-forget 刷新一次小组件。
+
+**验证（AOSP 14 模拟器，release 包）**：安装启动无崩溃；设置页运行状态实测显示
+`Engine not running (static wallpaper)` / `Current wallpaper: wstest1.png` / `Switches this run: 525` /
+`Next desktop switch in: 34s` / `Memory (PSS): 76 MB`，刷新按钮工作正常。
+
+#### 4.9.74 分组「仅图片」按悬浮按钮仍切到视频（引擎直连触发的取图泄漏）
+
+**现象**：分组素材设为「仅图片」，定时切换出的都是图片，但按悬浮按钮仍会切到该分组里的视频。
+
+**根因**：定时切换的广播带 `EXTRA_GROUP_ID`，而悬浮按钮在引擎存活时走更快的直连路径
+（`FloatingSwitchButton.performSwitch` → `LiveWallpaperService.requestSwitchFromOutside(SOURCE_FLOATING)`），
+这条路径没有分组作用域（`groupId = 0`），取图于是退化为"屏幕级全量池"——该池只按启用分组过滤，
+完全不看分组自己的「仅图片 / 仅视频」设置，所以会挑到视频；桌面双击（`SOURCE_DOUBLE_TAP`）同理。
+平板日志对照：同一秒内 `switch requested: timer group=37 → IMAGE`，而
+`floating-tap group=0 → VIDEO`（16:02 的复现记录）。
+
+**修复**：
+- `consumeSwitches` 对用户手动触发（悬浮按钮 / 双击 / 立即切换）先用
+  `GroupSchedulePlan.nextGroupId` 解析出"下一个该切的分组"再交给 `executeSwitch`。解析放在
+  消费者协程里（不在点击主线程查库），预取也用同一个分组，保证"预取的下一张"与实际切换一致。
+- 分组内的失败换图（`failedMediaIds` 重试）补传 `scopedFilter`：否则重试会退回不带过滤的
+  `getRandomInGroup*`，同样可能拿到视频。
+- 「视频播完再切」挂起的那次定时切换记住所属分组，视频播完后继续在该分组内切，不再回到屏幕级池。
+- 分组内图片解码失败后的自动恢复切换携带 `scopedGroupId`，不会跳到被过滤掉的素材。
+- 预取缓存消费前用 `GroupRules.allowsMedia` 复核素材类型：切换设置后残留的旧缓存（例如设置
+  「仅图片」之前缓存的视频）会被丢弃并重新取图。
+- `GroupPickDao.countsForSlot` 把分组自己的 `filterMode` 计入计数：只剩视频的「仅图片」分组
+  不会再被调度器选中后空转一个周期。
+
+**验证**（平板 25102RKBEC，release 包）：分组 37 设为「仅图片」后连点悬浮按钮 4 次，日志为
+4 次 `User tap floating-tap: resolved group=37` + 4 次 `Switch to: ... (IMAGE)`，无一次 VIDEO；
+同一时段定时切换与预取也都停在 `group=37` 的图片集合内。单元测试 240 条全绿（新增
+`aMediaFilterAlsoDrivesPerGroupPicking`、`mediaFilterClassifiesImagesVideosAndGifs`）。
+
+#### 4.9.75 「视频播完再切」被第二个定时周期切断（挂起未拦截 + 热循环回调缺失）
+
+**现象**：开启「视频播完再切」后，视频仍在播放中被定时切换切走。平板日志（修复前）：
+`16:17:13 Timed switch held` → 10 秒后 `16:17:23 Switch to: <另一个视频>`，视频被中途截断。
+
+**两个叠加的根因**：
+
+1. `executeSwitch` 的挂起条件带了 `!pendingVideoEndSwitch`：只有**第一个**定时会被挂起，
+   第二个周期因为"已有挂起"反而放行，直接执行切换（把视频切断）。
+2. 更深一层：视频循环正常走的是"热复用"路径（`keepWarm`，codec + GL 不重建），
+   而该分支在到达 `if (eof)` 之前就 `continue` 了，`onVideoPassCompleted()` 只在冷重建路径
+   被调用 —— 也就是说循环播放的视频**从来不会**触发"播完"通知，挂起的切换永远不会执行。
+
+**修复**：
+- `SwitchPicking.videoEndHold(optionEnabled, videoPlaying, holdPending)` 把这条规则抽成纯函数：
+  选项开启且已有挂起时，后续每个定时都必须丢弃（`DROP_TICK`），直到片尾回调执行挂起的那次切换；
+  中途 `isVideoPlaying` 短暂变 false（解码器重建）也不放行。关闭选项则释放挂起并立即切换。
+- `WallpaperRenderer` 把 `onVideoPassCompleted` 的通知提升到 `keepWarm` 分支之前，
+  热复用与冷重建两条循环路径都只通知一次（按 `eof && passFramesPresented > 0` 判定）。
+
+**验证**（平板 25102RKBEC，release 包，10s 间隔，视频 2464×1386@60fps）：
+`16:27:17 Timed switch held` → 之后每 10s 一条 `Timed switch still held: waiting for the video to end`
+（共 30+ 次，期间没有任何 `Switch to:`）→ `16:33:25 Video pass finished: running the held timed switch
+(group=37)` → `Switch requested: video-end group=37` → `Switch to: 269-minutes-of-axenanim_1080p.mp4`。
+单元测试 244 条全绿（新增 4 条 `videoEndHold` 用例）。
+
+> 注意：该选项按字面语义等视频**整段**播完，分组里若有 1 小时 / 4.5 小时的素材，
+> 壁纸就会停留到片尾（播放帧率不足时墙钟时间还会更长）；需要"最长等待 N 分钟"上限可再加。
+
+#### 4.9.76 在线壁纸源：Bing 每日图 / 指定 URL / WebDAV 目录
+
+**功能**：设置 →「在线壁纸源」→ 添加来源（Bing 每日图 / 指定 URL / WebDAV 目录），
+选择拉取到哪个分组（默认自动创建「在线壁纸」分组）、更新间隔、保留数量、是否仅 Wi-Fi /
+仅充电更新。每个来源按自己的节奏下载新图片进分组，桌面/锁屏的轮换逻辑完全不变。
+
+**数据模型（v10 迁移，纯新增表）**：
+
+- `online_sources`：来源配置 + 最近一次结果（`lastResult` 是语言无关的结果码，
+  如 `ok:8:0` / `err:auth`，由 UI 本地化；这样切换语言不会让历史记录变成另一种语言）。
+- `online_items`：`(sourceId, remoteKey)` 主键，记录已下载的远端标识
+  （Bing=日期、URL=内容哈希、WebDAV=href）、内容哈希、对应的 `wallpaper_images.id` 和文件路径。
+  `MIGRATION_9_10` 只 `CREATE TABLE`，不动任何已有列，升级后分组/媒体/设置原样保留
+  （平板实测：45968 张媒体、12 个分组全部保留）。
+
+**下载与存储**：
+
+- 文件落在 `filesDir/online/<sourceId>/<sha256>.<ext>`（应用私有目录，不进系统相册）；
+- 单文件上限 40MB、单次最多 8 张新图，下载前按文件头解码校验（HTML 错误页不会被当成壁纸）；
+- 按内容哈希去重：同一张图以不同 URL/文件名再次出现时只记 `online_items` 占位行，
+  不重复插入媒体；用户从分组里删掉的图片会保留远端标识（不会被反复重新下载），文件会在
+  下一次同步时清掉；
+- `keepCount`（默认 30，0=不限）保留最新 N 张，超出的按 `fetchedAt` 从旧到新删除
+  媒体行 + 文件（模拟器实测 keepCount=1 时 2 张只留最新 1 张）；
+- URL 来源保存 ETag / Last-Modified，第二次同步若服务器返回 304 则零下载；
+
+**网络与隐私**：
+
+- 使用 OkHttp（Coil 已引入，显式固定 4.12.0）：Android 平台 `HttpURLConnection`
+  会拒绝 WebDAV 的 `PROPFIND` 方法（实测 `ProtocolException: Expected one of [...] but was PROPFIND`）；
+- 公网地址必须 HTTPS；只有 localhost / 10.x / 172.16-31.x / 192.168.x / 169.254.x / .local / .lan
+  这些私有地址允许 http（局域网 NAS 无法提供受信任证书）；
+- WebDAV 密码用 Android Keystore 里的 AES-256/GCM 加密后存库（`passwordCipher`），
+  明文不落库、不进配置导出、不写日志；Keystore 失效时返回空并在界面上提示重新填写；
+- 运行日志只记来源 id/类型、主机名和 HTTP 状态码，不记完整 URL（可能带 token）和凭据；
+  跨主机重定向时 OkHttp 会自动去掉 Authorization 头；
+- XML 解析禁用 DOCTYPE/外部实体（XXE），并且对 Android 不支持 XInclude/实体开关做了容错
+  （这正是最初 WebDAV 207 却解析为空的原因）。
+
+**耗电**：
+
+- 每个来源一个 `WorkManager` 周期任务（最短 15 分钟，UI 选项 15 分钟～7 天），
+  按来源设置施加 `NetworkType.UNMETERED/CONNECTED` + `requiresCharging` 约束；
+- `OnlineSync` 全局互斥，同一时刻只有一个下载；OkHttp 连接池设为 0 空闲连接，
+  同步结束后不保留 socket、不留下唤醒源；
+- 失败退避重试最多 3 次（网络/超时/5xx/429），账号错误等永久失败只记录结果，等下一个周期。
+
+**验证（AOSP 14 模拟器 + 平板 release 包）**：
+
+- 模拟器 v9→v10 迁移：3 个分组 / 9 张媒体保留；平板 v9→v10：12 个分组 / 45968 张媒体保留；
+- Bing：`BING www.bing.com -> 200` → `ok:8:0`，8 张 Bing_2026xxxx.jpg 落库、自动建组；
+- URL：本机临时 WebDAV/HTTP 服务 `ok:1:0`；WebDAV：`WEBDAV 10.0.2.2 -> 207` → `ok:2:0`；
+- 保留数量：keepCount=1 的 WebDAV 来源下载 2 张后只保留 1 张（媒体行 20→21，文件 2→1）；
+- 界面：来源列表显示类型、目标分组、上次更新时间、`Updated: 2 new` / 失败原因，
+  「立即更新 / 修改 / 删除」可用；单元测试 255 条全绿（新增 11 条 OnlineSourceRules 用例）。
+
+**已知限制**：
+
+- 只下载图片（jpg/png/webp/gif/bmp/heic/heif），不下载视频；WebDAV 目录里的视频会被跳过；
+- 配置导出/导入暂不包含在线来源（避免把凭据导出到文件）；删除来源会同时删除它下载的
+  图片和文件，界面有确认提示；
+- 自签名 HTTPS 证书会按证书校验失败处理（不会静默忽略），HTTP 局域网地址可正常工作。
+
+#### 4.9.77 在线壁纸源新增「美人图 (meirentu.club)」站点抓取
+
+**站点结构**（实测）：列表页（首页或 `/group/xxx.html`）每个专辑卡片链接到
+`/pic/<albumId>.html`；专辑页每页 3 张**高清原图**（实测 1866×2800，约 350–420KB/张），
+分页为 `/pic/<id>-2.html`、`-3.html`…（该专辑有 38 页）。列表页的封面只是 560×850
+缩略图，所以在线源抓的是专辑页原图。图片 CDN（p12/cdn20.mmdb.cc）**必须带
+`Referer: https://meirentu.club/`**，否则返回 403（已实测）。
+
+**实现**：
+
+- 新增来源类型 `TYPE_MEIRENTU`（美人图），`url` = 列表页地址（默认
+  `https://meirentu.club/`，也可以填某个 `/group/xxx.html` 分类页）；数据库无需迁移
+  （`type` 是字符串列）。
+- `OnlineSourceRules` 用纯函数解析：专辑链接（`/pic/<id>[-N].html`，按页面顺序去重）、
+  专辑页图片（只保留路径含 `/<albumId>/` 的 src/data-src，推荐位其他专辑的图会被排除）、
+  分页 URL、origin（Referer）。
+- 每本专辑抓取**前 2 页**（约 6 张），一次同步最多 8 张；按列表顺序跳过已处理的专辑，
+  某本专辑处理完写入 `album:<id>` 标记（存在 `online_items`，保留数量统计会排除它，
+  否则标记会被清理导致专辑被反复重抓）。一次同步没抓完的专辑不写标记，下次继续。
+- 图片 `remoteKey` = 图片完整 URL，跨专辑/跨次同步按内容哈希去重；列表页与 CDN 请求都带
+  `Referer`。
+
+**验证**（模拟器 + 平板 release 包）：
+
+- 模拟器：首次同步 `GET meirentu.club -> 200` ×4 → `ok:8:0`，8 张 1866×2800 落库；
+  点「立即更新」第二次 → `ok:8:0`，继续抓第 2 本专辑剩余图 + 第 3 本专辑，
+  `album:` 标记 1→2（第 3 本未抓完，不标记）；
+- 平板：新增「美人图」来源后首次同步 8 张（平板网络较慢，约 75 秒完成；
+  期间每页 HTTP 200），图片进入「在线壁纸」分组。
+
+**注意**：每本专辑只取前 2 页（不是全部 38 页），这是为了控制流量与耗电；想多要可以点
+「立即更新」，每次会继续往后抓一批。
+
+#### 4.9.78 美人图来源支持「手动选图 + 自定义数量」
+
+**需求**：不想只按「最新专辑、每本 2 页、每次 8 张」自动抓，想自己挑图片、自己定数量。
+
+**数据（v11 迁移，`online_sources` 加 3 列，全部有默认值、不影响旧来源）**：
+
+- `pagesPerAlbum`（默认 2，1–10）：自动模式下每本专辑抓几页（每页 3 张）；
+- `maxPerRun`（默认 8，1–50）：单次同步最多下载几张（Bing / WebDAV / 美人图都生效）；
+- `selectedImages`（默认空）：手动选中的图片 URL，一行一个。非空 = 只下载这些（手动模式），
+  空 = 自动模式。
+
+**选图界面**（`MeirentuPicker`）：来源编辑页「选择图片」→ 全屏选择器：
+
+1. 拉取列表页解析专辑卡片（封面 + `alt` 模特名 + 专辑 id，`&amp;` 等 HTML 实体已解码）；
+2. 点专辑 → 三列网格显示该页 3 张高清大图（Coil 带 `Referer` 头加载，CDN 需要）；
+3. 点图切换勾选（已有勾选跨专辑保留），顶部实时显示「已选 N 张」；
+4. 「加载更多」翻专辑的下一页（1–10 页），「全选本页」批量勾选，「完成」写回来源；
+5. 保存后同步只下载选中的 URL（按 `maxPerRun` 分批，下完为止）；「清空选择」回到自动模式。
+
+**踩坑记录**：选择器第一版用了 `CircularProgressIndicator`，打开即
+`NoSuchMethodError: KeyframesSpec$KeyframesSpecConfig.at(...)` 崩溃 —— 本项目所有页面都
+刻意用「静态图标 + 文字」（见 HomeScreen / GroupDetailScreen 注释），选择器已改成同样写法。
+
+**验证**（模拟器，release 包）：
+
+- v10→v11 迁移成功，新列默认值正确；
+- 手动模式：`selectedImages` 填 2 个 URL → 同步 `added=2`，只落这 2 张、无专辑标记；
+- 选择器：专辑列表实测加载出「鱼子酱Fish / 王馨瑶 / 徐丽芝Booty …」及封面；
+  进入专辑显示 3 张高清图，已选 2 张带勾选标记；`maxPerRun`/`pagesPerAlbum` 选项正常；
+- 单元测试 263 条全绿（新增数量夹取、选图列表往返、专辑卡片解析、HTML 实体解码）。
+
+#### 4.9.79 主界面新增「订阅」：阅读订阅源（Legado 兼容）
+
+**功能**：底部导航新增第三个页签「订阅」：
+
+- 订阅源管理：添加（名称 + RSS/Atom 地址）、启用/停用、立即更新、删除；
+- **导入阅读 (Legado) 订阅源**：粘贴阅读分享的订阅源 JSON、`legado://import/rssSource?src=…`
+  分享链接（`src` 为 URL 编码 JSON 或 base64），或直接选择导出的 `.json` 文件；
+- 阅读：点来源进入文章列表（标题/时间/摘要/首图），点文章看正文摘要并可「打开原文」；
+- 「全部刷新」+ 每 6 小时的后台自动刷新（WorkManager，需联网）。
+
+**数据（v12 迁移，两张新表，不影响任何已有数据）**：
+
+- `rss_sources`：名称、`sourceUrl`、Legado `type`、启用、**原始 Legado JSON（`rawJson`，
+  规则字段原样保留，便于以后升级规则解析/再导出）**、最近结果；
+- `rss_articles`：`(sourceId, guid)` 主键，标题/链接/摘要/正文/首图/发布时间/已读。
+  重新抓取是 REPLACE 更新，**已读状态会被保留**；每个来源最多保留 300 篇（超出按时间删旧）。
+
+**解析能力**（`FeedParser`，纯函数、DOM 禁用 DOCTYPE/外部实体）：
+
+- RSS 2.0 / RSS 1.0(RDF) / Atom：title、link（Atom 的 `rel=alternate` href）、
+  description/summary、`content:encoded`、pubDate/published/updated（RFC1123 / ISO8601 /
+  `yyyy-MM-dd HH:mm:ss`）、guid/id；图片取 `enclosure` / `media:content` / `media:thumbnail`
+  或正文第一个 `<img src>`（相对路径按文章链接补全）；
+- JSON Feed（`items[]`）同样支持；
+- 阅读的「规则型」订阅源（JS 选择器）本版不执行：源可导入，但抓取会提示解析失败
+  （原文 JSON 已保存，后续可加规则引擎）。
+
+**验证**（模拟器 + 平板 release 包）：
+
+- 模拟器 v11→v12 迁移成功；手加 `hnrss.org/frontpage` → `RSS hnrss.org -> 200`、
+  `fetched=20 new=20`，订阅页显示来源卡片，文章列表显示 20 篇（标题/相对时间/摘要）；
+- 平板 v11→v12 迁移成功（13 分组 / 45992 图片 / 在线来源保留）；加 `sspai.com/feed`
+  实测 `RSS sspai.com -> 200`、新增 10 篇，订阅页与「全部刷新 / 导入阅读(Legado)订阅源」
+  入口正常（验证后已删除测试源）；
+- 单元测试 275 条全绿（新增 12 条：Legado JSON/分享链接/base64/远程链接导入、
+  RSS/Atom/JSON Feed 解析、HTML 去标签与首图提取、非法输入不崩溃）。
+
+#### 4.9.80 阅读 (Legado) 订阅源规则引擎：从"仅标准 Feed"到"规则型源可用"
+
+**背景**：阅读官方 `gedoor/legado` 仓库已被清空（只剩一份法律公告），但其继承项目
+`Luoyacheng/legado-E`（GPL-3.0）仍在维护。本实现**参考它的规则语义独立编写**，
+不复制其代码（GPL 代码直接搬入会让本应用受 GPL 约束）。
+
+**规则引擎**（`engine/legado/`，配合 Jsoup 1.16.2 / JsonPath 2.10.0 / JsoupXpath 2.5.3 /
+Rhino 1.8.1）：
+
+- 规则切分：`@` 链式（忽略 `[]`/`()`/引号内的分隔符）、`&&`（合并）、`||`（取第一个非空）、
+  `%%`（交叉合并）、`##正则##替换[##first]`；
+- 默认 CSS 选择器：`class.X` / `id.X` / `tag.X` / `text.X` / `children` / 原生 CSS，
+  兼容阅读的"只取点号后第一段"（`class.post.grid` = class "post"）与链式时
+  **对每个匹配元素继续下钻**（导航栏的 `clearfix` 不会吞掉正文列表）；
+- 索引：`.N` / `!N` / `[n]` / `[start:end:step]`（负索引、反向区间）；
+- 取值：`text` / `textNodes` / `ownText` / `html` / `all` / 属性名（href、src、data-src…）；
+- JSONPath（`$.…` / `@Json:`）、XPath（`@xpath:` / 以 `/` 开头，JsoupXpath）；
+- **JS**：`<js>…</js>` / `@js:…` 用 Rhino 执行，绑定 `result`、`baseUrl`、`cookie`
+  和 `java` 帮助对象（`ajax` / `base64Encode` / `base64Decode` / `md5Encode` / `timeFormat` / `log`）；
+  积分结果按阅读的写法去掉 `.0`；
+- URL 模板：`{{page}}` / `{{变量}}` / `{{JS表达式}}`、`,{method/body/headers/…}` 请求选项、
+  相对路径按 `sourceUrl` 补全；`sortUrl` 按阅读语义解析为分类列表
+  （`名称::路径[|下一页规则]`，默认取第一项，如"最新"）。
+
+**兼容性取舍**：导入的阅读订阅源允许公网 `http://`（阅读本身允许，用户的源里就有
+`http://3w.8012359.xyz`）；在线壁纸源仍保持 HTTPS-only。
+
+**平板实测（用户导入的 3 个真实源）**：
+
+| 源 | 规则特点 | 结果 |
+|----|----------|------|
+| www.xiurendao.net | `class.clearfix@class.art` + `@js:` 追加请求头 | `ok:20:0`，20 篇，标题/链接/封面正常 |
+| 3w.8012359.xyz | 公网 http + 纯 CSS + `a||b` 回退 | `ok:12:0`，12 篇 |
+| www.xiurenai.com | `class.grids@class.post.grid` + `@js:` | `ok:30:0`，30 篇 |
+
+单元测试 287 条全绿（新增规则切分/索引/组合/替换/JSONPath/XPath/JS/分类列表等用例）。
+
+**尚未覆盖**（阅读引擎的剩余部分，后续可继续）：`ruleNextPage`/`sortUrl` 的
+`|下一页规则` 翻页、`loginUrl` 登录与持久 Cookie、`@webjs:`（WebView 执行）、
+`java.getString/java.getElements` 等更完整的 JS 绑定。
+
+#### 4.9.81 阅读规则源翻页：ruleNextPage / sortUrl 的 `|下一页规则` / `<1,2,3>` 页码
+
+**实现**（`LegadoRss.fetch`）：每次刷新在第 1 页解析完后继续最多 **3 页**，
+按阅读的语义决定下一页地址：
+
+- 分类行自带的 `|下一页规则` 优先，其次 `ruleNextPage`；
+- `ruleNextPage` 为 `PAGE`（忽略大小写）时，页码 +1 并重新套用 URL 模板；
+- 否则用规则在当前页 DOM 上求值（`getString(..., isUrl = true)`），相对地址按当前页
+  补全；为空或与当前地址相同（死循环）即停止；
+- URL 模板中的 `<1,2,3>` 页码列表按 `<page>` 取第 N 项（超出取最后一项），
+  与阅读 `AnalyzeUrl` 的 `pagePattern` 一致；`{{page}}` / `{{JS}}` 同样生效；
+- 页内列表规则带前导 `-` 时按阅读语义把该页结果反转；
+- 多页文章按 `guid` 去重后一起入库（`RssSync` 仍只保留最新 300 篇/源）。
+
+**验证**：
+
+- 模拟器本地 3 页测试页（每页 2 篇、`class.next@href` 翻页）：
+  `fetched=6 new=4`，Page1/2/3 A/B 共 6 篇全部入库；
+- 平板真实源（每源最多 3 页）：
+  `www.xiurendao.net fetched=60 new=40`、`www.xiurenai.com fetched=90 new=60`、
+  `3w.8012359.xyz fetched=12 new=0`（该站分类首页之后无有效下一页，符合源规则）。
+
+单元测试 289 条全绿（新增页码列表 `<1,2,3>` 与 `|下一页规则` 解析用例）。
+
+#### 4.9.82 订阅文章：按需抓正文 + 正文图片 + 勾选图片加入壁纸分组
+
+**按需正文**：文章列表只带标题/摘要时，点开文章会即时请求详情页并把 `ruleContent`
+的规则结果缓存进 `rss_articles.content`（下次打开直接用缓存）；非规则源回退到
+feed 自带的 description/content。图片从正文 HTML 里用 `<img src|data-src>` 全量提取，
+相对地址按文章链接补全（与封面去重）。空图片规则按"空"处理，不再产生一张指向页面
+本身的伪图片。
+
+**勾选图片 → 加入分组**（`RssMediaImporter`）：
+
+- 文章详情里以三列网格显示正文图片，点图勾选，支持「全选 / 清空」；
+- 「加入分组（N）」→ 选择目标分组（含"自动创建在线壁纸"）→ 逐张下载：
+  单张上限 30MB、Referer 用源站点 origin、BitmapFactory 边界解码校验、
+  按 SHA-256 命名存到 `files/rss/<sourceId>/`，并按内容哈希 + URI 去重；
+- 插入正常的 `wallpaper_images` 行（folderPath=`rss/<sourceId>`），因此直接参与
+  桌面/锁屏轮换、分组统计与清理逻辑；导入后刷新随机/洗牌的 id 缓存；
+- 中断残留的 `.tmp` 会在下一次导入时清理（超过 1 小时）。
+
+**验证**（模拟器，本地 3 页测试站）：
+
+- 文章正文 `class.content@html` 抓取成功，详情显示 `Article images (2)` 且两张图
+  正常渲染；
+- 「全选 → 加入分组（2）→ 在线壁纸」后，DB 新增 2 行 `folderPath='rss/5'`，
+  图片 2560×1600，文件落在 `files/rss/5/`；
+- 首轮测试服务器单线程导致第二张图 `ProtocolException`，重试后正常，说明下载/校验/
+  入库链路稳定；随后补了临时文件清理。
+
+单元测试 289 条全绿（`allImageUrls` 等纯函数变更未新增用例数量，规则引擎用例仍覆盖）。
+
+**仍未覆盖**：`loginUrl` 登录与持久 Cookie、`@webjs:`（WebView 执行 JS）、
+`java.getString/java.getElements` 等完整 JS 绑定。
+
+#### 4.9.83 订阅源会话 Cookie + loginUrl + 正文缓存修复
+
+**持久 Cookie（`RssCookieStore`）**：一个按域名匹配的 OkHttp `CookieJar`，
+把站点返回的 `Set-Cookie`（含域名/路径/过期/secure）持久化到
+SharedPreferences，App 重启后会话仍在；订阅抓取、正文抓取、`java.ajax` 共用它。
+在线壁纸源不使用该 jar（它们只访问用户配置的地址，无会话状态）。
+
+**loginUrl**：源里配置了 `loginUrl` 时，每次刷新前先请求一次（同一源 6 小时内只请求一次，
+失败不阻塞），站点设置的会话 Cookie 随后的请求自动携带 —— 这是阅读里"先登录再抓"的
+最简等价实现；`loginCheckJs`/登录表单等更完整的登录流程仍未实现。
+
+**正文缓存修复**：规则源的列表项本身没有正文，阅读态正文是点开文章后按需抓取并缓存的。
+原来的刷新会用空正文 REPLACE 掉已缓存的正文，现已改为
+`content = 新正文.ifBlank { 已有正文 }`，同时保持已读状态不变。
+
+**验证**（模拟器，本地测试站）：
+
+- 手动写入 `CACHED-BODY` 后触发两次刷新，正文仍为 `CACHED-BODY`；
+- 平板打开源 4（xiurenai）文章实测正文缓存 6668 字符；其图片域名
+  `xr.afxfl.com` 直接可访问，文章图片可正常显示与导入；
+- 源 2（xiurendao）的文章图片 URL 在站点侧返回 404（PC 与平板一致），属于源本身
+  的图像路径失效，不是解析问题。
+
+单元测试 289 条全绿。**仍未覆盖**：`@webjs:`（WebView 执行 JS）、
+`source.getVariable/setVariable`、`java.getString/java.getElements` 等完整 JS 绑定。
+
+#### 4.9.84 阅读 JS 绑定补全：source 变量 / java.getString / java.getElements
+
+- **`source` 绑定**（`RssSourceVariables`）：`getVariable()` / `setVariable(v)` /
+  `putVariable(v)` 读写按来源的运行时变量；`put(k,v)` / `get(k)` 提供键值存储。
+  语义与阅读一致（进程内缓存，按来源隔离）。源 2 的"搜索"分类 URL 模板
+  `{{(source.getVariable()==''||…)?source.setVariable('薄纱'):source.getVariable()}}`
+  就是这种用法。
+- **`java.getString(rule)` / `java.getElements(rule)`**：在 JS 里用当前页面内容再跑一遍
+  规则引擎（同一个 baseUrl / 变量 / 来源 id），返回文本或元素列表；`java` 与 `source`
+  指向同一个帮助对象（阅读里两者都可访问）。
+- **数字格式**：JS 数字是 double，整数值按阅读的写法去掉 `.0`
+  （`java.getElements(...).length` → `2` 而不是 `2.0`）。
+
+**验证**：单元测试新增 1 条（source 变量读写、`java.getString` 取标题、
+`java.getElements(...).length` 计数），共 **290 条全绿**。手机（24117RK2CC）
+从 v6 直升 v12 迁移成功，2 分组 / 821 张媒体完整保留。平板此轮掉线，
+装的是上一版（正文图片 + 持久 Cookie），下次连接后补装本版。
+
+**仍未覆盖**：`@webjs:`（WebView 执行 JS）、`loginCheckJs` 等更完整的登录流程。
+
+#### 4.9.85 `@webjs:`：隐藏 WebView 在页面里执行 JS
+
+**用途**：有些源的内容/图片只在站点自己的脚本跑完后才存在，普通规则拿不到。阅读用
+`@webjs:` 在页面上下文里执行 JS，这里做了等价实现（`WebJsRunner`）：
+
+- 主线程创建隐藏 `WebView`，`loadDataWithBaseURL(baseUrl, html)` 加载已抓取的页面，
+  站点脚本执行完毕后 `evaluateJavascript` 跑规则脚本；`blockNetworkImage` 省流量；
+- 绑定 `result` = 当前规则链的值（JSON 编码）；返回的字符串写回规则链；
+- 10 秒超时 / 取消时销毁 WebView；在后台线程调用（主线程调用直接返回 null，避免死锁）；
+  未初始化上下文（单元测试）时 fail-soft；
+- 兼容两种写法：表达式（`document.querySelector(...).innerHTML`）与函数体
+  （`...; return x;`）——先直接执行，语法错误时自动包一层 IIFE 重试。
+
+**验证**（模拟器，本地测试页）：页面自身脚本把 `<p>JS body</p><img src="/img/a.png">
+<img src="/img/b.png">` 注入 `.content`，规则
+`@webjs:return document.querySelector('.content').innerHTML` 取回渲染后的 58 字符 HTML
+并缓存进 `rss_articles.content`，图片随之进入文章图片网格。
+
+单元测试新增 1 条（`@webjs:` 段落识别 + JVM 无 WebView 时 fail-soft），共 **291 条全绿**。
+手机（24117RK2CC）与模拟器已装最新包（v12，数据完整）。
+
+**阅读引擎至此覆盖**：规则切分/组合/替换、CSS/JSONPath/XPath、Rhino JS 与
+`source` 变量 / `java` 帮助对象、`@webjs:`、URL 模板与 `<a,b,c>` 页码、分类列表、
+`ruleNextPage` 翻页、持久 Cookie 与 `loginUrl`（交互式登录见 4.9.86/4.9.87）。
+
+#### 4.9.86 交互式登录：订阅卡片「登录」按钮 + `loginUrl` 对纯 RSS 源生效
+
+**背景**：`loginUrl` 此前只做"抓取前静默 GET 一次（6h TTL）"，对需要验证码/扫码/
+表单会话的站点无效；而且它从 `parseRules()` 读取，纯 RSS 源（`type=0`、没有
+`ruleArticles`）会被判定为"普通 Feed"，`loginUrl` 直接丢失。
+
+**改动**：
+
+- 新增 `ui/screens/RssLoginScreen.kt`：内嵌真实 `WebView` 打开源的 `loginUrl`
+  （没有则退化为源地址本身），用户手动完成登录后点「完成登录」；
+  `CookieManager.getCookie(loginUrl)` 经 `RssCookieStore.injectCookieHeader`
+  注入持久 CookieJar，随后自动刷新一次该源；「取消」不改动任何状态。
+- 订阅卡片新增「登录」入口（`Screen.RssLogin(sourceId)`，标题/返回/底部导航高亮
+  与其它子页面一致，进程重建可恢复）。
+- `LegadoRss.loginEndpoint()` 改为先读原始 JSON 里的 `loginUrl`/`sourceUrl`
+  （新增私有 `rawMap()`，与 `parseRules()` 共用解析），因此**纯 RSS 源同样生效**；
+  相对路径按 `sourceUrl` 解析，`{{变量}}` 模板沿用既有替换逻辑。
+- 7 种语言新增 `rss_login` / `rss_login_title` / `rss_login_hint` /
+  `rss_login_finish` / `rss_login_done`。
+
+**实测**（AOSP 14 模拟器，本地 fixture 服务器，release 包）：
+
+1. 源 `http://10.0.2.2:8129/feed` + `loginUrl=…/login`，未登录 → 「更新」报
+   "账号或密码错误"（401 映射），0 篇文章；
+2. 点「登录」→ WebView 打开 fixture 登录页 → 点页面内登录链接（站点写入会话
+   Cookie）→ 点「完成登录」→ 自动刷新得到 2 篇文章；
+3. `am force-stop` 后冷启动再「更新」仍然成功 —— Cookie 已持久化到
+   `shared_prefs/rss_cookies.xml`，不依赖 WebView 自身状态。
+
+单元测试新增 3 条（纯 RSS 源 `loginUrl` 生效 / 相对路径按 `sourceUrl` 解析 /
+无 `loginUrl` 回退源地址），共 **294 条全绿**。
+
+#### 4.9.87 `loginCheckJs`：登录页自动判定"已登录"
+
+**背景**：4.9.86 的登录页要用户自己判断"登好了没有"再点「完成登录」。阅读用
+`loginCheckJs` 在页面里跑一段脚本，返回非空/`true` 即视为登录成功。
+
+**实现**：
+
+- `LegadoRss.loginCheckJs()` 从原始 JSON 读取该字段（与 `loginUrl` 同源，纯 RSS
+  源同样生效）；`WallpaperViewModel.rssLoginCheckJs()` 透出给 UI。
+- 登录页的 `WebViewClient.onPageFinished` 里执行脚本：含 `return` 的按函数体
+  包一层 `(function(){…})()`，否则按表达式 `(function(){return (…)})()`；
+  `null` / `false` / `0` / `undefined` / 空串都视为未登录，保持页面不动；
+  判定成功则**自动**注入 Cookie、刷新该源并返回列表，无需再点「完成登录」；
+  每个登录页只自动触发一次（`autoChecked`），脚本异常 fail-soft 不影响手动完成。
+- 没配 `loginCheckJs` 的源行为与 4.9.86 完全一致。
+
+**实测**（AOSP 14 模拟器，本地 fixture，release 包）：源带
+`loginCheckJs = document.cookie.indexOf('sid=') >= 0`；打开登录页（未登录）时判定为
+false、页面保持打开；点页面内登录链接后站点写入 `sid`，页面重载时判定为真，
+应用自动完成登录并刷新出 1 篇文章（未点「完成登录」）。
+
+单元测试新增 1 条（有/无 `loginCheckJs` 的读取），共 **295 条全绿**。
+
+**阅读引擎至此覆盖**：规则切分/组合/替换、CSS/JSONPath/XPath、Rhino JS 与
+`source` 变量 / `java` 帮助对象、`@webjs:`、URL 模板与 `<a,b,c>` 页码、分类列表、
+`ruleNextPage` 翻页、持久 Cookie、`loginUrl` 静默预登录 + 交互式登录 +
+`loginCheckJs` 自动判定。剩余未覆盖：`loginHeader`/`jsLib` 等次要字段。
+
+#### 4.9.88 对照 legado-E 订阅源代码逐项补齐（header / 脚本登录 / 规则备选 / sortUrl JS）
+
+**背景**：以 `Luoyacheng/legado-E`（GPL-3.0）的订阅源实现为基准逐字段对照，并
+用**用户平板上真实存在的订阅源**反查真实用法：5 个源**全部**带 `header`，其中一个
+还带 `loginUrl(@js:)` + `loginUi`。据此补齐以下差距（只对齐语义与行为，代码按本
+项目风格重写）：
+
+- **`header` 是 JSON**（`{"Referer":"…","User-Agent":"…"}`），也支持 `@js:` / `<js>`
+  生成；此前按 `Key: Value` 行解析 → JSON 头被整段丢弃。这是真实源全部命中的 bug，
+  现在改为先 JSON、失败再退回旧的行格式（兼容我们自己早期导入）。纯 RSS 源与规则源
+  共用同一解析（`LegadoRss.parseHeaderMap`）。
+- **脚本登录**（阅读 `source.login()`）：`loginUrl` 为 `@js:` / `<js>` 时不再当网址打开，
+  而是渲染 `loginUi` 表单（`[{"name":"账号","type":"text"},{"name":"密码","type":"password"}]`），
+  填好后运行脚本定义的 `login()`。新增 JS 绑定：`source.getLoginInfoMap/getLoginInfo/
+  putLoginInfo/putLoginHeader`、`java.post(url, body, headers)`、`java.get(url, headers)`、
+  `java.encodeURI`、`cookie.setCookie/getCookie`；返回对象带 `body()/statusCode()/headers()/url()`。
+  脚本抛出的错误原样显示在表单下方（如「请先填写账号和密码」）。登录信息与登录头
+  （`RssLoginStore`）落盘保存，Cookie 写入既有持久 CookieJar。
+- **`loginCheckJs` 参与抓取**：列表页与正文页每次请求后都会执行该脚本（`result` = 响应体），
+  抛错或返回 false/0/null 即判定登录失效 → `auth` 失败，UI 提示重新登录；
+  未配置该字段的源行为不变。
+- **规则备选**（阅读 `splitSourceRule`）：`ruleTitle/ruleImage/…` 支持顶层逗号分隔的
+  多条候选规则，取第一条有值的结果；`[]`/`()`/`{}`/引号内的逗号、`<js>…</js>` 块、
+  `@js:` 之后的部分都不参与切分（`RuleAlternatives`）。
+- **`sortUrl` 三种形态**：字面量（换行或 `&&` 分隔）、`<js>` / `@js:` 脚本生成（结果
+  按源缓存，同阅读的 ACache 语义）；列表为空时回退到 `sourceUrl`。
+- **`jsLib`**：作为共享 JS 库拼接到该源所有脚本（规则、URL 模板、登录脚本）之前执行。
+- **`enabledCookieJar=false`**：该源改用不带 CookieJar 的 OkHttp 客户端，不写不读会话。
+
+**顺带修掉一个 release 专用 bug**：这些 JS 面向对象的方法（`java.getString` /
+`source.getVariable` / `cookie.setCookie` …）没有任何 Kotlin 调用点，R8 会把它们
+整个删掉——release 包里所有 `@js:` 规则都会静默失败（debug/单元测试看不出来）。
+已在 `proguard-rules.pro` 增加 `LegadoJsHelpers` / `LegadoCookieHelper` /
+`LegadoJsResponse` 的整类保留规则，并用 mapping 文件确认方法保留。
+
+**实测**（AOSP 14 模拟器，release 包 + 本地 fixture）：
+
+1. 请求头：同一台服务器，带 `{"Referer":"https://ref.example/"}` 的源
+   「Updated: 1 new」，不带该头的源「Update failed: Access denied(403)」——
+   证明 JSON 请求头真正生效且是必需的。
+2. 脚本登录：`loginUi` 表单渲染出账号/密码两栏；空表单提交显示脚本抛出的
+   「请先填写账号和密码」；填入账号密码后脚本 `java.post` 登录成功，
+   `cookie.setCookie` 写入会话，自动刷新出 1 篇文章；**冷启动后再「更新」仍成功**
+   （登录信息/Cookie 均已落盘）。
+
+单元测试新增 4 条（规则备选切分、header 三种形态、`&&` 分类列表、JS 登录识别与剥离），
+共 **299 条全绿**。
+
+**尚未覆盖**（阅读里存在、与本 App 的"取图"用途无关或优先级低）：`loginUi` 的
+复杂控件（按钮/选项）、`concurrentRate` 限速、`preload`/`cacheFirst`、
+WebView 阅读类字段（`style`/`enableJs`/`loadWithBaseUrl`/`injectJs`/`preloadJs`/
+`startHtml`/`startStyle`/`startJs`/`shouldOverrideUrlLoading`）、`coverDecodeJs`、
+`searchUrl`、`contentWhitelist/Blacklist`、把 `loginHeader` 应用到抓取请求
+（阅读的 RSS 抓取路径本身传 `hasLoginHeader=false`）。
+
+#### 4.9.89 图集文章（`{{@@规则}}` + `_N.html` 分页）与订阅源编辑器
+
+**问题一：3w 源文章只显示一张图**。该源 `ruleContent` 是一段 HTML 模板
+（`<div id="box">{{@@tag.img@html}}</div>`）加一段页面脚本：脚本在浏览器里
+`fetch()` 兄弟页 `19566_1.html … 19566_9.html`，把整套图集塞进 `#box`。
+两个坑：① 我们的 `{{}}` 只支持变量，`{{@@tag.img@html}}` 保持原样；
+② `tag.img@html` 只取第一个匹配元素，而阅读的 `getString` 会**把全部匹配结果
+拼起来**。于是正文里只剩列表头图一张。
+
+修复（对齐阅读语义）：
+
+- `LegadoRuleEngine.getString(..., joinAll = true)`：全部匹配值按换行拼接；
+  `html`/`all` 与阅读一致（先去 script/style 再取 outerHtml）。
+- 正文模板：`{{@@规则}}` / `{{规则}}` 作为**内层规则**对页面求值后替换
+  （`expandContentTemplate`），其余 `{{}}` 仍按变量/JS 处理。
+- 图集分页：当正文规则含 `<script>`（说明该源的图集靠页面脚本加载）时，
+  从文章页读出最大的 `_N.html` 序号，顺序抓取这些兄弟页（上限 40），
+  过滤站标（`/template/`、含 logo/icon）与小封面目录（`/pic/`），
+  把新增图片以 `<img>` 追加进正文，交给既有图片列表/加入分组逻辑。
+
+**实测（平板，真实源 3w.8012359.xyz）**：打开 `XiuRen/19566.html` 后
+`rss_articles.content` 由 0 → 2979 字符、`<img>` 由 1 → 12 个，文章详情网格
+显示整套图集（此前只有头图）。
+
+**问题二：不能编辑订阅源**。新增「编辑」入口（订阅卡片 → 编辑）与整页编辑器，
+对齐 legado-E 的源编辑器：
+
+- 基本信息：名称、地址、分组、类型（网页/图片/视频）、启用、CookieJar 开关；
+- 列表与正文规则：`sortUrl`、`ruleArticles`、`ruleNextPage`、`ruleTitle`、
+  `ruleLink`、`ruleImage`、`ruleDescription`、`rulePubDate`、`ruleContent`；
+- 登录：`loginUrl`（网址或 `@js:` 脚本）、`loginUi`、`loginCheckJs`；
+- 其它：`jsLib`、`variable`、`header`（JSON）；外加「原始 JSON」直编开关。
+- 保存用 `RssSourceEditor` 把改动**合并回原始 JSON**：没动的字段（含本 App
+  不认识的 `customOrder`/`articleStyle` 等）原样保留，留空即删除该字段；
+  地址必须是 http(s)，原始 JSON 会被校验。
+
+**实测（平板）**：临时源改「分组=grp1」保存后 `sourceGroup` 生效，而未改动的
+`ruleTitle`/`header`/`customOrder` 全部保留；测试源随后已删除。
+
+单元测试新增 6 条（html 全量拼接、模板内层规则、编辑器合并/留空/类型写入/坏 JSON），
+共 **305 条全绿**。7 种语言的编辑器文案已补齐（`LocaleResourcesTest` 校验通过）。
+
+**另记**：xrw26.com（源 7）在 20:54 起更新报 `network`，经核查是站点侧问题 ——
+平板 `ping xrw26.com` 正常，但本机与平板访问 `https://xrw26.com:443` 均超时，
+与本次改动无关。
+
+#### 4.9.90 订阅列表精简、进入即加载、源内分类切换
+
+**交互调整**（按用户要求）：
+
+- 订阅卡片上的「阅读」「立即更新」「删除」按钮全部移除，整张卡片可点击 →
+  进入该源的分类/文章列表；「登录」「编辑」保留。删除移到「编辑订阅源」页底部
+  （带二次确认），避免误触。
+- **点击进去就加载**：进入源时按记住的分类自动刷新一次，加载期间显示静态
+  加载提示（不新增崩溃风险，见下）。
+- 底部导航顺序改为 首页 / **订阅** / 设置，订阅位于中间。
+
+**源内分类**（阅读 `sortUrl`）：
+
+- 文章列表顶部显示该源的分类 chips（`sortUrl` 的 `::` 名称，支持 `&&`/换行与
+  `<js>`/`@js:` 生成），点选即切换并刷新。
+- 数据库 v13：`rss_articles` 新增 `sort` 列（迁移 `ALTER TABLE … ADD COLUMN`），
+  文章按分类存放；列表按当前分类过滤，切换分类不会串台、也不丢其他分类的
+  已读状态。上次选择的分类按源记在设置表（`rss_category_<id>`），
+  定时/后台刷新沿用同一分类。
+- 修掉一个分类路径解析 bug：`/cat` 这类绝对路径此前会被拼成
+  `…/源地址/cat/cat`；现在按阅读的语义用 URI 解析（`/cat` 覆盖路径，
+  `cat` 相对源地址目录），`loginUrl` 的相对解析也统一走这条路径。
+
+**顺带修的 release 崩溃**：文章列表初次使用的 Material3 `LinearProgressIndicator`
+会在运行时报 `NoSuchMethodError`（`KeyframesSpecConfig.at(Object,int)`，与项目
+锁定的 animation-core 版本不匹配）——项目里其它页面早已改用静态图标规避，
+本次同样改为静态图标 + 文案。
+
+**实测**（AOSP 14 模拟器，双分类本地 fixture，release 包）：
+进入源自动加载出「分类一文章」；点「分类二」chip 后列表切到「分类二文章」，
+库中两条记录分别带 `sort=分类一/分类二`。平板已装同一版本，卡片仅剩
+「登录 / 编辑」、底部导航为 首页 / 订阅 / 设置。
+
+单元测试新增 1 条（分类路径解析），共 **306 条全绿**。
+
+#### 4.9.91 对照 legado-E 的 HTTP 层：网络失败与加载慢的根因修复
+
+**症状**：多个订阅源显示「网络不可用」，文章/图片加载慢。
+
+**排查**（平板真机 + 同网络 PC 双向验证）：
+
+- 旧客户端 `ConnectionPool(0, 1ms)` 把连接池关掉了：每个请求都要重新
+  TCP + TLS 握手。列表、正文、图集分页（3w 一篇文章要抓 9 个兄弟页）
+  全部为此付出代价 —— 这就是「慢」。
+- 旧默认 UA 是 `WallpaperSwitcher/1.1 (Android)`；不少图站只认浏览器 UA。
+- 失败源的异常详情（本轮补的日志）显示两类：
+  ① `UnknownServiceException: CLEARTEXT communication not enabled`
+  （我自己引入的回归：显式 `connectionSpecs` 时漏了 `CLEARTEXT`，已修复，
+  3w/xiurenai 等 http/规则源恢复）；
+  ② `SocketTimeoutException: failed to connect … after 15000ms` /
+  `InterruptedIOException: timeout` —— 属网络侧：平板上
+  `toybox nc <host> 443` 对 xrw26/misskon/everia 超时，PC 端对这些站点的
+  HTTP 请求也全部超时或 SSL 握手失败（TCP 通但无响应）。
+
+**按 legado-E 对齐的修复**（`engine/RssHttp.kt`，订阅源专用）：
+
+- **连接池复用**（默认池 + keep-alive，HTTP/2 可用），不再每次握手；
+- **信任所有证书 + `COMPATIBLE_TLS`**：legado-E 的 `HttpHelper` 用
+  `SSLHelper.unsafeSSLSocketFactory`，大量图站证书过期/自签名，默认校验
+  直接失败；现在与 Legado 一致（仅订阅源流量；在线壁纸源仍强制 HTTPS 校验）；
+- **浏览器 UA** 作为默认（源自带 `header` 仍优先）；
+- 超时对齐 Legado（连接 15s / 读 60s / call 60s）；
+- 图集分页**并发抓取**（4 路，`Semaphore`），打开图集文章不再串行等待；
+- 文章缩略图与图集网格的图片请求带上**该源自己的请求头**
+  （`Referer`/`UA`，等价 Legado 的 `GlideHeaders`），减少 403 与卡顿；
+- 失败原因区分 `timeout` 与 `network`，不再一律显示「网络不可用」。
+
+**新增：订阅源代理（legado-E `getProxyClient` 的等价物）**
+
+- 订阅页新增「代理」，填 `host:port`（支持 `socks5://`、`http://` 前缀），
+  留空=直连；保存在设置表并在启动时注入 HTTP 层，改完立即生效。
+- 用途：部分站点在本网络不可达（见上），legado-E 靠代理设置解决，现在
+  本应用也能；若用户的 VPN 是分应用代理，把本应用加入即可。
+
+**实测**（AOSP 14 模拟器 + 本机代理/夹具服务器）：把代理设成
+`10.0.2.2:9632` 后进入源，代理端日志打印 `GET http://10.0.2.2:9631/cat`，
+文章经代理抓取成功入库；清除代理后恢复直连。
+
+单元测试 **306 条全绿**（无新增；本轮为 HTTP/UI 改动）。平板当时掉线，
+复测请在设备重新连接后进行。
+
+#### 4.9.92 订阅图片加入分组：并行下载 + 批量入库
+
+**优化点**（`engine/RssMediaImporter.kt`）：
+
+- **共享 HTTP 客户端**：改用 `RssHttp.client`（连接池复用 + COMPATIBLE_TLS +
+  浏览器 UA），不再自建一个把连接池关掉的客户端；
+- **带源自请求头**：下载每张图都带上该源的 `header`（Referer/UA/…，等价
+  Legado 的 GlideHeaders），并把源地址的 origin 作为 Referer 兜底 —— 不带的
+  站点会 403/挂起，重试即慢；
+- **并行下载**：`Semaphore(4)` 控制并发，8 张图从串行 8 次往返变成 2 批；
+- **批量入库**：校验通过的行一次性 `insertAll`（失败再退化为逐行插入，
+  避免一行坏数据拖垮整批），替代原来每张一次 insert；
+- 结果上报更准确：批内重复（内容哈希/URI 去重）与非法 URL 分别计入，
+  不再把「已存在」算成失败。
+
+**实测**（AOSP 14 模拟器）：夹具提供 8 张不同内容、**每张延迟 400ms**、且必须带
+`Referer` 才返回的图片。选全 → 加入分组后：
+
+- 服务端日志显示 4 张一批、两批完成，**总耗时 0.93s**（串行约 3.2s，约 3.4×）；
+- 分组内新增 **8 行**（`folderPath='rss/20'`），无 403、无重复行。
+
+单元测试 **306 条全绿**。
+
+#### 4.9.93 取消「在线壁纸源」功能
+
+按用户要求下线设置里的在线壁纸源（Bing 每日图 / 指定 URL / WebDAV / 美人图）：
+
+- **设置页入口删除**：`settings_section_online` 整段（含「在线壁纸源」行与跳转回调）
+  从 `SettingsScreen` 移除，`onOpenOnlineSources` 参数一并去掉；
+- **界面与导航删除**：`ui/screens/OnlineSourcesScreen.kt` 整文件删除
+  （其中被订阅页共用的错误文案函数抽到新的 `OnlineStatusText.kt`）；
+  `Screen.OnlineSources` 路由、顶部标题/返回、底部导航高亮、返回键分支、
+  进程重建的 save/restore 映射全部移除；
+- **后台任务停止**：`OnlineSourceScheduler.ensureScheduled()` 改为**只做清理** ——
+  启动时取消旧的周期任务（`online_source_<id>`）与一次性刷新任务
+  （`online_refresh_<id>`），不再排新的；
+- **数据保留**：`online_sources`/`online_items` 表与已下载的图片、分组都不删，
+  避免误伤用户已有壁纸；订阅源（阅读）功能与 `OnlineSourceRules` 等共享代码
+  完全不受影响。
+
+**实测**（AOSP 14 模拟器）：设置页不再出现「在线壁纸源」入口，订阅页
+（全部刷新/代理/导入阅读订阅源）正常；**306 条单元测试全绿**。
+
+#### 4.9.94 订阅源分页：游标 + 滚动到底自动续载（对齐阅读的懒加载）
+
+**问题**：来源列表每次刷新固定只抓 `MAX_PAGES_PER_REFRESH = 3` 页，且没有任何
+「加载更多」，所以源里更早的页永远看不到（「分页内容无法全部显示」）。
+阅读的做法是按需懒加载：读到列表末尾再取下一页。
+
+**实现**：
+
+- `LegadoRss.fetchPages(source, rules, categoryIndex, startCursor, maxPages)`：
+  把原来的一次性循环改成**游标驱动**，返回 `PageResult(articles, nextCursor)`。
+  游标两种形态：
+  - `page:<n>` —— 索引型源（`{{page}}` / `<a,b,c>` 列表 / `ruleNextPage=PAGE`）；
+  - 绝对 URL —— `ruleNextPage` 从页面里取下一页链接的源。
+  `nextCursor == null` 表示到底（无规则、取到空页、或下一页与当前页相同）。
+- `RssPaging`：游标按源存进设置表（`rss_next_<id>`）；**刷新**从第一页重来并写入
+  新游标，**切换分类**与**编辑源**会清空游标。
+- `RssSync.loadMore()`：读游标 → 续抓（每次最多 3 页）→ 合并去重（保留已读与已抓
+  正文）→ 更新游标；`Report.reason == "end"` 表示没有更多。
+  初次进入源只抓 2 页（更快），其余交给懒加载。
+- UI：文章列表底部有页脚——到底时自动触发加载更多（`LaunchedEffect` 在页脚被
+  组合时启动），也可手动点「加载更多」；加载中显示提示，结束后显示「没有更多了」。
+  7 种语言新增 `rss_load_more` / `rss_no_more`。
+
+**实测**（AOSP 14 模拟器，4 页夹具 × 每页 3 篇）：
+进入源 → 日志 `RSS refresh ok: fetched=6`（2 页）+ 游标 `page:3`；列表滚到底自动
+续载 → `RSS load more ok: fetched=6 new=6 more=false`（第 3、4 页；第 5 页为空即停），
+库里共 **12 篇**、游标清空、界面显示「没有更多了」。
+
+单元测试 **306 条全绿**。
+
+#### 4.9.95 真机分页验证 + 修掉「CSS 属性选择器被当成索引」
+
+**平板实测（mtldss.top，真实源）**：
+
+- 打开源 → 首次刷新 2 页（日志 `RSS refresh ok: fetched=58`），游标写入
+  `https://mtldss.top/index.php/topics/first-watch/page/3/`；
+- 列表滚到底自动续载两次：`load more ok: fetched=60 new=40 more=true`、
+  `fetched=60 new=60 more=true`，该源文章由 78 → **184 篇**，说明懒加载在真机可用；
+
+**顺带发现的显示 bug**：这些新抓的文章标题全为空（列表只能退化显示链接）。
+根因在 `JsoupAnalyzer.selectSingle` —— 它把规则里任何结尾的 `[...]` 都当索引列表，
+于是真实源常用的 `h2[class="item-heading"]@text` 被解析成「先选 `h2` 再按空索引
+过滤」→ 永远空结果。修复：只有括号内容确实是索引（`0` / `-1` / `0:2` / `!1,3`）
+时才走索引，否则按标准 CSS 属性选择器交给 jsoup。
+
+**验证**：修复后重开该源，58 篇被重新解析的文章标题正常（例如
+「星之迟迟 – 26.05 写真本《夜明》」）；索引语法回归测试同样通过。
+新增 1 条单元测试（属性选择器 + `tag.a[-1]@href` / `tag.h2.1@text` 索引），
+共 **307 条全绿**。
+
+#### 4.9.96 文章首屏与图片加载提速
+
+**问题**：打开一篇图集文章要等「文章页 + 全部 `_N.html` 兄弟页」抓完才显示任何内容；
+图片解码用的是软件位图，栅格滚动/加载偏慢。
+
+**改动**：
+
+- **正文与图集拆分（progressive）**：
+  - `LegadoRss.fetchArticleBase()` 只抓文章页并套用正文规则，返回
+    `(html, rawPage, url)`；
+  - `LegadoRss.expandGalleryImages()` 单独负责兄弟页抓取，返回图片 URL 列表
+    （`fetchArticleContent()` 仍保留旧语义：base + 图集拼接）；
+  - `RssSync.fetchContent()` 现在**立刻返回首屏内容**，`RssSync.loadGalleryImages()`
+    在后台补齐图集，并把合并后的正文写回 `rss_articles.content`（下次打开直接命中缓存）；
+  - 阅读对话框先显示首屏图片，图集加载时提示「正在加载图片…」（新增 7 语言文案）。
+- **图集并发** 4 → **6** 路（`GALLERY_PARALLELISM`）。
+- **图片解码**：文章缩略图/图集网格的 Coil 请求显式 `allowHardware(true)`（全局仍保留
+  软件位图以保证兼容，这两处不需要回读像素），减少解码与绘制开销。
+
+**实测**（AOSP 14 模拟器，6 个兄弟页 + 图片各延迟 300ms）：
+
+- 点开文章 **1.2 秒**时对话框已显示首屏 2 张图并提示「Loading images…」（旧逻辑要等
+  全部兄弟页抓完）；
+- 随后自动补齐：缓存正文 685 字符、**14 张图**（2 首屏 + 6 页 × 2），再次打开直接读缓存。
+
+单元测试 **307 条全绿**。
+
+#### 4.9.97 对齐阅读的加载性能：JS 缓存 / DOM 复用 / 预取 / 磁盘缓存
+
+针对「阅读的订阅源加载很快」的四点差异逐项对齐：
+
+1. **Rhino 编译缓存 + 共享 scope**（`LegadoJs`）：脚本按内容缓存为 `Script`
+   只编译一次；每个 `jsLib` 只求值一次并作为基 scope，各次求值在子 scope 里跑
+   （等价阅读的 `scriptCache` + `SharedJsScope`）。`LegadoRuleEngine.evalJs`
+   改为复用同一套引擎，不再每个 `@js:` 规则新建 `Context`/标准对象。
+2. **DOM 只解析一次**（`LegadoRuleEngine.documentOf`）：同一次抓取内按字符串
+   身份/相等复用同一个 Jsoup `Document`，CSS / XPath / 模板展开不再反复
+   `Jsoup.parse`。
+3. **图片预取**：文章对话框拿到图片列表后，后台把前 12 张（约两屏）预热进
+   Coil 缓存（等价阅读的 `preload`），滚动即出图。
+4. **订阅源磁盘缓存**：`RssHttp` 增加 20MB OkHttp `Cache`；正常请求仍走网络，
+   仅当网络失败时用 `only-if-cached` 回退到已访问过的页面（不影响新鲜度）。
+
+**实测**（AOSP 14 模拟器，40 条/页 × 每条 2 个 `@js:` 规则 = 80 次 JS 求值）：
+首次刷新 **2292ms**（含脚本编译），再次刷新 **663ms** —— 缓存命中后约 **3.5×**；
+新增耗时日志 `RSS refresh took Nms` 便于后续对比。
+
+单元测试 **307 条全绿**。
+
+#### 4.9.98 视频源播放与入库对齐阅读：抄站点播放器的请求头
+
+Rule34 这类站点用 `kt_player`：播放地址带动态哈希，CDN 还会校验 JS 现场生成的
+凭证，纯 HTTP 重放（Referer + UA + Cookie）仍返回 403。本轮改为「让 WebView 先跑
+站点自己的播放器，再把它的请求原样交给 Media3」：
+
+1. **捕获真实流请求**（`RssWebScreen`）：`shouldInterceptRequest` 命中媒体后缀
+   （mp4 / m3u8 / m4v / webm / mov / ts / m4s）时，把该请求的**完整请求头**
+   （Referer / Origin / UA / sec-ch-ua / Accept …）按 URL 存下来；丢弃
+   `Host`、`Connection`、`Range`、`Content-Length`、`Accept-Encoding`
+   （这些必须由 ExoPlayer 自己生成，否则分片 Range 会错）。
+2. **优先播放列表**：从捕获集合里按 `m3u8 → 整文件 → 分片` 的顺序挑选，并与规则
+   给出的 URL 做同名匹配；命中后暂停页面播放器（避免双份声音），用捕获头启动
+   `RssVideoPlayer`（Media3）。
+3. **只提供真实流**：视频源的可选列表剔除广告视频、单个 `.ts` 分片和
+   `_TPL_.mp4`（站点播放器的封面占位文件，实际是静态图）；`looksLikeVideoStream`
+   把 `.m3u8` 也纳入白名单，避免过滤为空后退化成「把整页图片都列出来」。
+4. **预选正在播放的那条流**：`用这些图` 回传 `(urls, headers, 正在播放的流)`，
+   对话框默认只勾选这条流，避免误选封面图。
+5. **下载器跟着升级**（`RssMediaImporter`）：
+   - `downloadHls` 支持主播放列表（按 `BANDWIDTH` 选最高码率）、`#EXT-X-MAP`
+     初始化段（fMP4 拼接必需）、按分片类型决定输出 `.mp4` / `.ts`；
+   - 加密播放列表（`#EXT-X-KEY` 非 NONE）明确跳过并记日志，而不是落一个坏文件；
+   - `looksLikeVideoFile` 接受 `styp` / `moof`（fMP4 分片）；
+   - 全流程补诊断日志：`GET …`、`hls playlist failed`、`http NNN`、
+     `hls merged N segments -> …`、`import done: added=… failed=…`。
+
+**平板实测（小米 25102RKBEC / Android 14）**
+
+- `rule34video.com` 文章：WebView 捕获到 `svacdn77.tsyndicate.com/…/840x480.mp4.m3u8`
+  （连同 Referer/Origin/UA 等），Media3 播放成功、无 `RssVideo: playback failed`；
+-「用这些图」列出 2 条真实码流（850x480 / 440x240），默认勾选正在播放的那条；
+- 加入分组：`hls merged 3 segments -> rss_xxx.ts (2412KB)` → `added=1 failed=0`，
+  分组缩略图正常显示（说明合并后的 TS 可解码）；
+- 91porn 源：捕获站点自带签名地址 `la.btc620.com//mp43/…mp4?st=…`，画面正常
+  （此前 WebView 只出声音、画面黑）；
+- 测试产生的 3 条导入记录（2 张站内分类图 + 1 条 TS）已在验证后清理，
+  「在线壁纸」分组数量回到 656。
+
+单元测试 **308 条全绿**。
+
+#### 4.9.99 全屏页改为叠层：退出后列表停在原位置
+
+旧结构里全屏浏览器用 `if (webArticle != null) RssWebScreen(...) else when(screen)`
+替换整屏，于是**打开文章就把文章列表整棵组合树销毁**：退出后 `LazyColumn` 的滚动
+位置（以及对话框、分页状态）全部回到初始值，用户被丢回源列表顶部，同时列表的
+`LaunchedEffect(sourceId, rawJson)` 会再跑一次重新读分类。
+
+现在改为**叠层**：
+
+- `Box` 里先渲染当前屏幕，再把 `RssWebScreen` 包在 `Surface`（不透明背景）里
+  叠在上面，列表始终保持组合与滚动位置；
+- 浏览器结果（`rssBrowserResult` / `rssBrowserHeaders` / `rssBrowserSelected`）
+  由仍然存活的列表收集，行为不变；
+- 返回键优先级明确化：浏览器打开时只注册「关闭浏览器」的 `BackHandler`
+  （`currentScreen != Home && rssWebArticle == null` 才注册屏幕级返回），顶栏返回
+  箭头同理（先关浏览器再退屏幕）；
+- 底部导航三个标签在切换时一并清掉 `rssWebArticle`，避免叠层挡住其它页面。
+
+**平板实测（小米 25102RKBEC / Android 14）**：源内下滑到第 5 条后点进文章再返回，
+可见条目与 y 坐标完全一致（`740 / 1106 / 1472 / 1838 / 2204`）；
+「用这些图」照常弹出选择框（72 张，71 张预选）；浏览器打开时点底部「首页」能正常
+回到主页。
+
+单元测试 **308 条全绿**。
+
+#### 4.9.100 分页改为「底部追加」：不再跳到刚抓来的那一页
+
+源内「加载更多」过去会**跳到新抓来的内容**上，根因有三层：
+
+1. **排序键被当成"更新时间"用**：列表 SQL 是
+   `ORDER BY publishedAt DESC, fetchedAt DESC`，而无日期的源 `publishedAt` 全为 0，
+   实际顺序完全由 `fetchedAt` 决定。旧代码用 `System.currentTimeMillis()` 给
+   "下一页"打时间戳 —— 下一页反而比已有内容"更新"，于是插到最顶部。
+   现在 `buildRows` 用 `fetchedAt = base - index` 把**页内顺序**写进排序键，
+   `loadMore` 取 `MIN(fetchedAt) - 1` 作为 base，下一页必然落在已有条目**之后**。
+2. **REPLACE 把老条目挪位**：`insertAll` 是 `REPLACE`，已显示的条目被重新写入时
+   `fetchedAt` 会变，位置随之漂移。新增 `insertNew`（`IGNORE`）供分页使用。
+3. **上限太小**：`KEEP_PER_SOURCE = 300` 且列表 `LIMIT 300`，翻第二页时旧页被
+   prune 掉、列表窗口也被顶替。现在统一为 `LIST_LIMIT = 1000`
+   （`observeBySource` / `observeBySourceSort` / `KEEP_PER_SOURCE` 共用），
+   到上限时把游标置空，底部显示「没有更多」而不是继续抓。
+
+同时修掉两个连带问题：
+
+- **列表查询不再取 `content`**（文章正文缓存的列，单条可达数十 KB）：改在
+  `RssSync.fetchContent` 里按需 `getContent(sourceId, guid)` 回读，1000 条列表
+  不会把正文全拉进内存；
+- **分页不再被滚动取消**：页脚用 `LaunchedEffect` 触发，滚动时页脚离开组合会把
+  协程连同网络请求一起取消（日志里的 `LeftCompositionCancellationException`，
+  且行已入库但游标没前进，导致重复抓同一页）。改为 `viewModel.requestRssLoadMore`
+  在 ViewModel 作用域执行，结果回调更新 `hasMore`。
+
+**平板实测（小米 25102RKBEC / Android 14，源 25）**：加载更多进行中与结束后，
+可见条目与 y 坐标完全一致（`848 / 1214 / 1580 / 1946`），新页在下方追加
+（`total 330 → 360 → 450`，日志 `new=30` / `new=60`），不再跳页。
+
+单元测试 **308 条全绿**。
+
+#### 4.9.101 选择器只显示全屏页里的图（去掉静态解析的杂图）
+
+全屏浏览器「用这些图」之后，选择界面里除了文章自己的图片，还会多出几张**与文章
+无关的封面**（3w 源里就是 `[XIUREN] Collection / Anran / Aimee` 这类推荐位封面）。
+原因是对话框把两份列表**合并**了：
+
+```
+images = (initialImages + images).distinct()   // initialImages = 浏览器收集
+                                              // images        = 规则静态解析
+```
+
+用户看到的「全面屏显示的图片」是浏览器渲染出来的那批，静态解析（站点推荐位、
+图集封面、相邻文章缩略图）并不在页面上，于是就成了"其他杂图"。
+
+现在与阅读一致：**浏览器结果直接替换静态列表**（`images = initialImages.distinct()`），
+只有浏览器没收集到任何东西时才回退到静态解析结果。
+
+另外，全屏浏览器的收集结果原先也没有过源过滤（对话框版本有），一并补上：
+`keepCollectedImage(ruleContent, url)` —— 有源脚本过滤就跟随它，否则用通用图集
+启发式（丢 `/template/`、`/pic/`、logo/icon 等站点 chrome），为空时再回退原始列表。
+
+**平板实测（小米 25102RKBEC / Android 14）**
+
+- 3w 源同一篇文章：修复前网格 `83` 张（77 张文章图 + 6 张推荐位封面），最后两行
+  明显是别的图集封面；修复后 `browser images=79 → grid=79`，全部属于该文章；
+- 秀人网源：`90 → grid=91`（多出的 1 张即静态封面）→ 现在网格与页面一致；
+- 视频源仍只列出码流，并默认勾选正在播放的那一条。
+
+单元测试 **308 条全绿**。
+
+#### 4.9.102 选择器网格改为懒加载：只下载看得见的图
+
+「图片选择器的图片加载有点慢」的根因是**网格一次性全渲染**：
+`Column(verticalScroll)` 里用 `images.chunked(3)` 铺满所有行，打开 80 张的图集时
+80 个 `AsyncImage` 同时进入请求队列（每个都是几 MB 的原图），首屏要和 70 多张
+没人看的图抢带宽；另外预取又抢了一遍前 12 张。
+
+现在：
+
+- **超过 9 张切到 `LazyVerticalGrid`**（固定高度 = 屏高的 46%，夹在 240–420dp），
+  只组合/请求视口内的瓦片，滚动到哪加载到哪；9 张以内仍走原来的紧凑行布局
+  （视频源只有一两条码流时不会出现大片空白）；
+- 顺手把瓦片抽成 `RssPickerTile`，两种布局共用；
+- **预取改成"下一屏"**（`images.drop(12).take(12)`）并延后 700ms，让首屏先下；
+  正文文本在网格下方，超长时单独滚动（最多 140dp）。
+
+调试中还发现 `heightIn(max=…)` 的包裹式网格在对话框里会自己往下漂
+（日志里 `firstVisibleItemIndex` 从 21 一路涨到 72），因此改用**确定高度**，
+网格稳定停在顶部（`grid first=0`）。
+
+**平板实测（小米 25102RKBEC / Android 14，85 张图集）**：打开选择器后 4 秒内
+首屏 9–12 张全部显示（此前要等 80 张排队），下滑即时加载新行，网格停在顶部
+不漂移。
+
+单元测试 **308 条全绿**。
+
+#### 4.9.103 选择器排版整理
+
+- **去掉「打开原文」按钮**：浏览器模式本身就有入口，选择框里它是多余的一个跳转
+  （长标题时还会被挤成竖排）；
+- 「全选 / 清空」移到「文章图片（N）」同一行的右侧，与它们作用的对象对齐，
+  省掉一整行；
+- 标题最多两行（原来三行，长标题会把图片挤出屏幕）；
+- 正文为空时的「没有可显示的正文」提示只在**没有图片**时显示（有网格时它是噪声）；
+- 底部按钮整理为一行：`重新抓取`（次要）+ `加入分组（N）`（主要），`确定` 单独
+  靠右；`加载中` 改为计数旁的小图标。
+
+单元测试 **308 条全绿**。
+
+#### 4.9.104 新源进入即加载第一个分类 + 提示文案修正
+
+「点击对应的分类才加载」对老源是对的（进入即秒显缓存列表），但对**刚添加的源**
+就变成"进去一片空白、不知道要点哪里"。现在按"有没有缓存"分流：
+
+- 进入源时先读 `rssArticleCount(sourceId)`；
+- **0 篇（新源）**：直接把当前分类（默认第一个）抓下来 ——
+  `rssSelectCategory(source, index)`（内部 `refresh(initialPages = 2)`，索引型源
+  会并发抓两页），期间界面显示进度；
+- **已有文章**：保持原样，只显示缓存列表，点分类才走网络。
+
+提示文案同步修正：
+
+- 旧的空列表提示是「还没有文章，点来源卡片上的「立即更新」」——来源卡片上早已
+  没有这个按钮了。改为「这个分类还没有内容，点上方分类可重新加载」；
+- 新增 `rss_loading_category`（`正在加载「%1$s」…`），加载中显示具体分类名，
+  而不是笼统的「加载中…」；7 种语言（zh / zh-rTW / en / es / ru / ko / ja）一起补。
+
+**平板实测（小米 25102RKBEC / Android 14）**
+
+- 清掉源 25 的缓存后进入：显示「正在加载「PURE MEDIA」…」，
+  `RSS refresh ok: source=25 fetched=60 new=60`（3.9s）后列表直接出现内容；
+- 再次进入同一源：秒显已存列表（无新的 `RSS refresh ok`），仍是"点分类才加载"。
+
+单元测试 **308 条全绿**。
+
+#### 4.9.105 订阅源列表保留滚动位置
+
+进入某个源再返回时，订阅卡片列表会跳回顶部 —— 因为 `when (screen)` 切屏会把
+`SubscriptionScreen` 整棵组合树销毁，`LazyColumn` 的滚动状态（局部 `remember`）
+随之丢失。现在把状态**提到调用方**：
+
+```kotlin
+// WallpaperSwitcherApp
+val subscriptionsListState = rememberLazyListState()   // 在 when 之外
+...
+is Screen.Subscriptions -> SubscriptionScreen(..., listState = subscriptionsListState)
+```
+
+`SubscriptionScreen` 的 `listState` 参数带默认值（`rememberLazyListState()`），
+其它调用点不受影响。
+
+**平板实测（小米 25102RKBEC / Android 14）**：源列表下滑三屏后进入
+`www.xiurenai.com`，返回时可见卡片与坐标与进入前完全一致
+（`392 / 442 / 506 / 548 / 752 / 802 / 866 / 908 / 1112 / 1162`），不再回到顶部。
+
+单元测试 **308 条全绿**。
+
+#### 4.9.106 cosplaytele 这类源「阅读有内容、壁纸软件空白」的修复
+
+用户导入的 `cosplaytele` 在阅读里正常，在壁纸软件里始终 `err:not_found`。实测
+（平板 curl，含 VPN）：**首页 200，但 `sortUrl` 的前两个分类是死链**——
+
+```
+https://cosplaytele.com/                     -> 200
+https://cosplaytele.com/category/video-cosplay/ -> 404   ← 默认分类
+https://cosplaytele.com/category/nude/          -> 404
+https://cosplaytele.com/category/cosplay/       -> 200
+```
+
+新逻辑又默认加载第一个分类，于是整源空白。两处修复：
+
+1. **分类失效回退首页**（`LegadoRss.fetchPages`）：首页抓取失败（HTTP 404 等）或
+   解析为空，且当前是分类的第一页时，自动改用 `sourceUrl` 再抓一次
+   （阅读打开源时展示的也是首页流），日志记
+   `category 'X' failed (not_found); using https://…/`；
+2. **按分类判断是否需要自动加载**：进入源时改看"当前分类有没有缓存"
+   （`countOfSort`），不再只看整源数量 —— 之前只要该源别的分类有内容，
+   当前空白分类就不会自动加载。
+
+顺带确认：`articleFrom` 生成的条目要求标题或链接非空；首页流解析出 66 条带标题、
+带封面的文章。
+
+**平板实测**：进入 cosplaytele → 日志
+`category 'Video Cosplay' failed (not_found); using https://cosplaytele.com/` →
+`RSS refresh ok: source=29 fetched=66 new=66`（2.1s），列表出现 66 条带缩略图的
+文章；点进第一篇，浏览器模式收集到 42 张图，可正常加入分组。
+
+单元测试 **308 条全绿**。
+
+#### 4.9.107 编辑器覆盖源的全部字段
+
+之前的编辑页只列了 `RULE_FIELDS` / `LOGIN_FIELDS` / `OTHER_FIELDS`，像
+`enableJs`、`loadWithBaseUrl`、`singleUrl`、`cacheFirst`、`preload`、`showWebLog`、
+`articleStyle`、`shouldOverrideUrlLoading`、`style`、`sourceIcon`、`customOrder`、
+`concurrentRate`、`lastUpdateTime` 这些字段在表单里看不到（只在原始 JSON 里有）。
+
+现在新增「其余字段（源 JSON）」区：
+
+- `RssSourceEditor.remainingKeys(rawJson)` 列出所有**没有被带标签控件覆盖**的键
+  （按 JSON 顺序），每个键一行文本框，长值自动多行；
+- 底部可**新增字段**（键 + 保存后写入 JSON），把不存在的键补齐；
+- 保存仍走 `applyChanges`：留空即删除该字段，未触碰的字段原样保留；
+- 类型不再被字符串化：`coerceToOriginalType` 让布尔/数字字段改完仍是 JSON 的
+  `true/false/123`（新增键按 `true/false` 猜测，其它按文本）；
+- 「启用 CookieJar」开关改为显式写 `true/false`（之前打开开关时传 null，
+  已存的 `false` 不会被改掉）。
+
+顺带修掉一个导入 bug：`LegadoImport.parse` 只读 `name`，而阅读的 RSS 源 JSON 用的
+是 **`sourceName`**，于是所有导入源的标题都退化成域名（`meirentu.club` 而不是
+「美人图」）。现在优先 `name`、回退 `sourceName`；编辑页保存时只在名称真的被改过
+才回写 `sourceName`，URL 始终与表单同步。
+
+**平板实测（小米 25102RKBEC / Android 14）**：编辑页出现 `articleStyle / cacheFirst /
+concurrentRate / enableJs / …/ style`；原样保存后对比数据库 JSON，
+**26 个键一个不少、类型不变**（仅 `sourceName` 与旧版不一致的源除外）。
+
+单元测试 **314 条全绿**（新增 `RssSourceEditorTest` 5 条 + `LegadoImportTest` 1 条）。
+
+#### 4.9.108 订阅界面精简 + 订阅文章不再本地缓存
+
+**界面**：订阅源列表去掉「全部刷新」和「代理」两个按钮（以及代理对话框、ViewModel
+里的 `refreshAllRssSources` / `rssProxyValue` / `rssProxySave`），页面只剩源卡片
+和「添加订阅源」浮动按钮。代理的 HTTP 支持保留在引擎里（老配置仍生效），但没有
+入口了。
+
+**不再缓存（省存储）**：
+
+1. **进源实时抓**：`SubscriptionArticlesScreen` 进入时无条件
+   `rssSelectCategory(source, index)`（内部 `refresh(initialPages = 2)`），列表不再
+   吃本地缓存；
+2. **退出即清空**：`DisposableEffect(sourceId) { onDispose { viewModel
+   .clearRssSourceCache(sourceId) } }` —— 在 ViewModel 作用域执行
+   `DELETE FROM rss_articles WHERE sourceId = ?`，连正文缓存（`content` 列）一起删，
+   只保留用户加入分组的壁纸文件；
+3. **启动清残留**：`WallpaperSwitcherApp.onCreate` 里把上一次运行遗留的
+   `rss_articles` 行全部删除（实测启动时一次清掉 3311 行）；
+4. **取消后台定时刷新**：`RssScheduler.ensureScheduled` 改为只
+   `cancelUniqueWork("rss_refresh")`（6 小时周期任务不再排队），
+   `refreshAllNow` 一并删除；`RssRefreshWorker` 类保留（避免历史 WorkManager 记录
+   指针悬空），但不再被任何代码排入队列。
+
+代价：进入源需要一次网络往返（约 2 秒），换来的是订阅内容不占手机存储。
+
+**平板实测（小米 25102RKBEC / Android 14）**：启动后 `rss_articles` 由 3311 行
+降到 0；进入源 → `RSS refresh ok: source=30 fetched=60 new=60`、库内 60 行；
+返回源列表 → 日志 `RssCache: cleared cached articles of source=30`、库内 0 行。
+
+单元测试 **314 条全绿**。
+
+#### 4.9.109 订阅导入的媒体：占用说明与「删行不删文件」修复
+
+**占不占存储**：占。`RssMediaImporter` 把订阅里勾选的图片/视频下载到应用私有目录
+`files/rss/<源 id>/<sha256>.<ext>`（在线壁纸时代还有 `files/online/<id>/`），
+这些就是加入分组的壁纸本体，会一直占着应用存储。
+
+**原本的漏洞**：删除图片（单张 / 批量 / 删分组）只删数据库行，**文件留在磁盘上**，
+删除订阅源也一样。实测平板上 `files/rss` 有 **959 个文件 / 280MB**，其中只有
+**111 个**还被分组引用 —— 848 个是删行后留下的孤儿。
+
+修复：
+
+1. `deleteImage` / `deleteImages` / `deleteImagesByIds`（后者先 `getUrisByIds` 取
+   URI 再删行）和 `deleteGroup` / `deleteGroups` 都会调用
+   `deleteOwnedMediaFiles(uris)`；
+2. 该助手**只删应用私有目录下的文件**（`files/rss/`、`files/online/`），相册 /
+   文件夹来源的 uri 指向用户自己的文件，绝不触碰；
+3. 新增 `OwnedMediaCleaner.sweep`：启动时扫这两个目录，把数据库里已无对应行的文件
+   清掉（跳过 10 分钟内刚写入的下载），并删除清空后的目录。
+
+**平板实测**：启动清理日志
+`swept 848 orphan file(s) under files/rss (250MB freed)` +
+`swept 16 orphan file(s) under files/online (6MB freed)`，
+`files/rss` 由 280MB/959 个 → **28MB/111 个**（正好等于仍被引用的行数）；
+随后在分组里批量删除一条导入图片：行消失、`files/rss/34/8b85….jpg` 同步消失。
+
+单元测试 **314 条全绿**。
+
+#### 4.9.110 设置：订阅图片下载目录（默认应用私有 / 可选到自选文件夹）
+
+在「设置 → 文件夹自动扫描」区块下面新增一行 **订阅图片下载目录**：
+
+- 默认「应用私有目录（默认，不占相册）」= `files/rss/<源 id>/`，和以前一样；
+- 点这行用 SAF（`OpenDocumentTree`）挑一个文件夹，选完
+  `takePersistableUriPermission` 持久化授权，行里显示该文件夹名，右侧多一个
+  「恢复默认」；选中的是 `host:port` 之外的目录 URI（存 `app_settings.rss_download_dir`）。
+
+引擎侧（`RssMediaImporter`）：
+
+- 下载 + 校验仍在私有目录的临时文件里做（`BitmapFactory` / 文件头校验不变），
+  校验通过后用 `DocumentFile` 按 `<sha256>.<ext>` 写进用户目录，行里存
+  `content://` 文档 URI，然后删掉临时文件；
+- 同名文档已存在就**复用**（去重），写失败则回退到私有目录（日志
+  `publish failed: …`）；
+- 批量入库日志会记 `published N file(s) into …`。
+
+删除与清理同步跟上：
+
+- `deleteOwnedMediaFiles` 现在同时处理 SAF 文档：只删**落在用户所选目录树内**的
+  `content://` 文档（`RssDownloadDir.isInside` 比对 documentId 前缀），相册 /
+  文件夹来源的 uri 依旧不碰；
+- `OwnedMediaCleaner` 启动清理会顺便扫这个目录，只删**我们自己命名**的文件
+  （64 位十六进制 + 扩展名）中已无对应行的，用户自己的文件不动。
+
+**平板实测（小米 25102RKBEC / Android 14）**：选了一个自选文件夹后，
+`import start: 1 url(s)` → `published 1 file(s) into content://…tree/primary%3A…`，
+设备上出现 `7a93e88e….webp`（146KB）且行 URI 为 `content://…/document/…`；
+在分组里删除该图后，行与文件同时消失（`row 143291: 0`、文件计数 0）；
+最后点「恢复默认」，设置清空回到私有目录。
+
+单元测试 **314 条全绿**。
+
+#### 4.9.111 删除订阅图片不再卡顿 + 配置导出带上订阅源
+
+**删除提速**。`guardedWrite` 跑在 `viewModelScope`（主线程），而 4.9.109 加的
+`deleteOwnedMediaFiles` 是同步逐文件删除 —— 一次选择上千张时，上千次
+`File.delete()` / SAF `deleteDocument`（binder 调用）全压在主线程上，界面直接卡住。
+
+现在：
+
+- 文件删除整体挪进 `Dispatchers.IO`，用 `Semaphore(8)` **8 路并行**，逐个删完
+  在后台收尾；
+- 取 URI 也**分片查询**（每次 500 个 id）：SQLite 旧设备绑定变量上限 999，一次
+  select-all 删除几千张会把语句撑爆（和已有分片 DELETE 同一原因）；
+- 新增日志 `MediaDelete: deleted N file(s) in Xms` 便于观察。
+
+**平板实测（小米 25102RKBEC / Android 14）**：临时分组导入 77 张订阅图后
+「批量操作 → 全选 → 删除所选」，**6.3 秒内**行数与文件同时清空
+（`MediaDelete: deleted 77 file(s) in 6284ms`，`files/rss/34` 归零），
+期间界面可正常操作（删除后立即 dump UI 有响应）。
+
+**配置导出增加订阅内容**。`ConfigBackup` 升到 `version: 2`，`Config` 增加
+`sources: List<SourceConfig>`（name / url / type / enabled / rawJson），
+导出文件新增 `"sources": [...]`；导入时按 URL 去重后插入新订阅源，
+返回 `ApplyResult(groups, sources)`，提示语改为「已导入 %1$d 个分组、%2$d 个订阅源」。
+老版本（version 1）的配置文件仍可导入（sources 视为空）。
+
+**平板实测**：导出配置 → 文件 `version: 2`，其中 `rawJson` 条目 23 个（= 当时的
+订阅源数量）；单元测试新增 3 条（订阅源往返、缺 url 跳过、v1 文件兼容），
+总计 **317 条全绿**。
+
+#### 4.9.112 取消设置里的「运行状态」面板
+
+设置页删掉整块 **运行状态**（引擎是否运行 / 当前壁纸 / 本次运行切换次数 /
+图片解码次数 / 媒体读取次数 / 内存 PSS / 距下次切换 / 刷新按钮），连带清理：
+
+- `SettingsScreen` 里该 `SettingsSection` 与 `StatusLine` 组件；
+- `WallpaperViewModel.statusSnapshot()` 与 `StatusSnapshot` 数据类；
+- 7 种语言里的 `settings_section_status`、`status_*` 共 11 条字符串。
+
+`LiveWallpaperService.engineRunning` 仍被切换服务使用，保留。
+
+单元测试 **317 条全绿**。
+
+#### 4.9.113 订阅源列表多选（仅批量删除）
+
+订阅源列表加上多选，交互与分组列表一致：
+
+- 入口：列表右上角的 ☑ 图标，或长按任意订阅卡片（长按会直接选中该源）；
+- 多选态工具栏复用抽出来的 `MultiSelectActionsBar`（`HomeScreen` 与
+  `SubscriptionScreen` 共用，`GroupSelectionToolbar` 已迁移到该文件）：
+  第一行「退出 / 全选 / 已选 n/m」，第二行动作按钮；
+- 卡片在多选态显示 ○ / ✓ 与高亮底色，右上角的单删按钮隐藏，「添加订阅源」浮动
+  按钮也收起；
+- **订阅源的多选只保留「删除」**（不做批量启用/停用）：把工具栏的
+  `onEnable` / `onDisable` 传 null 即可隐藏那两个按钮，分组列表仍然保留启用/停用。
+  删除前有确认框（`dialog_delete_sources_message`，说明已导入分组的图片会保留），
+  实现为 `viewModel.deleteRssSources(ids)`。
+
+**平板实测（小米 25102RKBEC / Android 14）**：点右上角 ☑ 进入多选 → 工具栏为
+「✕ / ☐全选 / 已选 0/22」；点一张卡片变「已选 1/22」并出现唯一的动作按钮「删除」；
+再点 ✕ 退出、单删按钮与浮动按钮恢复。
+
+单元测试 **317 条全绿**。
+
+#### 4.9.114 UI 重构（参考 HyperIsland / Miuix）：设计令牌、大标题与悬浮胶囊底栏
+
+**动手前的备份**：`D:\WallpaperSwitcher-backups\src_20261003_213942`（robocopy /MIR，
+排除 `app\build`、`build`、`.gradle`、`.idea`、`.repair`、`.recover`、`kt_probe`，
+151MB，日志 `robocopy_src_20261003_213942.log`）。
+
+**参考对象**：`github.com/1812z/HyperIsland`（安卓端基于 **Miuix**，即 HyperOS/MIUI
+设计语言）。从它的源码里提取到的规范：页面左右 16dp、卡片间距 12dp、卡片圆角 16dp、
+设置行内边距 18/14dp、行首图标与文字间距 16dp、分区标题是 16sp 强调色文字
+（Miuix `SmallTitle`）、底栏是悬浮胶囊（外 64dp / 内 56dp、圆角 28dp、距底 12dp、
+选中项药丸高亮）、状态色为 `#36D167 / #FF5A52`（配 `#DFFAE4 / #FFE5E3` 底色）。
+
+新增 `ui/theme/HiUi.kt` 把这些落成可复用件：`HiDims` 令牌、`HiCard`（16dp 圆角、
+纯色、无描边无阴影）、`HiSectionTitle`、`HiRow`（图标 + 标题/说明 + 行尾）、
+`HiNavigationBar`（悬浮胶囊 + 药丸选中）、`HiStatCard` / `HiStatusCard`（状态配色）。
+
+本轮应用范围：
+
+- **顶栏**：`CenterAlignedTopAppBar` → 左对齐 24sp 粗体标题、透明底
+  （内容从标题下方滚过），返回箭头与浏览器叠层逻辑不变；
+- **底栏**：Material `NavigationBar` → `HiNavigationBar` 悬浮胶囊，
+  三个标签（首页/订阅/设置）选中态用药丸 + 强调色；
+- **首页**：「壁纸分组」标题改为 Miuix 小号强调色标题；分组卡片 20dp→16dp 圆角、
+  去掉描边、图标从渐变圆形改为 44dp 圆角方块（14dp 圆角），行内边距 18/14；
+- **设置页**：`SettingsSection` 去掉标题前的强调条，改为一整行小号强调色标题，
+  分组卡片 20dp→16dp 圆角并去掉描边。
+
+**验证**：`AOSP 14` 模拟器上编译安装后截图确认——左对齐大标题、悬浮胶囊底栏
+（选中药丸）、首页强调色小标题与 16dp 圆角卡片均按预期渲染。
+
+单元测试 **317 条全绿**。
+
+#### 4.9.115 UI 重构（续）：分组详情、订阅列表与顶栏返回逻辑
+
+同一套 `HiDims` 令牌继续铺开：
+
+- **分组详情**：顶部信息卡 20dp→16dp 圆角并去掉 2dp 阴影；媒体格子圆角 14dp→12dp，
+  选中描边 3dp（primary）→ 2.5dp（跟随主题强调色）；
+- **订阅列表**：源卡片 16dp 圆角、零阴影、行内边距 18/14；文章行 16dp 圆角，
+  缩略图 10dp 圆角，内边距 14/12，底色与源卡片统一到 45% surfaceVariant；
+- **顶栏返回箭头**：原来「非首页」就画返回箭头，导致「订阅」「设置」这两个底栏
+  顶层标签看起来像详情页。现在只有真正的子页面（分组详情 / 源内文章 / 登录 / 编辑源）
+  才显示箭头。
+
+**验证**：模拟器截图确认订阅页为左对齐大标题 + 16dp 圆角卡片 + 胶囊底栏；
+新包同时装到模拟器与手机（`0A0AA84189A00540`，21:58）。
+
+单元测试 **317 条全绿**。
+
+#### 4.9.116 UI 重构（续二）：首页服务控制卡
+
+首页最显眼的服务控制卡从 Material 观感收敛到参考项目（HyperIsland）的状态卡：
+
+- 运行时底色改为参考项目的绿色状态底 `#DFFAE4`、状态点用 `#36D167`
+  （深色主题回退到强调色容器以保对比度）；停止时保持中性 surfaceVariant；
+- 圆角 24dp→16dp、去掉 3dp 阴影与停止态描边（Miuix 卡片无阴影无描边）；
+- 「暂停 / 预览下一张」由 OutlineButton 改为 tonal 按钮 + 14dp 圆角，
+  「立即切换」同样收敛为 14dp 圆角，与卡片内其它元素对齐。
+
+**验证**：模拟器截图确认首页状态卡为绿色底 + 绿色圆点 + 16dp 圆角 + 圆角药丸按钮；
+新包已装到模拟器与手机。单元测试 **317 条全绿**。
+
+#### 4.9.117 UI 重构（续三）：分组详情操作栏
+
+分组详情顶部的「添加壁纸 / 批量操作 / 清理失效」原来是一个 tonal + 两个描边按钮，
+与新的卡片规范不一致。现在三个按钮统一为 **tonal + 14dp 圆角**、最小高度 44dp
+（保持原有的可点区域与窄屏两行文字策略），整栏观感与首页状态卡的按钮一致。
+
+**验证**：编译安装到模拟器与手机；单元测试 **317 条全绿**。
+
+#### 4.9.117 UI 重构（续四）：对话框圆角统一
+
+主题 `AppShapes.extraLarge`（`AlertDialog` 默认取这一档）28dp → **20dp**，
+全部对话框（新建分组、删除确认、暂停时长、间隔设置、图片选择等）一次性收敛到
+HyperOS/Miuix 对话框的观感，同时与页面卡片的 16dp 保持层级差；页面卡片、
+按钮、底部胶囊不受影响。
+
+**验证**：编译通过并装到模拟器与手机；单元测试 **317 条全绿**。
+
+#### 4.9.117 UI 重构（续五）：空态提示
+
+首页「还没有分组」空态原来是一个 80dp 裸图标加淡色文字。现在改为 HyperOS/Miuix
+的容器式空态：44dp 图标放进 96dp、28dp 圆角的浅色方块里（图标取主题强调色），
+标题文字加深到 `onSurfaceVariant`，与新建的卡片/图标语言一致。
+
+**验证**：编译通过并装到模拟器与手机；单元测试 **317 条全绿**。
+
+#### 4.9.117 UI 重构（续六）：订阅空态
+
+订阅页「还没有订阅源」的空态也改成容器式图标：96dp、28dp 圆角浅色方块内放
+44dp 的 `MenuBook` 图标（强调色），间距 12→18dp，与首页空态、卡片图标语言统一。
+
+**验证**：编译通过并装到模拟器与手机；单元测试 **317 条全绿**。
+
+#### 4.9.117 UI 重构（续七）：浏览器页按钮
+
+全屏浏览器底部按钮区（系统播放器 / 取消 / 阅读 / 用这些图）的「取消」「用这些图」
+补上 14dp 圆角，与全局按钮规范一致（其余两个是纯文字链接样式，保持原样以免
+四个按钮挤在一起时显得过重）。
+
+**验证**：编译通过并装到模拟器与手机；单元测试 **317 条全绿**。
+
+#### 4.9.118 设置页归组 + 全局加载态统一
+
+**设置页归组**（把之前零散、串组的项放回它该在的卡片）：
+
+- 「订阅图片下载目录」原本混在「文件夹自动扫描」卡片里（它是存储位置设置，
+  与扫描无关），现在单独成组，复用早已存在但一直没人用的分区标题
+  `settings_section_online`（在线壁纸源 / Online sources），七种语言都有现成译文；
+- 「切换方式」的分区标题原来叫「切换方式/悬浮按钮外观」，而悬浮按钮外观有自己
+  的独立卡片（紧跟其后），标题里的斜杠是合并时期的残留 —— 七种语言统一改回
+  「切换方式」；
+- 清掉了扫描卡片与悬浮按钮卡片之间的双重 `Spacer`（页面其它分区都是 8dp）。
+
+**全局加载态统一**：新增 `ui/theme/HiUi.kt` 的 `HiLoadingHint` / `HiLoadingState`
+（静态沙漏图标 + 文字；全应用刻意不用动画进度圈，捆绑的 animation-core 缺少 M3
+`CircularProgressIndicator` 所需方法，历史上会崩 NoSuchMethodError）。替换掉
+各页各自手写的加载行，图标尺寸 / 间距 / 字色收敛到一处：
+
+- 分组详情的首屏网格加载与文件夹扫描态；
+- 首页「下一张预览」对话框；
+- 订阅列表的源内文章加载、分页加载、文章选择器的图片加载；
+- 美女图选择器首屏、RSS 登录页取源、源编辑器等源尚未就绪时的等待态。
+
+**空态也抽成共享组件**：`HiEmptyState`（96dp / 28dp 圆角的浅色方块 + 44dp 强调色
+图标 + 标题 + 可选说明）取代首页、订阅、分组详情三处各自手写的空态 —— 上一轮
+只统一了首页与订阅，分组详情仍是 64dp 裸图标 + 40% 透明文字。
+
+**验证**：编译通过并装到模拟器与手机；单元测试 **317 条全绿**；模拟器截图确认
+设置页出现独立的「Online sources → Subscription download folder」卡片、原扫描
+卡片只剩自动扫描与扫描间隔、顶部区块标题已从「Switching & button」变为
+「Switching」；首页与分组详情在重装后正常渲染。
+
+#### 4.9.119 UI 重构（续八）：动效层（HyperOS/Miuix Motion）
+
+新增 `ui/theme/HiMotion.kt` 动效令牌：时长 150 / 240 / 360ms，曲线用
+EmphasizedDecelerate（进场）、EmphasizedAccelerate（退场）、Standard（轻量），
+另有 selection / press 两条弹簧。所有动效都从这里取参数。
+
+**页面切换**（`WallpaperSwitcherApp`）：`AnimatedContent` 只播「进场」、
+`ExitTransition.None` —— 旧页面立即释放，动画期间只有目标页在合成，保留历史
+版本「整屏 crossfade 两页同屏导致掉帧」的教训。方向按页面层级变化决定：
+
+- 进入子页面（分组详情 / 源内文章 / 登录 / 编辑源）：从右滑入 1/8 宽 + 淡入；
+- 返回：从左滑回；顶层标签之间：轻微上浮 1/28 高 + 淡入；
+- 顶栏标题交叉淡入，返回箭头随子页面淡入 + 0.8→1 缩放；
+- 浏览器叠层淡入 + 3% 上浮（关闭不动画：WebView 立即释放更重要）。
+
+**控件动效**：
+
+- 悬浮胶囊底栏：药丸底色、图标/文字颜色、图标缩放共用同一个 0→1 进度
+  （弹簧），选中切换是连贯的一段动画而不是三个硬切；
+- `HiCard` 按压反馈：按下 0.975 缩放 + 默认涟漪，松手回弹（只走
+  graphicsLayer，不触发重新布局）；
+- 展开/收起（淡入 + expandVertically / shrinkVertically）：设置页里依赖开关的
+  子项（切换间隔、旋转方向、锁屏间隔）、首页两张警告卡与服务卡按钮区、首页与
+  订阅页的多选工具栏、分组详情的扫描进度卡；
+- 首页服务卡：运行/停止底色与状态点颜色都用进度插值，不再硬切。
+
+**回归修复（真机级别）**：底栏的弹簧会轻微过冲（1→0 时短暂低于 0），而
+`Color.copy(alpha = v)` 对越界值直接抛 `IllegalArgumentException`
+（`red = …, blue = …, alpha = -0.0019…`），在模拟器上切换标签时崩溃过一次。
+颜色用的进度现在一律先 `coerceIn(0f, 1f)`；同样的导航脚本重跑无崩溃。
+
+**验证**：编译通过并装到模拟器与手机；单元测试 **317 条全绿**；模拟器上跑
+「三个标签来回切 + 进分组 + 返回」×3 与设置页开关的展开/收起，logcat 无
+FATAL；真机装包后进程正常、无崩溃日志。
+
+#### 4.9.120 首页服务卡运行底色：跟随主题色的渐变
+
+运行态的底色原来是参考项目的固定薄荷绿（浅色 `#DFFAE4`，深色用
+primary/secondary 容器色）。实际观感是「绿底 + 强调色的标题 + 强调色的 tonal
+按钮」三个色系撞在一起（默认蓝紫主题下尤其明显），因此改为**全程跟随主题色**：
+
+- 渐变从 `secondaryContainer`（也就是卡内 tonal 按钮的颜色）出发，向右下过渡
+  到 `lerp(secondaryContainer, primary, 0.25)`；
+- 绿色语义只保留在左侧的实心状态点上；标题/说明继续用 `onPrimaryContainer`；
+- 停止态仍是中性灰（surfaceVariant 0.85 → 0.55），运行↔停止之间依旧用进度
+  插值平滑过渡（4.9.119）。
+
+一个坑：最初直接写成 `primaryContainer → secondaryContainer`，但在自定义主题
+方案里这两个角色是**同一个颜色**，而 `FilledTonalButton` 用的也是
+`secondaryContainer` —— 结果整张卡和三个按钮同色，按钮"消失"在底色里。
+终点向 `primary` 压 25% 后，按钮在卡片中下部重新变成可辨认的浅色药丸。
+
+**验证**：浅色 + 深色两种主题各截图确认（浅色 #D9E1F8 → #B4C1E0 的蓝紫渐变、
+深色蓝灰渐变，绿点与按钮都可辨认）；单元测试 **317 条全绿**；装到模拟器与手机。
+
+#### 4.9.121 提示文案精简（七种语言同步）
+
+把界面里偏啰嗦的提示语统一改短，覆盖 20 条 key × 7 个语言目录：
+
+- **首页**：引擎未运行 / 没有桌面分组 / 缺少媒体权限 三条警告（原来最长 59 字，
+  警告卡占两行）以及运行 / 仅锁屏 / 已停止 三句状态说明；
+- **设置行**：旋转适配、自动扫描与间隔、视频声音、视频播完再切、过渡效果、
+  导出日志、日志隐私提示；
+- **使用指南** 4 步；**系统壁纸提示**（解锁直换、视频/GIF 需要动态壁纸）。
+
+文案只做减法：保留「怎么修」和风险提示（权限、隐私、占位图、仅锁屏），
+删掉重复的限定语。例如首页引擎警告由「动态壁纸引擎未运行：定时切换仍可用
+（静态壁纸模式），但双击切换不可用；如需动态效果，请在系统壁纸设置中选中
+『壁纸切换』」（59 字）改为「引擎未运行：双击与视频动效不可用，定时切换仍
+可用；请在系统壁纸设置中选择本应用」（40 字），在平板/手机上从两行降为一行。
+
+批量替换用「key → 新文案」映射表 + 逐键校验（每个 key 必须唯一命中，否则
+报错退出），七个 `strings.xml` 全部改完仍是合法 XML（544 条 / 文件），
+UTF-8 无 BOM、CRLF 保持不变。
+
+**验证**：单元测试 **317 条全绿**；模拟器（应用语言切到简体中文）截图确认首页
+警告缩为一行、设置行说明变短；编译通过。
+
+#### 4.9.122 选择器界面重构：选择文件夹 + 图片选择器
+
+**「添加壁纸」入口**（`AddWallpaperDialog`）：四个 TextButton 选项改为 Miuix 选项
+行 —— 强调色图标 + 文字 + 行尾箭头，整行可点、12dp 圆角按压高亮。
+
+**选择文件夹对话框**（`FolderPickerDialog`，多选文件夹导入）：
+
+- 搜索框换成 Miuix 填充式（`hiCardColor()` 底、无描边、14dp 圆角），不再是
+  Material 描边输入框；
+- 排序 chip 圆角 12dp；行高 52 → 56dp，缩略图 10dp 圆角；
+- 选中底色由 `secondaryContainer` 改为**跟随主题强调色**（12% 透明），并用
+  `animateColorAsState` 过渡；勾选框也用强调色；
+- 空态改为紧凑版容器式（64dp / 20dp 圆角方块 + 30dp 强调色图标）；
+- 确认按钮改为 tonal 药丸（14dp 圆角），标题用 titleLarge。
+
+**图片选择器**（订阅文章 → 用这些图）：网格方块 8 → 12dp 圆角，选中态由
+「黑色蒙层 + 白色对勾图标」改为 **2.5dp 强调色描边 + 强调色实心圆形角标 +
+18% 轻压暗**；确认按钮「加入分组 (N)」改为 tonal 药丸。这与分组媒体网格、
+（暂未接线的）美人图选择器共用同一套选中语言。
+
+**美人图选择器**（`MeirentuPickerDialog`）同样统一了：圆形返回/关闭按钮 +
+左对齐标题 + 「已选 N 张」药丸（点一下即清空）+ tonal 完成按钮；相册列表
+改为无分割线的卡片行、行尾箭头；网格选中态与图片选择器一致；底部分页按钮
+改 tonal 药丸。注意：全工程搜索确认该对话框**目前没有任何入口**（死代码），
+这里只做样式统一，等在线源接线后即可用。
+
+**验证**：单元测试 **317 条全绿**；模拟器截图确认 —— 选择文件夹对话框（选中
+行出现强调色底 + 勾选、计数变为「已选 1」、确认按钮变「导入所选 (1)」）、
+订阅文章图片选择器（两张图全部选中态为强调色描边 + 角标、加入分组药丸）；
+新包已装到模拟器与真机。
+
+#### 4.9.123 修复：选择文件夹长列表与操作行之间的大片空白
+
+用户反馈（890 个文件夹时截图）：文件夹列表在对话框里只占了大约 6 行就结束，
+下面一大片空白，然后才是「取消 / 导入所选」。
+
+原因：列表被写死 `heightIn(max = 340.dp)`，而列表右侧的 `ListFastScroller`
+用的是 `fillMaxHeight()` —— 它会把外层 Box 撑到对话框给的全部剩余空间，
+Box 的高度因此是 `max(列表 340dp, 滚动条 撑高)`，多出来的部分就成了空白。
+
+修复：去掉列表的 340dp 上限，让它用满对话框剩下的空间（对话框本身仍有 92%
+屏高的上限，操作行始终贴着列表下方）；顺带给列表加 8dp 底部内边距，最后一行
+不再紧贴边缘。短列表（本机 3 个文件夹）仍然按内容收缩，对话框保持紧凑 ——
+这一点在模拟器上截图确认过。长列表的完整复现需要在真机上验证（模拟器的
+MediaStore 由 adb 灌入，应用侧只可见少量媒体行，无法造出几百个文件夹）。
+
+**验证**：单元测试 **317 条全绿**；编译通过；新包已装到模拟器与真机。
+
+#### 4.9.124 修复：推次元等「@js: 分类 + `||` 备选规则」的源报 bad_url / 0 篇
+
+用户反馈「推次元这个源地址无法访问」，设备上该源的 `lastResult` 是
+`err:bad_url`。源地址本身正常（`https://a2cy.com/phone/home/` 返回 200），
+问题出在规则引擎的两处兼容性缺口：
+
+1. **分类地址是 JS**：该源 `sortUrl` 写成
+   `正片::@js:'…/phone/list' + (page > 1 ? '/index_' + page + '.html' : '')`，
+   而 `pageUrl()` 只会替换 `{{…}}`，不执行 `@js:`。整段 `@js:…` 被当成 URL
+   交给端点校验 → `EndpointPolicy.INVALID` → `bad_url`。
+   现在分类路径若以 `@js:` / `<js>` 开头，会以 `page` 为变量用 Rhino 求值
+   （与 `header` / `ruleContent` 的处理一致），再走原来的分页替换。
+2. **`||` 备选没有被拆**：`ruleTitle` 之类写成
+   `h2 a@text||h3 a@text`，而 `RuleAlternatives` 只拆 `,`。整段进入规则引擎
+   后会按 `@` 拆成 `["h2 a", "text||h3 a", "text"]`，中间那段选不到任何元素，
+   取值变空 —— 列表页明明抓到 10 条，却因为标题/链接为空被逐条丢弃
+   （日志 `page=1 … items=10` 但 `fetched=0`）。现在 `||` 在括号/引号之外也
+   作为备选分隔符拆开，语义仍是「取第一个非空」。
+
+另外在每页抓取后补了一行诊断日志（`page=N url=… bytes=… items=…`），这类
+「抓到了但存不下来」的问题以后可以直接从日志判断卡在哪一步。
+
+**验证**：单元测试 **322 条全绿**（新增 5 条：`@js:` 分类分页、纯路径分类、
+无分类回退、真实列表片段解析、`||` 拆分边界）；模拟器上导入同一份源，刷新从
+`ok:0:0` 变为 `fetched=20 new=20`，文章列表 20 条带缩略图；新包已装到用户设备。
+
+#### 4.9.125 图片选择器：去掉网格下方的正文文字
+
+订阅文章的图片选择器（「用这些图」）原来在网格下面还渲染一段文章正文
+（`FeedParser.stripHtml(html)`，最多 140dp、可滚动），用户反馈「图片下面有
+文字信息」。选择器只负责选图，这段正文现在整个移除；只有「还没加载到图片」
+时才保留原来那句空态提示。同时删掉了只为这段正文准备的 `body` 计算。
+
+**验证**：单元测试 **322 条全绿**；模拟器打开推次元文章 →「用这些图」，对话框
+只剩标题、`文章图片 (N)` + 全选/清空、图片网格与底部按钮；新包已装到模拟器与
+用户设备。
+
+#### 4.9.126 图片选择器排版优化
+
+在 4.9.125 去掉正文之后，再把选择器本身的排版收紧、把空间让给图片：
+
+- **标题**用 `titleLarge`（22sp）而不是对话框默认的 24sp 大标题，并保持两行截断；
+- **网格高度上限**从 46% 屏高（240–420dp）提到 52%（260–480dp）——模拟器实测
+  可见网格从约 555px 提到 730px；
+- **格子比例** 0.75 → 0.8（略矮），同样高度能多看到内容；格子间距 6 → 8dp，
+  与分组网格 / 美人图选择器一致；
+- **表头**：`文章图片 (N)` 左侧留白，右侧在已有选择时显示一枚强调色药丸
+  「已选 N 张」（复用美人图选择器同一条文案），「全选 / 清空」改为紧凑文字
+  按钮（内边距 8/4dp）；区块间距 10 → 12dp，底部按钮间距 4 → 8dp。
+
+**验证**：单元测试 **322 条全绿**；模拟器截图确认（标题变小、已选药丸、两行
+六格可见、底部三个按钮排布）；新包已装到模拟器与用户设备。
+
+#### 4.9.127 图片选择器：窄屏不再折行，「确定」放到最右
+
+4.9.126 的「已选 N 张」药丸在用户手机（393dp 宽）上把「文章图片 (14)」挤成了
+两行（「文章图片」/「(14)」），底部三个按钮（确定 / 重新抓取 / 加入分组）也被
+`AlertDialog` 的 FlowRow 折成上下两排。按用户要求重排：
+
+- **表头单行**：`文章图片 (N)` 限一行 + 省略号；**全选 / 清空合并成一个按钮**
+  （已全选时显示「清空」，否则「全选」）；「重新抓取」从底部移到表头做成
+  48dp 图标按钮（a11y 触控目标），表头因此只有「计数 + 刷新 + 全选/清空」；
+- **底部单行**：把「加入分组 (N)」放进 M3 的左槽（dismissButton）、「确定」放进
+  右槽（confirmButton）——用户要求「确定」在最右边；两枚按钮在 393dp 下同排；
+- 网格加 8dp 底部内边距，最后一行被裁切时不贴边。
+
+**验证**：把模拟器临时改成 1080×2400 / 440dpi（≈393dp 宽，与用户手机一致）后
+截图确认：表头一行、底部「加入分组（14）| 确定（最右）」一行；单元测试
+**322 条全绿**；模拟器屏幕参数已还原，新包装到模拟器与用户设备。
+
+#### 4.9.128 订阅 / 文章两页：去掉顶栏下方那条空白
+
+用户反馈「订阅与文章间有空白，影响美观」（附订阅列表与文章列表两张截图）。
+根因是两页各自在列表上方放了一整行操作：
+
+- **订阅源列表**：`多选` 图标独占一行（右侧对齐），标题下面空出一条 **~70dp** 的带；
+- **文章列表**：`登录 / 编辑` 一行 + 分类 chip 一行，标题到第一篇文章之间累计
+  **~140dp** 空白。
+
+改动：
+
+- 订阅源列表的「多选」入口搬到 **TopAppBar 的 actions**（app 层维护
+  `sourceSelectionRequest` 计数，列表页消费后回调清零，避免返回列表时又自动
+  进入多选）；
+- 文章列表的 `登录 / 编辑` 同样搬进顶栏 actions（它们本来就属于「这个源」），
+  列表页那一行整体删除；分类 chip 的上下内边距 8 → 6dp，列表顶部内边距 8 → 4dp；
+- 顺带修掉公共多选栏第一行紧贴屏幕边缘的问题（左右各加 8dp）。
+
+**验证**：模拟器按 1080×2400 / 440dpi（≈393dp 宽）复现用户机型 —— 订阅列表
+标题下方直接是卡片，文章列表标题下方直接是分类 chip；顶栏「多选」图标点击后
+正常进入多选模式（✕ / 全选 / 已选 0/2 一行）；单元测试 **322 条全绿**；模拟器
+屏幕参数已还原，新包装到模拟器与用户设备。
+
+#### 4.9.129 登录 / 编辑返回时回到打开它的文章列表
+
+用户反馈：在某个源的文章列表里点「编辑 / 登录」，退出后直接退到了订阅的源列表
+（`onDone = Screen.Subscriptions`），丢掉了刚才读的源。登录/编辑本来就是从
+「这个源的文章列表」打开的，返回目标应该是它：
+
+- 顶栏点「登录 / 编辑」时先记下 `returnToSourceId = screen.sourceId`；
+- 新增 `leaveSourceEditor()`：有记录时回到 `SubscriptionArticles(id)`，没有时
+  才回源列表；顶栏返回箭头、系统返回手势、两个编辑页自身的 `onDone` 共用它；
+- 回到文章列表后，文章的 `LaunchedEffect(sourceId, source?.rawJson)` 会因为
+  rawJson 变化重新拉取，正好把编辑后的规则立即生效。
+
+**验证**：模拟器（1080×2400 / 440dpi）上走「订阅 → 推次元 → 编辑 → 顶栏返回」，
+回到的是同一个源的文章列表（分类 chip 与 20 篇文章都在）；单元测试 **322 条
+全绿**；模拟器屏幕参数已还原，新包装到模拟器与用户设备。
+
+#### 4.9.130 文章列表加载时不再出现两个「正在加载」
+
+用户截图反馈同屏出现两个加载提示：一个是分类 chip 下方的行内提示，另一个是
+空列表时居中的加载态 —— 两者都由 `loading` 驱动，首次进入某个分类时会同时
+显示。
+
+改动：行内提示加条件 `loading && articles.isNotEmpty()`，只在「已经有内容、
+又在重新拉取」时出现；列表为空时统一由居中的那个负责。首次加载/切换分类因此
+只剩一个加载态。
+
+**验证**：模拟器（1080×2400 / 440dpi）上切换「写真」分类，截图确认只有居中
+一个「正在加载「写真」…」；单元测试 **322 条全绿**；模拟器屏幕参数已还原，
+新包装到模拟器与用户设备。
+
+#### 4.9.131 订阅源加载失败时显示具体原因 + 重新抓取
+
+用户要求：加载失败要说明原因。原来的文章列表只会显示「这个分类还没有内容」，
+分不清「真的没内容」和「抓取失败」。
+
+改动（`SubscriptionArticlesScreen`）：
+
+- 读取源上的 `lastResult`（`err:<reason>`，由 `RssSync` 写入），用与订阅卡片
+  相同的 `OnlineSourceRules.decodeResult` + `onlineErrorText` 映射成本地化原因
+  （网络不可用 / 地址格式不正确 / 解析失败 / 需要 HTTPS / 证书校验失败 …）；
+- **列表为空且失败**：完整错误态 —— 容器式图标 + 「刷新失败：<原因>」+
+  「重新抓取」按钮（重新触发 `LaunchedEffect`，走一次真实抓取）；
+- **已有内容但本次刷新失败**：只在列表上方加一行「刷新失败：<原因> · 重新抓取」，
+  不打断阅读、也不清掉旧内容。
+
+**验证**：在模拟器上把测试源的地址改成不存在的域名（改完会还原），刷新结果
+`err:network`，界面显示「刷新失败：网络不可用」+「重新抓取」；单元测试
+**322 条全绿**；测试源已还原为 a2cy.com，新包装到模拟器与用户设备。
+
+#### 4.9.132 切换间隔对话框：11 行单选 → 可换行 chip
+
+定时切换与锁屏定时切换共用同一个 `IntervalPickerDialog`。原来 11 个预设间隔
+各占一整行（单选 + 12dp 内边距），对话框被撑到几乎整屏（用户反馈「占用整个
+屏幕」）。改成与设置页「切换模式 / 缩放模式」同一套控件：
+
+- 预设间隔用 `SettingsOptionChip` 放进 `FlowRow` 自动换行 —— 手机上 4 行放完
+  11 个选项，实测对话框高度从接近整屏降到约 55%；
+- 选中项即点即生效并关闭（保持原行为）；
+- 「自定义时间」的秒数输入框换成填充式（无描边、14dp 圆角，与选择文件夹的
+  搜索框同款），确定按钮改 14dp 圆角药丸；标题用 titleLarge；
+- 整段内容仍保留 `verticalScroll`，小屏 / 横屏也不会被挤出对话框。
+
+**验证**：模拟器按 1080×2400 / 440dpi（≈393dp 宽）截图确认新的 chip 布局与
+自定义输入行；单元测试 **322 条全绿**；模拟器屏幕参数已还原，新包装到模拟器
+与用户设备。
+
+#### 4.9.133 订阅导入支持直接粘贴订阅地址
+
+用户反馈：把订阅地址（`https://ycoo.net/.../xxx.json`）粘进「导入阅读订阅源」
+后导入失败。地址本身正常（HTTP 200，返回 Legado 源 JSON 数组），问题在应用：
+导入只识别「JSON 文本 / `legado://` 分享链接（内联或 src= 远程地址）/ 选择的
+文件」，**不认裸的 http(s) 地址**，于是判成内容格式错误。
+
+改动：
+
+- `LegadoImport.remoteUrlToFetch()`：统一给出「需要先下载的地址」——既包括
+  `legado://…?src=<url>` 里的远程地址，也包括用户直接粘贴的 `http(s)` 地址；
+- `WallpaperViewModel.importLegadoSources()` 改用它：解析不出源时下载该地址再
+  解析（阅读的「导入网络文件」就是这么做的）；
+- 导入对话框的输入框换成填充式（无描边、14dp 圆角），提示文案补上「订阅地址」
+  （七种语言同步）。
+
+**验证**：单元测试 **323 条全绿**（新增 `bareSubscriptionUrlIsDownloadedAndParsed`：
+裸地址会被识别、前后空白被裁掉、JSON/普通文本不会被误判）；端到端在模拟器上
+起了一个本地 HTTP 服务托管测试源 JSON，应用里粘贴 `http://10.0.2.2:8765/src.json`
+→ 导入成功（源列表出现「URL导入测试」，测试数据与本地服务随后已清理）。
+
+#### 4.9.134 识别阅读的「JS 源 / 加密源」并说明原因
+
+用户导入 yckceo 的 `https://www.yckceo.com/yuedu/rss/json/id/376.json` 后提示
+「返回内容无法解析」。抓包分析（该站点屏蔽境外 IP，经 CORS 代理取回）：
+
+- 该 JSON 是标准 Legado 数组，能正常导入；
+- 但源本身（XH发布页）**没有 `ruleArticles`**：规则由远程混淆 JS 库在运行时
+  生成 —— `header` 是 `<js>eval(String(getJs()));</js>`，`jsLib` 指向一份 5 万
+  字节的混淆脚本，另有 25KB 的 `variableComment` 加密载荷（阅读的「加密源」）。
+
+本应用没有这套运行时，于是把它当普通源抓取，最后以 `err:parse` 收场。改动：
+`LegadoRss.requiresJsRuntime()`（声明了 `jsLib` 且解析不出静态规则）+ `RssFetcher`
+在抓取前抛出 `unsupported_js`，七种语言新增
+`online_error_unsupported_js`（「该源依赖阅读的 JS 库（本应用暂不支持）」），
+由订阅卡片与文章列表的错误态显示。
+
+**验证**：单元测试 **326 条全绿**（新增 3 条：JS 源判定、带 jsLib 但仍有静态
+规则时不算、普通源不算）；把该源的真实 JSON 灌进模拟器数据库后刷新，结果为
+`err:unsupported_js`，界面显示「刷新失败：该源依赖阅读的 JS 库（本应用暂不
+支持）」+「重新抓取」（测试源随后已删除）；新包装到模拟器与用户设备。
+
+#### 4.9.135 单 URL / 网页型源的浏览器兜底
+
+用户导入「Pixiv 书源」卡片（`https://pixivsource.pages.dev`）报「返回内容无法
+解析」。该 JSON 里**没有任何规则字段**（连 `ruleArticles` 都没有），`sourceUrl`
+指向的是一个 VitePress 文档站（HTML）——阅读里这类「单URL」源就是直接当网页
+打开的，而我们的应用把它当订阅源去解析，自然失败。
+
+改动：错误态里当原因是 `parse`（内容不是 feed）或 `unsupported_js` 时，多一个
+「用浏览器打开」按钮 —— 用应用内置的全屏浏览器（`RssWebScreen`）打开源的地址，
+既能浏览站点，也能用同一套「用这些图」收集图片。七种语言新增
+`rss_open_in_browser`。
+
+顺带记录 PixivSource 项目的订阅文件（`btsrk.json`，9 条）构成：3 条 JS 源
+（Pixiv / Linpx / 兽人小说站，都带 `jsLib`，属于 4.9.134 的「暂不支持」），
+其余 6 条（Pixiv 书源卡片 / 一键导入 / 兽人控游戏索引 / 兽人游戏库 / 兽展日历 /
+兽聚汇总）都是网页型，现在都能用浏览器兜底打开。
+
+**验证**：单元测试 **326 条全绿**；把「Pixiv 书源」卡片灌进模拟器数据库，刷新
+得到 `err:parse`，错误态出现「用浏览器打开」，点击后内置浏览器成功加载该文档站
+（截图留档，测试源随后已删除）；新包装到模拟器与用户设备。
+
+#### 4.9.136 单 URL / 网页型源：点卡片直接进浏览器
+
+用户要求：网页型源不要再当订阅源解析，点开就用全屏浏览器打开。
+
+判定（`LegadoRss.isBrowseOnly`）：`singleUrl == true`、没有静态规则
+（`parseRules` 为空）、也没有 `jsLib`（JS 源仍走「暂不支持」提示）。原始 JSON
+同时兼容对象与 `[ {…} ]` 两种形态（`rawFields`）。
+
+- 订阅源卡片：状态行显示「网页型源 · 点卡片用浏览器打开」，且不再用红色报错；
+- **点击卡片直接 `rssWebArticle = <该源地址>`**，走应用内置全屏浏览器
+  （`SubscriptionScreen.onOpenBrowser`），不再进入文章列表、不做解析；
+- `RssSync.refresh` 对这类源直接跳过（`Report(true, 0, "browse")`），后台定时
+  刷新不会再把它们标成「更新失败」。
+
+**验证**：单元测试 **329 条全绿**（新增 3 条：卡片判定为网页型、普通 feed /
+JS 源不算、带静态规则的 singleUrl 源不算）；模拟器上导入「Pixiv 书源」卡片，
+卡片显示网页型提示、点卡片直接打开该文档站（测试源随后已删除）；新包装到
+模拟器与用户设备。
+
+#### 4.9.137 h视频这类「JSON API + {{规则}}」源：解析对齐阅读
+
+用户反馈 h视频（`https://api.sgapiaba.xyz`，整源走 JSON API）解析结果和阅读
+不一样。定位到规则引擎的三处差异（都是通用问题，不止这一条源）：
+
+1. **`{{}}` 里只认变量/JS，不认规则**：源里写着
+   `ruleLink = /api/videoplay/{{$.id}}?uuid=1`、`ruleImage = {{$.coverbase64.url}}`、
+   `rulePubDate = 📆{{$.updated_at## .*}}  ⏱️{{$.playtimes}}` —— 阅读会在 `{{}}`
+   里按规则取值，我们取不到就把字面量留下，链接于是变成
+   `/api/videoplay/{{$.id}}?uuid=1`。新增按「变量 → 规则 → JS」求值的
+   `resolveBracedExpressions()`。
+2. **JSONPath 选中的条目再走嵌套 JSONPath 会失败**：条目是 Map，`toString()`
+   不是 JSON，`$.title` 之类全部解析为空。`analyzeJson` 现在对 Map/List 先
+   `Json.encode` 再交给 JsonPath。
+3. **替换后是字面值时被当选择器**：`{{$.playtimes}}` → `3`、
+   `📆{{…}} ⏱️{{…}}` → 一整行文本，被当成 CSS 选择器解析后返回整个条目对象；
+   `/api/videoplay/1?uuid=1`、`/c/1.jpg` 这类字面地址被当成 XPath。新增
+   「模板无规则骨架 → 直接当字面值」与「地址字面值」两条判定
+   （`templateHasRuleMarkers` / `looksLikeUrlLiteral`）。
+
+源里的 `{{v=source.getVariable();…}}`（搜索分类）走的 JS 分支本来就支持
+`source.getVariable/setVariable`，无需改动。
+
+**验证**：新增 `VideoSourceRulesTest` 三条（91porn视频、Rule34视频、h视频的
+JSON API 规则：`$.rescont.data[*]` 列表、`{{$.id}}` 链接、`{{$.coverbase64.url}}`
+封面、`📆{{…## .*}}` 日期、`$.rescont.next_page_url` 翻页），单元测试
+**332 条全绿**；新包装到模拟器（用户设备当时未连接，连上后再装）。
+
+#### 4.9.138 修复：h视频刷新「未知错误」（Android ICU 正则 + 规则降级）
+
+用户真机日志（`cache/logs/runtime.log`）给出了真实原因：
+`PatternSyntaxException: Syntax error in regexp pattern near index 13`，出错的模式
+正是 4.9.137 引入的骨架检测 `\{\{[\s\S]*?}}` —— **未转义的 `}}` 桌面 JVM 容忍，
+Android 的 ICU 正则引擎直接抛异常**，所以单元测试全绿而真机必崩；更糟的是它
+没被兜住，整次刷新因此报 `err:unknown`。
+
+修复：
+
+1. 骨架检测改用 `RuleSplitter.innerRule`（自带的括号匹配）去掉 `{{…}}`，
+   不再依赖正则引擎；
+2. `firstValue` / `firstElements` / `firstValueJoined` 对**每条备选规则**加
+   try/catch：单条规则出问题只当「这条取不到」，其余备选继续 —— 与阅读的逐条
+   降级一致，任何单条规则都不该让整次刷新失败；
+3. `RssSync` 的失败日志补上前 6 帧堆栈，这类没有上下文的异常以后能直接定位。
+
+**验证**：模拟器导入该源真实 JSON，刷新 `ok:40:0`（两页 40 条，无报错），
+单元测试 **334 条全绿**；测试源已清理。用户设备在安装前又断开了，连上后补装。
+
+#### 4.9.139 与阅读的规则一致性审计（探针测试 + 阅读源码对照）
+
+用户要求核对「本 App 的订阅源解析规则和阅读还有什么不同」。做法分两条线：
+
+1. `LegadoConformanceProbeTest` —— 40 多条常见写法（选择器、索引、
+   `&&/||/%%`、JSONPath、XPath、`{{}}`、`@js:`、`<js>`、`java.*` 助手、
+   `##替换`、请求选项…）逐条跑一遍并打印实际结果，作证据清单；
+2. 直接对照阅读源码（`AnalyzeRuleCore` / `AnalyzeByJSoup` / `AnalyzeByXPath`
+   / `UrlOptionSerializer` 的当前实现），确认逐段语义。
+
+**已对齐**：`class./id./tag.`、裸 CSS、`@css:`、索引（`.N` / `!N` / `[n]` /
+`[a:b]` / `[::step]`）、`&&/||/%%`、`text/textNodes/ownText/html/all/属性`、
+`:contains/:matches`、JSONPath（含过滤、递归、`@json:`）、`@xpath://…`、
+`##替换`（含 `##first`）、`{{变量}}/{{JS}}/{{规则}}`、`@js:`、`<js>`、
+`java.getString/base64Decode/md5Encode/timeFormat`、`source.setVariable/getVariable`、
+`@webjs:`（真机走隐藏 WebView，单元测试环境按 null 跳过）。
+
+**本轮修掉的四条真差异**：
+
+1. **`…@href@js:…` 这类「取值后接 JS」链**。阅读 `splitSourceRule` 先把 `@js:`
+   拆出去，剩下的 `class.item@href` 交给 jsoup 分析器，其中**只有最后一段**
+   是取值（`getResultLast`：`text`/属性名…）。我们此前把中间段 `href` 当成
+   CSS 选择器，导致 JS 里的 `result` 是空串（源里用来给链接追加请求选项的
+   `',{"headers":…}'` 因此丢掉了地址）。现在「JS/JSON/XPath 之前的最后一段」
+   按取值处理（纯属性名或 `text` 家族），形如 `class.x` 的才继续当选择器。
+2. **XPath 绝对路径与 `//a/@href` 属性写法**。老版阅读用 JXDocument，`/html/…`
+   直接语法报错；新版换成 jsoup `selectXpath` 并自行拆 `/@`，两样都支持。
+   现在两种都可用：JXDocument 返回空/抛错时回退 jsoup，`/@attr` 先选元素再取属性。
+3. **网页编码嗅探**。阅读按「响应头 charset → `<meta charset>` → UTF-8」解码，
+   我们此前只用 OkHttp 的 `body.string()`（只认响应头），GBK/GB2312 站点会乱码。
+   新增 `ResponseCharset`：`httpGet` / 离线缓存回退 / `fetchTextSync` /
+   JS 的 `java.get/post` 全部走同一条解码链。
+4. **`@@` 转义**。阅读把 `{{@@…}}` 的内层按规则解析（`isRule`：以 `@` 开头即规则，
+   `@@` 剥掉后照常解析）。好壁纸的正文规则 `{{@@tag.img@html}}` 以前被我们原样
+   当文本返回，列表里于是显示出一行规则原文；现在正确取到 `<img …>` 标记
+   （列表预览经 `stripHtml` 后自然隐藏）。
+
+**仍然不同（有意保留或暂不支持）**：
+
+1. **JS 源 / 加密源（`jsLib` + `getJs()`）**：只识别并提示「该源依赖阅读的 JS
+   库（本应用暂不支持）」，不执行；静态规则源不受影响。
+2. **请求选项 `,{headers:…}`**：阅读把它交给 HTTP 层（附加请求头/Cookie），
+   我们目前只做到「剥离后正确取值」。文章页在 WebView 里打开，附加头暂无处可用。
+3. **阅读器专用字段**：`coverDecodeJs`、`injectJs`、`style`、`contentWhitelist` /
+   `contentBlacklist`、`shouldOverrideUrlLoading`、`concurrentRate`、`articleStyle`、
+   `loadWithBaseUrl`、`enableDangerousApi` 等未实现（与排版/阅读体验相关，
+   不影响列表解析）。
+
+**验证**：单元测试 **342 条全绿**（335 + `ResponseCharsetTest` 5 条 +
+`LegadoRuleEngineTest` 2 条断言版回归）；
+探针清单留在 `LegadoConformanceProbeTest` 里，以后改引擎可随时重跑对照。
+新包已装到模拟器（冒烟：首页、订阅页、好壁纸文章列表都正常，列表里的规则原文
+已消失）。
+
+#### 4.9.140 请求选项真正生效 + 阅读器字段落地
+
+用户要求把上一条清单里剩下的两批做完（`待办` 里的第 2、3 项）。
+
+**一、链接请求选项 `,{…}` 真正生效**（阅读 `AnalyzeUrl` + `UrlOptionSerializer`）
+
+1. 新增 `UrlOptions`：按阅读 `AppPattern.urlParamPattern`（逗号后紧跟 `{`）拆出
+   地址与选项；支持 `headers` / `method` / `body`；严格 JSON 解析失败时按阅读的
+   宽松解析兜底（源里常见的 `,{headers:{Referer:'…'}}` 单引号、不带引号的键）。
+2. `LegadoRss.buildRequest`（从 `httpGet` 提出来的组装步骤）把选项并进请求：
+   选项请求头**覆盖**源 `header`（阅读里 URL 选项优先级更高），`method`/`body`
+   可把这次抓取变成 POST；`java.ajax` / `java.get/post` 走同一条路径。
+3. 链接选项里的请求头随文章落库：`rss_articles.requestHeaders`（库版本 13 → 14，
+   `MIGRATION_13_14`），文章页 WebView 加载、正文抓取、封面 Coil 抓取、图片下载
+   都带上它 —— 图床/正文页要求 `Referer` 时才不会再 403。
+4. `concurrentRate`：`ConcurrentRate` 复刻阅读 `ConcurrentRateLimiter` 的双模式
+   （`1000` = 请求间隔 + 同时只跑一个；`3/1000` = 每 1000ms 最多 3 次），
+   挂起版给 OkHttp、阻塞版给 JS 的 `java.get/post/ajax`。
+
+**二、阅读器字段**
+
+| 字段 | 实现（对齐阅读 3.x `ReadRssActivity`） |
+|------|------------------------------------------|
+| `style` | 正文 HTML 前拼 `<style>…</style>`（同阅读 `clHtml`） |
+| `injectJs` | 页面加载完 `evaluateJavascript` |
+| `contentBlacklist` / `contentWhitelist` | `shouldInterceptRequest` 按「前缀或正则」拦截 / 放行，拦截回空响应 |
+| `shouldOverrideUrlLoading` | JS 规则、绑定 `url`，返回 `true`/`1` 即拦下这次跳转 |
+| `loadWithBaseUrl` | `false` 时 `loadDataWithBaseURL(null, …)`，`true` 保留 baseUrl |
+
+不做并说明原因的两个字段：`coverDecodeJs`（阅读对订阅源只做字段映射，
+3.x / 新版的订阅列表都没有实际调用）、`articleStyle`（阅读器主题，本应用没有
+主题系统）。`enableDangerousApi` 同理不适用（源 JS 不接触危险 API）。
+
+**验证**：单元测试 **357 条全绿**（新增 `UrlOptionsTest` 6 条、
+`ConcurrentRateTest` 3 条、`LegadoRequestOptionsTest` 6 条 —— 后者直接断言
+`buildRequest` 产出的 OkHttp 请求：URL 已剥离选项、选项头生效且覆盖源 header、
+POST + body 生效）。新包已装到模拟器并刷新「好壁纸」源验证列表正常。
+
+#### 4.9.141 阅读的「JS 源 / 加密源」运行时
+
+上一条清单里最后一项：`jsLib` + `getJs()` 的 JS 源。阅读的实现分散在三处
+（`SharedJsScope.getScope` 下载并 eval jsLib、`BaseSource.evalJS` 提供绑定、
+源自己的 `header` 规则执行 `eval(String(getJs()))`），新增 `LegadoJsSource`
+把整条链复刻出来：
+
+1. **jsLib 两种形态**：内联 JS，或 `{"名称":"https://…/jsLib.js"}` —— 后者按
+   URL 下载（`cache/legado_js/<md5>`，同阅读的 ACache），解析结果按源缓存。
+2. **`source` 是一份可写字段表**：源的原始字段（`sourceUrl`/`header`/
+   `variableComment`…）先铺进去，再挂上 `getKey()`、`getVariable()/setVariable()`、
+   `get/put`、`getLoginInfo/putLoginInfo/putLoginHeader`；规则脚本写回
+   `source.ruleArticles` / `ruleTitle` / `ruleLink` / `sortUrl` … 后由
+   `LegadoRss.rulesFrom()` 读回成正式规则。
+3. **绑定**：`java` = 本应用的 JS 助手（`md5Encode`、`base64*`、`ajax`、
+   `get/post/head`、`createSymmetricCrypto` …），`cookie` = 持久 CookieJar，
+   `cache` = `get/put/delete`（内存 + 磁盘）。加密源常用的
+   `aesBase64DecodeToString` / `hex*` / `createSymmetricCrypto(...).decryptStr()`
+   在 `SymmetricCrypto` 里实现（密钥与 IV 按 UTF-8 取字节，同阅读
+   `JsEncodeUtils`）。
+4. **类访问白名单**：JS 源的库会 `new JavaImporter(Packages.okhttp3)`，
+   因此作用域保留 Rhino 的 Java 包，但用 `ClassShutter` 只放行
+   `okhttp3.* / okio.* / org.json.*` 与一批 `java.util / java.net / java.security`
+   工具类 + 本应用的 JS 助手；`java.io`、`Runtime`、反射、类加载器全部不可见
+   （`dangerousJavaClassesStayInvisible` 有回归用例）。这是为了跑第三方 JS 源
+   必须付出的取舍，作用域只服务于 JS 源解析。
+5. **接线**：`LegadoRss.rulesFor()`（suspend）先静态规则、再 JS 运行时，替换了
+   刷新 / 正文 / 分类三条路上的 `parseRules()`；拿不到规则仍报
+   `unsupported_js`，文案改为「该源的 JS 规则没能取到（jsLib 下载或脚本执行失败）」。
+
+**验证**：单元测试 **364 条全绿**（新增 6 条：jsLib 生成规则、`source.getKey`/
+`cache` 可用、无 header 时自动调用 `getJs()`、jsLib 下载失败软着陆、
+危险类不可见、静态源不进入运行时）。另有 `RealJsSourceProbeTest`（默认 @Ignore）
+用真实 XH发布页 jsLib 验到「下载 jsLib → `getJs()` → 拉 de.js → 解密 payload」
+这一段全部走通；payload 里剩余的规则数据存在源 JSON 的加密字段里，而 yckceo
+从开发网络不可达，拿不到完整源做端到端验证 —— 用户设备上导入真实源即可确认。
+调试时设 `WS_JS_DEBUG=1` 会把 payload 与读回的字段打到 stderr。
+
+#### 4.9.142 模拟器实测：数组形式的源 JSON 修好了
+
+在模拟器上把仓库里的三个视频源（数组形式 `[{…}]`）、一个 JS 源、btsrk 规则订阅
+一起导入实测，发现并修掉一个真 bug：
+
+**`rawMap()` 只认对象形式**，而用户手上和导出工具的 JSON 常常是数组
+（`[{…}]`：仓库里的 `rssSource_h视频.json` / `91porn视频` / `Rule34视频`、
+yckceo 分享链接都是这种）。这类源会被当成普通 RSS，抓回来的 JSON 交给
+FeedParser 自然解析不了 —— 卡片显示「刷新失败：返回内容无法解析」，规则本身
+其实完全正常。修复：
+
+- `LegadoRss.sourceFields()` 统一处理两种形态（对象取本身、数组取第一条），
+  `parseRules` / 抓取 header / 源编辑器 / 登录字段读取全部改走它；
+- 源编辑器保存时按第一条对象合并（数组包装不保留，字段不丢）；
+- 回归用例：`VideoSourceRulesTest.arrayFormSourceJsonIsParsedLikeTheObjectForm`。
+
+**模拟器实测结果**（2026-10-04，Android 14 emulator）
+
+| 源 | 结果 |
+|----|------|
+| h视频（数组形式） | ✅ `ok:40:0`，两页 40 条，`$.rescont.next_page_url` 翻页生效，分类 chips 正常 |
+| JS 源测试（jsLib + `getJs()` 运行时生成规则） | ✅ `ok:12:0`，规则由脚本生成后正常抓取列表 |
+| btsrk-Pixiv / Linpx / 兽人小说站 | ✅ 正确识别为「网页型源，点卡片用浏览器打开」 |
+| 好壁纸（对象形式，CSS 规则） | ✅ `ok:12:0` |
+| 91porn视频 | 规则与分类解析正常（chips 正确），站点从当前网络不可达 → `err:network` |
+| Rule34视频 | 同上，`rule34video.com` 连接超时（环境网络问题，非规则问题） |
+
+**验证**：单元测试 **366 条全绿**（新增数组形式回归 1 条 + btsrk 网页型识别 1 条）。
+
+**挂上代理后的复测**（应用内 `rss_proxy = 10.0.2.2:7890`，模拟器自身也设了系统代理
+以便 WebView 走同一条线）：
+
+| 源 | 结果 |
+|----|------|
+| 91porn视频 | ✅ `ok:24:0`，分类胶囊 + 缩略图 + 标题正常 |
+| Rule34视频 | ✅ `ok:47:0`（两页：`latest-updates/2/` 翻页生效） |
+| 推次元（a2cy） | ✅ `ok:20:0`（两页 `index_2.html`），之前一直是「网络不可用」 |
+
+结论：三个视频源 + 推次元的规则解析全部正常，之前的失败只是网络可达性；
+应用内代理设置（`rss_proxy`）对订阅抓取生效，WebView 走系统代理。
+
+**真机复测**（小米 25102RKBEC / Android 17，`versionName 1.1`，11:28 装机后）：
+
+| 源 | 结果 |
+|----|------|
+| h视频 | ✅ `ok:40:0`（数组形式修复前在真机同样报「返回内容无法解析」） |
+| 推次元（a2cy） | ✅ `ok:20:0` |
+| 美人图 / meirentu.club | ✅ `ok:60:0` |
+| cosplaytele | ✅ `ok:66:0`（此前「连接超时」，挂上 VPN 后正常） |
+| 3w.8012359.xyz / xiurenai / mtldss / xiurendao / misskon / everia / xiuren.biz 等 | ✅ `ok:24~72:0`（少数 `ok:0:0` 表示本轮没有新增，属正常） |
+| Pixiv 书源 | ✅ 显示「网页型源 · 点卡片用浏览器打开」（旧的 `err:parse` 是历史记录） |
+
+真机上 h视频 的文章列表、正文与播放器（m3u8 播放、已收集 1 张）都跑通了。
+
+---
 
 ## 七、权限声明
 

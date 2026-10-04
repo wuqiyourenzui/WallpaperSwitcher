@@ -21,7 +21,7 @@ import androidx.compose.ui.unit.sp
 // Full Material 3 tonal palette: every role is filled in so components like
 // the top/bottom bars, dialogs and sliders pick up consistent surface tones
 // instead of falling back to defaults.
-private val LightColorScheme = lightColorScheme(
+internal val LightColorScheme = lightColorScheme(
     primary = Color(0xFF6750A4),
     onPrimary = Color(0xFFFFFFFF),
     primaryContainer = Color(0xFFEADDFF),
@@ -53,7 +53,7 @@ private val LightColorScheme = lightColorScheme(
     scrim = Color(0xFF000000),
 )
 
-private val DarkColorScheme = darkColorScheme(
+internal val DarkColorScheme = darkColorScheme(
     primary = Color(0xFFD0BCFF),
     onPrimary = Color(0xFF381E72),
     primaryContainer = Color(0xFF4F378B),
@@ -91,7 +91,9 @@ private val AppShapes = Shapes(
     small = RoundedCornerShape(12.dp),
     medium = RoundedCornerShape(16.dp),
     large = RoundedCornerShape(24.dp),
-    extraLarge = RoundedCornerShape(28.dp),
+    // 对话框（AlertDialog 用 extraLarge）：28dp → 20dp，贴近 HyperOS/Miuix
+    // 对话框的圆角，同时与页面卡片的 16dp 保持层级差。
+    extraLarge = RoundedCornerShape(20.dp),
 )
 
 // Slightly tightened, bolder typography hierarchy.
@@ -121,10 +123,19 @@ fun parseHexColor(hex: String): Color? =
  * anything unknown (or a missing row, e.g. right after an update) behaves like
  * [SYSTEM] so the UI never ends up in a state the user cannot name.
  */
-enum class ThemeMode(val value: String, val label: String) {
-    SYSTEM(com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_SYSTEM, "跟随系统"),
-    LIGHT(com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_LIGHT, "浅色"),
-    DARK(com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_DARK, "深色");
+enum class ThemeMode(val value: String, @androidx.annotation.StringRes val labelRes: Int) {
+    SYSTEM(
+        com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_SYSTEM,
+        com.wallpaperswitcher.R.string.theme_mode_system
+    ),
+    LIGHT(
+        com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_LIGHT,
+        com.wallpaperswitcher.R.string.theme_mode_light
+    ),
+    DARK(
+        com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_DARK,
+        com.wallpaperswitcher.R.string.theme_mode_dark
+    );
 
     /** Whether this mode wants [MaterialTheme]'s dark scheme right now. */
     @Composable
@@ -152,97 +163,71 @@ enum class ThemeMode(val value: String, val label: String) {
 val LocalAccentColor = staticCompositionLocalOf { Color.Unspecified }
 
 /**
- * Generate a light color scheme with a custom primary color. The container
- * and surface tones are tinted with the primary so the whole UI follows the
- * chosen accent instead of only the buttons.
+ * Accent roles only: the picked colour drives `primary`, the containers and
+ * their "on" colours, while every NEUTRAL role - onBackground/onSurface,
+ * **onSurfaceVariant**, surface/background/surfaceVariant, outline, error - keeps
+ * the built-in Material 3 value.
  *
- * On-colours are derived from the accent instead of hard-coded: [readableOn] picks
- * black or white for text drawn *on* the accent, and [ensureReadable] pushes the
- * accent away from the surface until accent-coloured text reaches WCAG AA.
+ * The earlier version also painted `onSurfaceVariant` (and `surfaceVariant`) with
+ * the accent. This app draws most secondary labels, card subtitles, hints and
+ * settings icons with `onSurfaceVariant`, so picking a colour turned a large part
+ * of the UI - text as well as graphics - into that colour (user report:
+ * 「软件界面有些文字和图形会随主题颜色变化，影响观感」). Neutral roles now stay
+ * neutral; only chips, buttons, badges, selected states and the few places that
+ * deliberately use [LocalAccentColor] follow the accent, which is what "主题颜色"
+ * is for.
+ *
+ * Light/dark are derived from the same hex by mixing toward white/black (a tonal
+ * palette in miniature), so contrast holds in both modes - using the raw hex as
+ * `onSecondaryContainer` on a dark container (the old behaviour) left almost no
+ * contrast for dark accents.
  */
-fun customLightColorScheme(primary: Color): ColorScheme {
-    // The scheme below is built from Material defaults (only the accent slots are
-    // overridden), so the accent must be tuned against THAT surface - using the
-    // app's own LightColorScheme.surface left dark-mode accents below AA.
-    val surface = lightColorScheme().surface
-    // Tune the accent against what the text really sits on, not the bare surface:
-    // the containers are translucent (`primary.copy(alpha = 0.15f)` etc), so a
-    // saturated accent drags the backdrop towards the text colour. Asserting only
-    // against the surface hid that (see ContainerContrastTest).
-    val accentText = readableAccent(primary, surface, CONTAINER_ALPHA_LIGHT)
-    return lightColorScheme(
+private fun accentScheme(base: ColorScheme, dark: Boolean, accent: Color): ColorScheme {
+    // Dark mode lifts a dark accent toward white (M3 tone ~80); light mode keeps
+    // the picked colour as it is (tone ~40).
+    val primary = if (dark) lerp(accent, ToneWhite, 0.55f) else accent
+    val container = lerp(primary, if (dark) ToneBlack else ToneWhite, if (dark) 0.55f else 0.86f)
+    val onContainer =
+        lerp(primary, if (dark) ToneWhite else ToneBlack, if (dark) 0.85f else 0.62f)
+    return base.copy(
         primary = primary,
         onPrimary = Color(ColorContrast.readableOn(primary.toArgb())),
-        primaryContainer = primary.copy(alpha = CONTAINER_ALPHA_LIGHT),
-        onPrimaryContainer = accentText,
-        secondaryContainer = primary.copy(alpha = 0.12f),
-        onSecondaryContainer = accentText,
-        surfaceVariant = primary.copy(alpha = SURFACE_VARIANT_ALPHA_LIGHT),
-        onSurfaceVariant = accentText,
+        primaryContainer = container,
+        onPrimaryContainer = onContainer,
+        inversePrimary = lerp(primary, ToneWhite, 0.5f),
+        // "Quiet accent" role used by chips / navigation items: the same tonal
+        // pair, so contrast never depends on the picked hex.
+        secondaryContainer = container,
+        onSecondaryContainer = onContainer,
+        // Elevated surfaces tint toward the accent instead of the built-in
+        // purple; the surface colours themselves stay neutral.
+        surfaceTint = primary
     )
 }
 
-/**
- * Generate a dark color scheme with a custom primary color.
- */
-fun customDarkColorScheme(primary: Color): ColorScheme {
-    val surface = darkColorScheme().surface
-    val accentText = readableAccent(primary, surface, CONTAINER_ALPHA_DARK)
-    return darkColorScheme(
-        primary = primary,
-        onPrimary = Color(ColorContrast.readableOn(primary.toArgb())),
-        primaryContainer = primary.copy(alpha = CONTAINER_ALPHA_DARK),
-        onPrimaryContainer = accentText,
-        secondaryContainer = primary.copy(alpha = 0.22f),
-        onSecondaryContainer = accentText,
-        surfaceVariant = primary.copy(alpha = SURFACE_VARIANT_ALPHA_DARK),
-        onSurfaceVariant = accentText,
+/** Generate a light color scheme from a custom accent colour. */
+fun customLightColorScheme(primary: Color): ColorScheme =
+    accentScheme(LightColorScheme, dark = false, accent = primary)
+
+/** Generate a dark color scheme from a custom accent colour. */
+fun customDarkColorScheme(primary: Color): ColorScheme =
+    accentScheme(DarkColorScheme, dark = true, accent = primary)
+
+/** Blend [color] toward [target] by [amount] (0 = color, 1 = target). */
+private fun lerp(color: Color, target: Color, amount: Float): Color =
+    androidx.compose.ui.graphics.lerp(color, target, amount)
+
+private val ToneBlack = Color(0xFF000000)
+private val ToneWhite = Color(0xFFFFFFFF)
+
+/** The accent, darkened/lightened until accent-coloured text is readable on [surface]. */
+internal fun readableAccent(primary: Color, surface: Color): Color = Color(
+    ColorContrast.ensureReadable(
+        primary.toArgb(),
+        surface.toArgb(),
+        ColorContrast.AA_NORMAL
     )
-}
-
-/** Container/variant alphas, shared with the tests so they assert the real backdrop. */
-const val CONTAINER_ALPHA_LIGHT = 0.15f
-const val CONTAINER_ALPHA_DARK = 0.30f
-const val SURFACE_VARIANT_ALPHA_LIGHT = 0.10f
-const val SURFACE_VARIANT_ALPHA_DARK = 0.18f
-
-/**
- * The accent, darkened/lightened until accent-coloured text is readable on the
- * *composited* container it will actually be drawn on (see
- * [ColorContrast.composite]). The stricter of the two backdrops the accent lands
- * on - the translucent container and the translucent surface variant - decides.
- */
-private fun readableAccent(primary: Color, surface: Color, containerAlpha: Float): Color {
-    val variantAlpha = if (containerAlpha >= CONTAINER_ALPHA_DARK) {
-        SURFACE_VARIANT_ALPHA_DARK
-    } else {
-        SURFACE_VARIANT_ALPHA_LIGHT
-    }
-    val onContainer = ColorContrast.composite(primary.toArgb(), surface.toArgb(), containerAlpha)
-    val onVariant = ColorContrast.composite(primary.toArgb(), surface.toArgb(), variantAlpha)
-    val backdrop = if (
-        ColorContrast.contrastRatio(primary.toArgb(), onContainer) <=
-        ColorContrast.contrastRatio(primary.toArgb(), onVariant)
-    ) {
-        onContainer
-    } else {
-        onVariant
-    }
-    return Color(
-        ColorContrast.ensureReadable(primary.toArgb(), backdrop, ACCENT_TARGET_RATIO)
-    )
-}
-
-/**
- * Target contrast for accent-coloured text, slightly above WCAG AA.
- *
- * The accent text is drawn on several translucent backdrops (the container, the
- * surface variant) and on the bare surface; they differ by a fraction of a percent,
- * but tuning to exactly 4.5 against one of them left another at 4.49 (a pure white
- * accent was the reported case). The margin costs nothing visible and makes the AA
- * guarantee hold for every backdrop the accent lands on.
- */
-private const val ACCENT_TARGET_RATIO = ColorContrast.AA_NORMAL + 0.2f
+)
 
 @Composable
 fun WallpaperSwitcherTheme(
@@ -276,7 +261,15 @@ fun WallpaperSwitcherTheme(
         }
     }
 
-    CompositionLocalProvider(LocalAccentColor provides colorScheme.onSurfaceVariant) {
+    // [LocalAccentColor] is the "accent for TEXT" hook a few places use on
+    // purpose (selection counts, a couple of badges). It must be readable on the
+    // neutral surface for whichever colour was picked, and it must NOT be the
+    // general secondary-text colour - that is `onSurfaceVariant`, which stays
+    // neutral now (see accentScheme).
+    val accentText = remember(colorScheme, customColor) {
+        readableAccent(customColor ?: colorScheme.primary, colorScheme.surface)
+    }
+    CompositionLocalProvider(LocalAccentColor provides accentText) {
         MaterialTheme(
             colorScheme = colorScheme,
             shapes = AppShapes,

@@ -1,6 +1,7 @@
 package com.wallpaperswitcher.engine
 
 import com.wallpaperswitcher.data.GroupMediaCount
+import com.wallpaperswitcher.data.MediaWeight
 import com.wallpaperswitcher.data.ScannedFolderPath
 import com.wallpaperswitcher.data.WallpaperImage
 import com.wallpaperswitcher.data.WallpaperImageDao
@@ -24,6 +25,20 @@ class FakeWallpaperImageDao(
     private val disabledGroups: Set<Long> = emptySet()
 ) : WallpaperImageDao {
 
+    /**
+     * How many times [getEnabledIds] was served - the SHUFFLE deck's id-list
+     * cache (see MediaPick) is asserted through this counter.
+     */
+    var enabledIdsQueries: Int = 0
+        private set
+
+    /**
+     * How many times [weightsForSlot] was served - the picker's id+weight list
+     * cache (see MediaPick) is asserted through this counter.
+     */
+    var weightQueries: Int = 0
+        private set
+
     /** Mirror of the DAO's slot filter, in the same ascending-id order. */
     private fun forSlot(slot: String): List<WallpaperImage> = images
         .asSequence()
@@ -45,6 +60,17 @@ class FakeWallpaperImageDao(
     override suspend fun getUrisByGroup(groupId: Long): List<String> =
         images.filter { it.groupId == groupId }.map { it.uri }
 
+    override suspend fun getUrisLike(pattern: String): List<String> {
+        val prefix = pattern.removeSuffix("%")
+        return images.map { it.uri }.filter { it.startsWith(prefix) }
+    }
+
+    override suspend fun getUrisByIds(ids: List<Long>): List<String> =
+        images.filter { it.id in ids }.map { it.uri }
+
+    override suspend fun getIdsByFolder(folderPath: String): List<Long> =
+        images.filter { it.folderPath == folderPath }.map { it.id }
+
     override suspend fun getScannedFolderPaths(): List<ScannedFolderPath> =
         images.filter { it.isFromFolder && it.folderPath.isNotEmpty() }
             .map { ScannedFolderPath(it.groupId, it.folderPath) }
@@ -55,6 +81,26 @@ class FakeWallpaperImageDao(
 
     override suspend fun getImageById(id: Long): WallpaperImage? =
         images.firstOrNull { it.id == id }
+
+    override suspend fun setFavorite(id: Long, favorite: Boolean) {
+        val index = images.indexOfFirst { it.id == id }
+        if (index >= 0) images[index] = images[index].copy(isFavorite = favorite)
+    }
+
+    /**
+     * 按 uri 批量改收藏（真实 DAO 的 `WHERE uri = :uri`）：同一个文件在多个分组里
+     * 各有一行是预期情况，界面按 uri 判断星标，所以这里所有同 uri 的行一起改。
+     */
+    override suspend fun setFavoriteByUri(uri: String, favorite: Boolean) {
+        for (i in images.indices) {
+            if (images[i].uri == uri) images[i] = images[i].copy(isFavorite = favorite)
+        }
+    }
+
+    override suspend fun weightsForSlot(slot: String, favoriteWeight: Int): List<MediaWeight> =
+        forSlot(slot).map {
+            MediaWeight(it.id, if (it.isFavorite) favoriteWeight else 1)
+        }.also { weightQueries++ }
 
     override suspend fun getFirstFromEnabledGroups(slot: String): WallpaperImage? =
         forSlot(slot).firstOrNull()
@@ -112,7 +158,10 @@ class FakeWallpaperImageDao(
         excludeId: Long
     ): WallpaperImage? = forSlot(slot).filter { it.id != excludeId }.randomOrNull()
 
-    override suspend fun getEnabledIds(slot: String): List<Long> = forSlot(slot).map { it.id }
+    override suspend fun getEnabledIds(slot: String): List<Long> {
+        enabledIdsQueries++
+        return forSlot(slot).map { it.id }
+    }
 
     override suspend fun getRandomImageFromEnabledGroupsExcludingAt(
         slot: String,
@@ -126,5 +175,19 @@ class FakeWallpaperImageDao(
         images.groupBy { it.groupId }.map { (groupId, media) ->
             GroupMediaCount(groupId, media.size)
         }
+    )
+
+    /** Rows that need READ_MEDIA_* (the home screen's permission hint). */
+    override fun getMediaStoreRowCount(): Flow<Int> =
+        flowOf(images.count { it.uri.startsWith("content://media/") })
+
+    /**
+     * 收藏聚合（跨分组，按 uri 去重）。fake 里就按同样的语义实时算：
+     * 收藏页渲染靠它，`setFavorite` 改完后再 collect 就能看到新值。
+     */
+    override fun observeFavorites(): Flow<List<WallpaperImage>> = flowOf(
+        images.filter { it.isFavorite }
+            .distinctBy { it.uri }
+            .sortedWith(compareByDescending<WallpaperImage> { it.addedAt }.thenByDescending { it.id })
     )
 }

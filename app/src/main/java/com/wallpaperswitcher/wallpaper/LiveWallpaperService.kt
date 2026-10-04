@@ -21,7 +21,9 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import com.wallpaperswitcher.data.*
 import com.wallpaperswitcher.engine.BitmapUtils
+import com.wallpaperswitcher.engine.GroupPick
 import com.wallpaperswitcher.engine.MediaPick
+import com.wallpaperswitcher.engine.MediaScanner
 import com.wallpaperswitcher.engine.MediaProbe
 import com.wallpaperswitcher.engine.MediaTypes
 import com.wallpaperswitcher.engine.ScreenPowerPolicy
@@ -29,6 +31,7 @@ import com.wallpaperswitcher.engine.dropGoneMedia
 import com.wallpaperswitcher.engine.SwitchPicking
 import com.wallpaperswitcher.engine.WallpaperApplier
 import com.wallpaperswitcher.engine.WallpaperGeometry
+import com.wallpaperswitcher.engine.WallpaperTarget
 import com.wallpaperswitcher.service.WallpaperSwitchService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
@@ -36,10 +39,25 @@ import kotlinx.coroutines.flow.combine
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
-private data class SwitchRequest(val source: String, val targetId: Long? = null)
+private data class SwitchRequest(
+    val source: String,
+    val targetId: Long? = null,
+    /**
+     * Non-zero when the tick belongs to one group with its own switch rhythm
+     * (see GroupPacing): the engine then picks the next media of THAT group
+     * instead of the whole screen.
+     */
+    val groupId: Long = 0L,
+)
 
 /** Prefetched next image: id, pixels and the GPU quarter turn they need. */
-private class PrefetchedImage(val imageId: Long, val bitmap: Bitmap?, val rotateCw: Boolean?)
+private class PrefetchedImage(
+    val imageId: Long,
+    val bitmap: Bitmap?,
+    val rotateCw: Boolean?,
+    /** The group this prefetch belongs to (0 = the screen-wide pick). */
+    val groupId: Long = 0L,
+)
 
 /**
  * Clarity-enhancement strength for a `clarity_mode` setting value. Single
@@ -66,9 +84,15 @@ class LiveWallpaperService : WallpaperService() {
         private val HOME_SLOT = com.wallpaperswitcher.engine.WallpaperTarget.SLOT_HOME
         const val ACTION_SWITCH = "com.wallpaperswitcher.ACTION_SWITCH"
         const val EXTRA_TARGET_ID = "target_id"
+        /** The group a per-group timer tick belongs to (0 = the whole screen). */
+        const val EXTRA_GROUP_ID = "group_id"
         const val EXTRA_SOURCE = "switch_source"
         const val SOURCE_TIMER = "timer"
         const val SOURCE_UNLOCK = "unlock"
+        /** 视频播完再切: the held timed switch, run when the clip ends. */
+        const val SOURCE_VIDEO_END = "video-end"
+        /** 顺序=新的在前 (see WallpaperGroup.sortOrder). */
+        private const val SORT_NEWEST = "NEWEST"
         const val SOURCE_MANUAL = "manual"
         const val SOURCE_DOUBLE_TAP = "double-tap"
         /** User tapped the floating switch button (see FloatingSwitchButton). */
@@ -141,10 +165,6 @@ class LiveWallpaperService : WallpaperService() {
          * comma-separated version needed.
          */
         private const val SHUFFLE_WRITE_ATTEMPTS = 3
-        // When switches happen this quickly after the previous one (e.g. a
-        // rapid double-tap burst / quick consecutive taps), skip the fade-in so
-        // repeated black flashes never make fast switching feel sluggish.
-        private const val RAPID_SWITCH_FADE_SKIP_MS = 700L
         // 20fps cap instead of 30fps: GIF wallpapers look identical (most GIFs
         // are <=15fps) but cost ~1/3 less CPU/GPU for the frame upload + swap.
         private const val GIF_FRAME_INTERVAL_MS = 50L
@@ -167,6 +187,14 @@ class LiveWallpaperService : WallpaperService() {
         // switch must be this short. Anything else is decoded on demand, which
         // halves the media-library reads per switch.
         private const val PREFETCH_RAPID_GAP_MS = 3_000L
+        /**
+         * How many USER taps may be in flight at once (the one being executed
+         * plus the queued ones). Every tap must be felt ("不跟手" was a tap that
+         * either waited ~250ms for a fresh decode or was silently folded into
+         * another request); the cap only exists so a burst cannot build a long
+         * tail of switches after the user has stopped tapping.
+         */
+        private const val MAX_PENDING_USER_SWITCHES = 3
         // An unused prefetched bitmap (one screen-size ARGB) is dropped after
         // this long: it only exists to make a rapid follow-up switch instant.
         private const val PREFETCH_KEEP_MS = 120_000L
@@ -251,6 +279,15 @@ class LiveWallpaperService : WallpaperService() {
          * Screen-off and our own UI stay immediate - those must mute at once.
          */
         private const val VISIBILITY_PAUSE_COALESCE_MS = 600L
+    /**
+     * How long after a floating-button window change a "wallpaper covered"
+     * report may be treated as OUR OWN overlay's doing (and coalesced).
+     *
+     * The ROM's oscillation lasts ~250-400ms (measured), so this window is
+     * comfortably longer; outside it a covered report is a real app taking the
+     * foreground and must pause + mute immediately.
+     */
+    private const val BLIP_COALESCE_WINDOW_MS = 1_500L
         /**
          * Delay before a blocked redraw is retried, and how many retries one
          * episode may use (see [retryDrawCurrentImageSoon]). The budget has to
@@ -527,8 +564,8 @@ class LiveWallpaperService : WallpaperService() {
          * Direct switch trigger for the floating button: bypasses the broadcast
          * round-trip so a double-tap feels instant.
          */
-        fun requestSwitchFromOutside(source: String): Boolean {
-            return activeEngine?.requestSwitchFromOutside(source) ?: false
+        fun requestSwitchFromOutside(source: String, groupId: Long = 0L): Boolean {
+            return activeEngine?.requestSwitchFromOutside(source, groupId) ?: false
         }
         /**
          * Apply one specific media in the running engine.
@@ -556,6 +593,21 @@ class LiveWallpaperService : WallpaperService() {
             engine.requestTargetFromOutside(SOURCE_MANUAL, targetId)
             return true
         }
+
+        /**
+         * 悬浮按钮「长按预览」确认：把**用户刚刚预览到的那一张**交给引擎。
+         *
+         * 为什么不复用 [requestSwitchFromOutside]：那是一条普通的"再挑一次"
+         * （屏幕级或按分组节奏），而预览是 [com.wallpaperswitcher.engine.NextPreview]
+         * 按"下一次该轮到谁"算出来的 —— 只要有任何分组带自己的间隔，两条路径
+         * 就是不同的池子，于是用户看到"预览 A、切过去 B"。这里按 id 精确应用，
+         * 预览看到什么就得到什么。
+         *
+         * 返回 false 表示引擎没接（静态模式 / 进程刚起）：调用方不该假装成功。
+         */
+        internal fun applyPreviewedMedia(mediaId: Long): Boolean =
+            pushConfirmedPickToEngine(mediaId)
+
         /**
          * Re-evaluate the floating button immediately (e.g. after the user
          * returns from granting the overlay permission) instead of waiting for
@@ -563,6 +615,14 @@ class LiveWallpaperService : WallpaperService() {
          */
         fun refreshFloatingButtonIfAny() {
             activeEngine?.refreshFloatingButtonNow()
+        }
+        /**
+         * 过渡动画 setting changed: adopt it in the running engine so the next
+         * switch already uses it (the engine also reads the setting per switch,
+         * so a killed/recreated engine picks it up too).
+         */
+        fun applyTransitionFromSettings(context: Context, mode: String) {
+            activeEngine?.applyTransitionMode(mode)
         }
         /**
          * Low-memory callback forwarded from the Application: release optional
@@ -642,17 +702,28 @@ class LiveWallpaperService : WallpaperService() {
         // into ONE pending switch instead of piling up N queued requests that
         // each run their own screen-size decode — the root cause of the
         // "rapid tapping stutters after a few switches" behavior.
-        private val pendingAutoSwitch = AtomicBoolean(false)
+    private val pendingAutoSwitch = AtomicBoolean(false)
+    /**
+     * User taps (双击 / 悬浮按钮 / 立即切换) that are queued or executing. Each tap
+     * gets its own switch up to [MAX_PENDING_USER_SWITCHES]; see requestSwitch.
+     */
+    private val pendingUserSwitches = java.util.concurrent.atomic.AtomicInteger(0)
         @Volatile private var switchInProgress = false
         @Volatile private var switchStartedAt = 0L
     @Volatile private var lastSwitchCompletedAt = 0L
     /**
-     * Source of the switch currently being executed (see [maybeFade]): a manual
-     * tap must show the new picture the moment it is ready, so the user-initiated
-     * triggers skip the "fade in from full black" transition that automatic
-     * switches use.
+     * 视频播完再切: a timed switch that arrived while a video was playing is
+     * held here and executed by [onVideoPassCompleted] instead of cutting the
+     * clip off. Manual switches never set it - a tap must act immediately.
      */
-    @Volatile private var currentSwitchSource = ""
+    @Volatile private var pendingVideoEndSwitch = false
+    /**
+     * The group the held timed switch belongs to: when the clip finally ends,
+     * the switch must continue that group's rotation instead of falling back
+     * to the screen-wide media pool (which knows nothing about the group's
+     * 仅图片 / 仅视频 filter).
+     */
+    @Volatile private var pendingVideoEndGroupId = 0L
     /**
      * Media id + position (µs) to resume at, remembered when the video session is
      * released while the device is locked (see `scheduleMediaReleaseWhileLocked`).
@@ -668,6 +739,12 @@ class LiveWallpaperService : WallpaperService() {
         private val prefetchLock = Any()
         private var prefetchedImageId = 0L
         private var prefetchedBitmap: Bitmap? = null
+        /**
+         * Group the cached image belongs to (0 = the screen-wide pick). A
+         * per-group switch must not consume a screen-wide prefetch (or another
+         * group's), and vice versa.
+         */
+        private var prefetchedGroupId = 0L
         // When the current prefetch was stored (elapsedRealtime); the delayed
         // expiry task only drops a bitmap that is still the same one.
         @Volatile private var prefetchedAt = 0L
@@ -873,7 +950,12 @@ class LiveWallpaperService : WallpaperService() {
                     // optimization). Hard-coding "broadcast" here silently
                     // disabled both rules.
                     val source = intent.getStringExtra(EXTRA_SOURCE) ?: "broadcast"
-                    requestSwitch(source, if (targetId > 0) targetId else null)
+                    val groupId = intent.getLongExtra(EXTRA_GROUP_ID, 0L)
+                    requestSwitch(
+                        source,
+                        if (targetId > 0) targetId else null,
+                        groupId.coerceAtLeast(0L)
+                    )
                 }
             }
         }
@@ -935,6 +1017,20 @@ class LiveWallpaperService : WallpaperService() {
         private var floatingButton: FloatingSwitchButton? = null
         /** Pending debounced hide of the floating button (see the constant). */
         private var floatingButtonHideRunnable: Runnable? = null
+        /**
+         * When the floating-button overlay window last changed (shown, hidden or
+         * removed). A "wallpaper covered" report that arrives right after this is
+         * plausibly the ROM reacting to OUR window (it flips the wallpaper's
+         * visibility for ~250-400ms around every overlay add/remove), and only
+         * such a report may be coalesced: a real app coming to the front has to
+         * pause and mute at once (see [refreshPowerSave]).
+         */
+        @Volatile
+        private var floatingWindowChangedAtMs = 0L
+
+        private fun noteFloatingWindowChange() {
+            floatingWindowChangedAtMs = SystemClock.elapsedRealtime()
+        }
         /**
          * Power-save inputs (see [refreshPowerSave] / [ScreenPowerPolicy]): the
          * wallpaper's visibility as the power-save path sees it, plus the
@@ -1354,6 +1450,18 @@ class LiveWallpaperService : WallpaperService() {
                         // Sound only for the real wallpaper (never for the
                         // picker's preview engine), and only when enabled.
                         it.videoSoundEnabled = videoSoundSetting && !isPreview
+                            // The engine may be (re)created while our own UI is
+                            // already in the foreground - MIUI tears the wallpaper
+                            // down and instantiates it again all the time, and the
+                            // process can be restarted by an install/update while
+                            // the app is open. `applyAppForeground(true)` is a
+                            // TRANSITION callback and will not fire again, so the
+                            // fresh renderer used to start its audio behind our UI
+                            // (user report: entering the app no longer silenced the
+                            // video). Apply the mute immediately in that case.
+                            if (appInForeground && !isPreview) {
+                                it.muteAudioKeepingVideo()
+                            }
                         // The picker's frames are composited (and on a landscape
                         // tablet rotated) by MIUI: no unsharp mask there, see
                         // applyClarityMode(). The applied wallpaper keeps it.
@@ -1362,6 +1470,21 @@ class LiveWallpaperService : WallpaperService() {
                             AppLog.d(TAG, "Preview engine: sharpening off (picker composition)")
                         }
                         it.onVideoStartFailed = { onVideoStartFailed() }
+                        // 视频播完再切: a timed switch that arrived while the
+                        // clip was playing runs here, at the end of the pass.
+                        it.onVideoPassCompleted = {
+                            if (pendingVideoEndSwitch) {
+                                pendingVideoEndSwitch = false
+                                val heldGroupId = pendingVideoEndGroupId
+                                pendingVideoEndGroupId = 0L
+                                AppLog.d(
+                                    TAG,
+                                    "Video pass finished: running the held timed switch" +
+                                        if (heldGroupId > 0L) " (group=$heldGroupId)" else ""
+                                )
+                                requestSwitch(SOURCE_VIDEO_END, null, heldGroupId)
+                            }
+                        }
                         // Fade in when the video's first frame is really on
                         // screen, not when the decode thread merely started.
                         it.onFirstVideoFrame = {
@@ -1374,9 +1497,7 @@ class LiveWallpaperService : WallpaperService() {
                                 suppressFadeUntilFirstFrame = false
                             } else if (fadePendingForFirstFrame) {
                                 fadePendingForFirstFrame = false
-                                scope.launch { maybeFade(force = true) }
-                            } else {
-                                AppLog.d(TAG, "No fade for this video switch (rapid switching)")
+                                scope.launch { maybeFade() }
                             }
                         }
                     }
@@ -1685,6 +1806,7 @@ class LiveWallpaperService : WallpaperService() {
                 // An immediate hide (the app just opened) must win over a
                 // pending debounced one.
                 cancelPendingFloatingButtonHide()
+                noteFloatingWindowChange()
                 floatingButton?.hideOverlay()
             }
         }
@@ -1761,9 +1883,9 @@ class LiveWallpaperService : WallpaperService() {
             }
         }
 
-        internal fun requestSwitchFromOutside(source: String): Boolean {
+        internal fun requestSwitchFromOutside(source: String, groupId: Long = 0L): Boolean {
             if (activeEngine !== this) return false
-            requestSwitch(source)
+            requestSwitch(source, null, groupId)
             return true
         }
 
@@ -2117,6 +2239,7 @@ class LiveWallpaperService : WallpaperService() {
                         // The feature is off: drop the window instead of leaving a
                         // hidden overlay attached.
                         mainHandler.post {
+                            noteFloatingWindowChange()
                             floatingButton?.removeOverlay()
                             floatingButton = null
                             finishFloatingButtonUpdate()
@@ -2180,12 +2303,14 @@ class LiveWallpaperService : WallpaperService() {
                                         .also { floatingButton = it }
                                 button.setAppearance(colorArgb, opacity)
                                 button.setContent(buttonText, buttonImage)
+                                noteFloatingWindowChange()
                                 button.showOnDesktop()
                             } else if (appInForeground) {
                                 // Our own app is in front: hide at once instead of
                                 // after the settle debounce, otherwise the button
                                 // lingers over the app's window transition.
                                 cancelPendingFloatingButtonHide()
+                                noteFloatingWindowChange()
                                 floatingButton?.hideOverlay()
                             } else {
                                 scheduleFloatingButtonHide()
@@ -2223,6 +2348,7 @@ class LiveWallpaperService : WallpaperService() {
                 // Re-check on the main thread at fire time: "visible again" is
                 // the common case this debounce exists for.
                 if (engineDestroyed || isVisible) return@Runnable
+                noteFloatingWindowChange()
                 floatingButton?.hideOverlay()
             }
             floatingButtonHideRunnable = runnable
@@ -2267,7 +2393,11 @@ class LiveWallpaperService : WallpaperService() {
                 while (true) {
                     try {
                         shuffleDao.insertShown(
-                            ids.map { com.wallpaperswitcher.data.ShuffleShown(HOME_SLOT, it) }
+                            ids.map {
+                                com.wallpaperswitcher.data.ShuffleShown(
+                                    slot = HOME_SLOT, groupId = 0L, mediaId = it
+                                )
+                            }
                         )
                         settingsDao.setLong(SettingsKeys.SHUFFLE_ALL_COUNT, allCount)
                         return@launch
@@ -2392,9 +2522,21 @@ class LiveWallpaperService : WallpaperService() {
             }
             pauseCoalescePending = false
             if (pause) {
-                if (ScreenPowerPolicy.isVisibilityBlipOnly(reasons)) {
-                    // See ScreenPowerPolicy.isVisibilityBlipOnly: a brief "covered"
-                    // report is delayed so a blip never reaches the renderer.
+                // Only a visibility loss that can plausibly be OUR own
+                // floating-button window is coalesced. The ROM reports the
+                // wallpaper as covered for ~250-400ms after every add/remove of
+                // an APPLICATION_OVERLAY window, and only that oscillation may be
+                // absorbed. Anything else - a real app coming to the front - must
+                // stop the decode AND mute the audio at once: the old code
+                // coalesced every "visibility"-only pause by
+                // VISIBILITY_PAUSE_COALESCE_MS, which is exactly the reported
+                // "切到其他应用，声音不能立刻停".
+                val blipPossible = ScreenPowerPolicy.isVisibilityBlipOnly(reasons) &&
+                    SystemClock.elapsedRealtime() - floatingWindowChangedAtMs <=
+                    BLIP_COALESCE_WINDOW_MS
+                if (blipPossible) {
+                    // A brief "covered" report caused by our own overlay is
+                    // delayed so it never reaches the renderer.
                     val runnable = Runnable {
                         pauseCoalescePending = false
                         applyPowerSave(hint)
@@ -2681,6 +2823,11 @@ class LiveWallpaperService : WallpaperService() {
             AppLog.d(TAG, "Scale mode changed live to $mode (previous $previous)")
         }
 
+        /** 过渡动画 change pushed from the settings screen (see the companion). */
+        internal fun applyTransitionMode(mode: String) {
+            renderer?.setTransitionMode(mode)
+        }
+
         private fun applyRotateSettingsLive(enabled: Boolean, clockwise: Boolean) {
             if (autoRotateMismatch == enabled && autoRotateClockwise == clockwise) return
             autoRotateMismatch = enabled
@@ -2713,7 +2860,7 @@ class LiveWallpaperService : WallpaperService() {
          * dropping them, and a single stuck/failed switch can never disable
          * timer / double-tap / unlock switching permanently.
          */
-        private fun requestSwitch(source: String, targetId: Long? = null) {
+        private fun requestSwitch(source: String, targetId: Long? = null, groupId: Long = 0L) {
             ensureSwitchConsumer()
             // If the current switch looks stuck (>30s), do NOT spawn a second
             // consumer: two consumers would pull from the channel concurrently
@@ -2727,11 +2874,41 @@ class LiveWallpaperService : WallpaperService() {
             ) {
                 AppLog.w(TAG, "Switch appears stuck >30s; queued requests will run when it finishes")
             }
-            AppLog.d(TAG, "Switch requested: $source target=$targetId")
+            AppLog.d(TAG, "Switch requested: $source target=$targetId group=$groupId")
+            val scopedGroupId = if (targetId != null) 0L else groupId.coerceAtLeast(0L)
             if (targetId != null) {
                 // Target switches (manual selection) always queue.
                 scope.launch {
                     switchChannel.send(SwitchRequest(source, targetId))
+                }
+                return
+            }
+            // A per-group tick must never be folded into (or fold) another
+            // switch: it carries the group it belongs to, and a coalesced
+            // request would lose that scope.
+            if (scopedGroupId > 0L) {
+                scope.launch {
+                    switchChannel.send(SwitchRequest(source, null, scopedGroupId))
+                }
+                return
+            }
+            // 用户手动点击：每一次点击都要真的换一张。以前所有非定时请求共用
+            // 一个"已排队"标志，连点时的第三下起会被静默合并掉——用户看到的
+            // 就是"点了没反应"。这里给手动点击一个很小的队列（含正在执行的那
+            // 一次最多 MAX_PENDING_USER_SWITCHES 次），配合"手动切换后总是预
+            // 解码下一张"，每一跳都只需一次纹理上传（约 20ms）。
+            if (isUserTapSource(source)) {
+                if (pendingUserSwitches.incrementAndGet() > MAX_PENDING_USER_SWITCHES) {
+                    pendingUserSwitches.decrementAndGet()
+                    AppLog.d(
+                        TAG,
+                        "User tap folded: $pendingUserSwitches already queued ($source)"
+                    )
+                    return
+                }
+                AppLog.d(TAG, "User tap queued ($source), in flight=$pendingUserSwitches")
+                scope.launch {
+                    switchChannel.send(SwitchRequest(source, null))
                 }
                 return
             }
@@ -2775,6 +2952,9 @@ class LiveWallpaperService : WallpaperService() {
                         // Any pending auto-request marker is stale now; a fresh
                         // trigger must be allowed to queue.
                         pendingAutoSwitch.set(false)
+                        // Same for the user-tap budget: a consumer that died
+                        // mid-request must not leave taps permanently folded.
+                        pendingUserSwitches.set(0)
                     }
                 }
             }
@@ -2790,7 +2970,6 @@ class LiveWallpaperService : WallpaperService() {
                 switchStartedAt = SystemClock.elapsedRealtime()
                 try {
                     AppLog.d(TAG, "Switch start: ${req.source}")
-                    currentSwitchSource = req.source
                     // Gap to the PREVIOUS switch: the prefetch rule uses it to
                     // tell "user is tapping rapidly" from "a one-off switch".
                     // 0 = no previous switch in this engine yet (a fresh engine
@@ -2801,9 +2980,20 @@ class LiveWallpaperService : WallpaperService() {
                     } else {
                         SystemClock.elapsedRealtime() - lastSwitchCompletedAt
                     }
-                    executeSwitch(req.source, req.targetId)
+                    // 悬浮按钮 / 双击 / 立即切换 reach the engine directly without
+                    // a group scope (the timer always carries one). Resolve the
+                    // group the screen rhythm would switch next, so a group's
+                    // 仅图片 / 仅视频 filter and its own cursor apply to the tap
+                    // too - otherwise the tap fell back to the screen-wide pool
+                    // and could show a video for an 仅图片 group.
+                    val effectiveGroupId = resolveUserTapGroup(req)
+                    executeSwitch(req.source, req.targetId, effectiveGroupId)
                     lastSwitchCompletedAt = SystemClock.elapsedRealtime()
-                    maybePrefetchNext(req.source, sincePreviousSwitchMs)
+                    // The prefetch follows the same scope as the switch that just
+                    // ran: group ticks cache the group's next image, screen-wide
+                    // switches cache the screen's next one (the cache records
+                    // which group it belongs to).
+                    maybePrefetchNext(req.source, sincePreviousSwitchMs, effectiveGroupId)
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (t: Throwable) {
@@ -2812,11 +3002,43 @@ class LiveWallpaperService : WallpaperService() {
                 } finally {
                     switchInProgress = false
                     AppLog.d(TAG, "Switch done: ${req.source}")
+                    // Release the tap slot only for requests that claimed one
+                    // (see the isUserTapSource branch in requestSwitch).
+                    if (req.targetId == null && isUserTapSource(req.source)) {
+                        pendingUserSwitches.decrementAndGet()
+                    }
                 }
             }
         }
 
-        private suspend fun executeSwitch(source: String, targetId: Long?) {
+        /**
+         * The group a user tap (悬浮按钮 / 双击 / 立即切换) belongs to.
+         *
+         * The timer always carries the group its schedule picked, but those
+         * triggers reach the engine directly with `groupId = 0`. Resolving the
+         * group here - on the switch consumer, not on the tap's main thread -
+         * keeps the tap's pick, cursor and prefetch inside the same group as
+         * the timer (see [com.wallpaperswitcher.engine.GroupSchedulePlan]).
+         *
+         * @return 0 when no group drives its own rhythm; the screen-wide pick is
+         *   the correct default then.
+         */
+        private suspend fun resolveUserTapGroup(req: SwitchRequest): Long {
+            if (req.targetId != null || req.groupId > 0L) return req.groupId
+            if (!isUserTapSource(req.source)) return 0L
+            val resolved = try {
+                com.wallpaperswitcher.engine.GroupSchedulePlan
+                    .nextGroupId(db, HOME_SLOT)
+            } catch (_: Exception) {
+                0L
+            }
+            if (resolved > 0L) {
+                AppLog.d(TAG, "User tap ${req.source}: resolved group=$resolved")
+            }
+            return resolved
+        }
+
+        private suspend fun executeSwitch(source: String, targetId: Long?, groupId: Long = 0L) {
             // Only skip when the SCREEN is actually off: starting a decode in
             // the dark wastes battery, and the switch runs on the next tick
             // after screen-on. When another app merely covers the wallpaper
@@ -2828,6 +3050,45 @@ class LiveWallpaperService : WallpaperService() {
             }
             val dao = db.settingsDao()
             val imageDao = db.wallpaperImageDao()
+            // 视频播完再切: hold a TIMED switch until the current clip reaches
+            // the end of its pass (onVideoPassCompleted runs it then). Manual /
+            // unlock switches are never held - the user expects the tap to act.
+            // Every later tick must be dropped while a hold is pending too:
+            // letting it through cut the clip off at the next interval.
+            if (source == SOURCE_TIMER) {
+                val videoOnScreen = videoMode && renderer?.isVideoPlaying == true
+                val holdForVideo = try {
+                    dao.getBool(SettingsKeys.VIDEO_PLAY_TO_END, false)
+                } catch (_: Exception) {
+                    false
+                }
+                when (
+                    SwitchPicking.videoEndHold(
+                        optionEnabled = holdForVideo,
+                        videoPlaying = videoOnScreen,
+                        holdPending = pendingVideoEndSwitch,
+                    )
+                ) {
+                    SwitchPicking.VideoEndHold.HOLD_PENDING -> {
+                        pendingVideoEndSwitch = true
+                        pendingVideoEndGroupId = groupId
+                        AppLog.d(TAG, "Timed switch held: the video plays to its end first")
+                        return
+                    }
+                    SwitchPicking.VideoEndHold.DROP_TICK -> {
+                        // The clip is still playing: this tick must not switch.
+                        // The held one runs from onVideoPassCompleted instead.
+                        AppLog.d(TAG, "Timed switch still held: waiting for the video to end")
+                        return
+                    }
+                    SwitchPicking.VideoEndHold.SWITCH_NOW -> {
+                        // The option was switched OFF while a tick was held:
+                        // release the stale hold and let this tick switch now.
+                        pendingVideoEndSwitch = false
+                        pendingVideoEndGroupId = 0L
+                    }
+                }
+            }
             applyClarityMode()
             autoRotateMismatch = try {
                 dao.getBool(SettingsKeys.ROTATE_MISMATCH_ENABLED, true)
@@ -2841,12 +3102,54 @@ class LiveWallpaperService : WallpaperService() {
                 true
             }
             renderer?.autoRotateClockwise = autoRotateClockwise
-            val switchMode = try {
+            // Per-group tick (see GroupPacing): the scheduler picked ONE group
+            // to bring on screen, so this switch must stay inside it. A group
+            // that was disabled or retargeted between the tick and this switch
+            // falls back to the screen-wide path instead of showing media the
+            // user just removed from the rotation.
+            val scopedGroup = if (groupId > 0L) {
+                try {
+                    db.wallpaperGroupDao().getGroupById(groupId)?.takeIf {
+                        it.isEnabled && WallpaperTarget.fromName(it.target).includesHome
+                    }
+                } catch (_: Exception) {
+                    null
+                }
+            } else null
+            val scopedGroupId = scopedGroup?.id ?: 0L
+            // The group's 仅图片 / 仅视频 filter, shared by every pick and
+            // fallback below. A fallback that forgot it could hand a video to an
+            // 仅图片 group - which is exactly the reported "still switches to a
+            // video" symptom.
+            val scopedFilter = scopedGroup?.let {
+                com.wallpaperswitcher.engine.GroupRules.mediaFilter(it)
+            } ?: ""
+
+            val globalSwitchMode = try {
                 SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
             } catch (_: Exception) { SwitchMode.RANDOM }
+            // 切换模式是全局设置：分组只带自己的间隔与时段（分组级的模式已取消）。
+            val switchMode = globalSwitchMode
 
             val groups = db.wallpaperGroupDao().getEnabledGroupsSync()
             if (groups.isEmpty()) return
+
+            // Seed of this pick: the applied-switch counter. Read once here and
+            // reused for the prefetch below - the preview reads the same value,
+            // and it only moves after a switch has really been applied, so the
+            // media 下一张预览 named is the media this switch shows.
+            val pickSeq = try {
+                dao.getLong(SettingsKeys.PICK_SEQ)
+            } catch (_: Exception) {
+                0L
+            }
+            // 收藏优先 / 最近 N 张不重复: read once, shared with the prefetch.
+            val favoriteWeight =
+                com.wallpaperswitcher.engine.PickOptions.favoriteWeight(dao)
+            val recentWindow =
+                com.wallpaperswitcher.engine.PickOptions.recentWindow(dao)
+            val recentIds = com.wallpaperswitcher.engine.PickOptions
+                .recentIds(db, HOME_SLOT, recentWindow)
 
             // If target is already playing, skip restart (avoids video pause on "apply")
             if (targetId != null && targetId > 0 && targetId == lastDisplayedId) {
@@ -2889,6 +3192,49 @@ class LiveWallpaperService : WallpaperService() {
                 // an enabled pick - so this permissive rule cannot re-apply media
                 // from a group the user switched off.
                 img ?: pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao)
+            } else if (scopedGroupId > 0L) {
+                // Group-scoped switch: the group's own cursor (lastMediaId) is
+                // the reference, not the shared LAST_IMAGE_ID.
+                val lastId = try {
+                    db.groupScheduleDao().get(scopedGroupId, HOME_SLOT)?.lastMediaId ?: 0L
+                } catch (_: Exception) {
+                    0L
+                }
+                // Consume a prefetch that belongs to THIS group (see
+                // maybePrefetchNext): the cached bitmap is the image this
+                // group's next switch would pick, so a warm tap is an upload
+                // instead of a decode. Another group's / the screen-wide cache
+                // is dropped rather than shown.
+                val prefetched = takePrefetchCache()
+                val cachedId = prefetched.imageId
+                val cachedBmp = prefetched.bitmap
+                var cached: WallpaperImage? = null
+                if (prefetched.groupId == scopedGroupId && cachedId > 0L && cachedBmp != null) {
+                    val img = imageDao.getImageById(cachedId)
+                    if (img != null && img.groupId == scopedGroupId &&
+                        img.id !in failedMediaIds &&
+                        // The cached bitmap may predate a 仅图片 / 仅视频 change:
+                        // drop it instead of showing a media the group no
+                        // longer allows.
+                        com.wallpaperswitcher.engine.GroupRules
+                            .allowsMedia(scopedFilter, img.mediaType)
+                    ) {
+                        cached = img
+                        cachedBitmap = cachedBmp
+                        cachedRotateCw = prefetched.rotateCw
+                    } else {
+                        cachedBmp.recycle()
+                    }
+                } else {
+                    cachedBmp?.recycle()
+                }
+                cached ?: GroupPick.pick(
+                    db, HOME_SLOT, scopedGroupId, switchMode, lastId,
+                    pickSeq = pickSeq,
+                    filter = scopedFilter,
+                    favoriteWeight = favoriteWeight,
+                    recentIds = recentIds,
+                )
             } else {
                 val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
                 // Auto switch: consume the prefetch cache when it is still
@@ -2929,7 +3275,8 @@ class LiveWallpaperService : WallpaperService() {
                 val cachedBmp = prefetched.bitmap
                 cachedRotateCw = prefetched.rotateCw
                 var cached: WallpaperImage? = null
-                if (cachedId > 0L && cachedBmp != null) {
+                // Only a screen-wide prefetch may satisfy a screen-wide switch.
+                if (prefetched.groupId == 0L && cachedId > 0L && cachedBmp != null) {
                     val img = imageDao.getImageById(cachedId)
                     if (img != null && !MediaTypes.isMotion(img.mediaType) &&
                         img.id !in failedMediaIds
@@ -2949,11 +3296,22 @@ class LiveWallpaperService : WallpaperService() {
                     // path used to re-count on every random attempt (up to 10x
                     // per switch) plus its own total-count query.
                     val enabledCount = enabledCountCached(imageDao, HOME_SLOT)
-                    pickNextImage(switchMode, imageDao, lastId, dao, enabledCount = enabledCount)
+                    pickNextImage(
+                        switchMode, imageDao, lastId, dao,
+                        enabledCount = enabledCount, pickSeq = pickSeq,
+                        favoriteWeight = favoriteWeight, recentIds = recentIds
+                    )
                 }
             }
 
             if (nextImage == null) {
+                if (scopedGroupId > 0L) {
+                    // The group has no media this screen can show: nothing to
+                    // switch to, and falling back to another group would break
+                    // the per-group rhythm the scheduler just chose.
+                    AppLog.d(TAG, "Group $scopedGroupId has no media for $HOME_SLOT; skipping tick")
+                    return
+                }
                 nextImage = imageDao.getFirstFromEnabledGroups(HOME_SLOT)
                 if (nextImage == null) return
             }
@@ -2969,9 +3327,18 @@ class LiveWallpaperService : WallpaperService() {
                     // only assigned `media` when it had already found a healthy
                     // item, so all five queries excluded the same id and four of
                     // them were pure repetition (wasted media-library reads).
-                    val alt = imageDao.getRandomImageFromEnabledGroupsExcluding(HOME_SLOT, media.id)
-                        ?: imageDao.getRandomImageFromEnabledGroups(HOME_SLOT)
-                        ?: break
+                    val alt = if (scopedGroupId > 0L) {
+                        val pickDao = db.groupPickDao()
+                        pickDao.getRandomInGroupExcluding(
+                            HOME_SLOT, scopedGroupId, media.id, scopedFilter
+                        )
+                            ?: pickDao.getRandomInGroup(HOME_SLOT, scopedGroupId, scopedFilter)
+                            ?: break
+                    } else {
+                        imageDao.getRandomImageFromEnabledGroupsExcluding(HOME_SLOT, media.id)
+                            ?: imageDao.getRandomImageFromEnabledGroups(HOME_SLOT)
+                            ?: break
+                    }
                     media = alt
                     if (alt.id !in failedMediaIds) break
                 }
@@ -3030,8 +3397,9 @@ class LiveWallpaperService : WallpaperService() {
                         appliedThisSwitch = true
                         fadeHandledByFirstFrame = true
                         // Decided here, applied by onFirstVideoFrame once the
-                        // frame is actually on screen.
-                        fadePendingForFirstFrame = !wasRapidSwitch()
+                        // frame is actually on screen. Every switch plays the
+                        // transition, however fast the taps come.
+                        fadePendingForFirstFrame = true
                     }
                 }
                 MediaTypes.GIF -> {
@@ -3109,7 +3477,10 @@ class LiveWallpaperService : WallpaperService() {
                             // ticks stop re-reading a dead URI.
                             dropMediaIfGone(nextImage.id)
                             if (recoveryFailCount <= 5) {
-                                requestSwitch("recovery")
+                                // Stay inside the group that owns the screen: a
+                                // screen-wide recovery could otherwise jump to a
+                                // media the group's filter excludes.
+                                requestSwitch("recovery", null, scopedGroupId)
                             }
                         }
                     }
@@ -3133,9 +3504,37 @@ class LiveWallpaperService : WallpaperService() {
             // (or later blocklisted) media was silently skipped for the rest of
             // the pass - the opposite of what the failure path claims.
             if (appliedThisSwitch) {
+                // Whatever just came on screen replaces the video whose end we
+                // were waiting for, so the held tick is no longer meaningful.
+                pendingVideoEndSwitch = false
+                pendingVideoEndGroupId = 0L
+                // 记住现在屏幕上是谁：「最近显示」回滚页靠这张表（手滑切走一张
+                // 好图要能找回来）。和已移除的"最近 N 张不重复"无关。
+                com.wallpaperswitcher.engine.PickOptions
+                    .recordShown(db, HOME_SLOT, nextImage.id)
                 try {
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, nextImage.id)
                 } catch (_: Exception) {
+                }
+                // The media really reached the screen: advance the pick seed so
+                // the NEXT pick (and its preview) draws a fresh value. Doing it
+                // only here is what keeps 下一张预览 and this switch agreeing.
+                try {
+                    dao.incrementLong(SettingsKeys.PICK_SEQ)
+                } catch (_: Exception) {
+                }
+                // Per-group cursor: the group's own rhythm continues from THIS
+                // media (lastMediaId is the reference the group-scoped
+                // SEQUENTIAL/RANDOM/SHUFFLE picks use).
+                if (scopedGroupId > 0L) {
+                    try {
+                        val scheduleDao = db.groupScheduleDao()
+                        scheduleDao.ensureRow(scopedGroupId, HOME_SLOT)
+                        scheduleDao.updateLastMedia(
+                            scopedGroupId, HOME_SLOT, nextImage.id, System.currentTimeMillis()
+                        )
+                    } catch (_: Exception) {
+                    }
                 }
             }
             // SHUFFLE: record the item as shown when THIS switch applied it.
@@ -3145,19 +3544,27 @@ class LiveWallpaperService : WallpaperService() {
             // longer make this media look "never shown" - that was how a pass came
             // to deal an image it had already displayed.
             if (appliedThisSwitch && switchMode == SwitchMode.SHUFFLE) {
-                shuffleShownIds.add(nextImage.id)
-                shuffleAllCount = enabledCountCached(imageDao, HOME_SLOT)
-                // Persist the pass progress NOW, not only in onDestroy: MIUI kills
-                // and recreates the wallpaper engine often, and a stale/missing
-                // "already shown" set made the rebuilt deck deal images that had
-                // already been shown before the pass finished.
-                //
-                // Only the NEWLY shown id is written (one row in `shuffle_shown`),
-                // so this is cheap enough to do on every switch - the old code
-                // rewrote the entire deck as a comma-separated string here (up to
-                // ~230KB for a 38k library), which is why it had to be throttled.
-                pendingShuffleIds.add(nextImage.id)
-                flushShuffleState()
+                if (scopedGroupId > 0L) {
+                    // The group's deck is persisted straight away (one row),
+                    // exactly like the screen-wide one below - and NOT through
+                    // pendingShuffleIds, which belongs to the screen-wide deck.
+                    GroupPick.recordShown(db, HOME_SLOT, scopedGroupId, nextImage.id)
+                } else {
+                    shuffleShownIds.add(nextImage.id)
+                    shuffleAllCount = enabledCountCached(imageDao, HOME_SLOT)
+                    // Persist the pass progress NOW, not only in onDestroy: MIUI
+                    // kills and recreates the wallpaper engine often, and a
+                    // stale/missing "already shown" set made the rebuilt deck deal
+                    // images that had already been shown before the pass finished.
+                    //
+                    // Only the NEWLY shown id is written (one row in
+                    // `shuffle_shown`), so this is cheap enough to do on every
+                    // switch - the old code rewrote the entire deck as a
+                    // comma-separated string here (up to ~230KB for a 38k
+                    // library), which is why it had to be throttled.
+                    pendingShuffleIds.add(nextImage.id)
+                    flushShuffleState()
+                }
             }
             if (lastDisplayedId == nextImage.id && !fadeHandledByFirstFrame) maybeFade()
         }
@@ -3173,15 +3580,17 @@ class LiveWallpaperService : WallpaperService() {
                 val id = prefetchedImageId
                 val bmp = prefetchedBitmap
                 val rotateCw = prefetchedRotateCw
+                val groupId = prefetchedGroupId
                 prefetchedImageId = 0L
                 prefetchedBitmap = null
+                prefetchedGroupId = 0L
                 prefetchedSwitchMode = null
                 prefetchedRotateCw = null
                 if (id <= 0L || bmp == null || bmp.isRecycled) {
                     if (bmp != null && !bmp.isRecycled) bmp.recycle()
                     return PrefetchedImage(0L, null, null)
                 }
-                return PrefetchedImage(id, bmp, rotateCw)
+                return PrefetchedImage(id, bmp, rotateCw, groupId)
             }
         }
 
@@ -3192,6 +3601,7 @@ class LiveWallpaperService : WallpaperService() {
                 val b = prefetchedBitmap
                 prefetchedBitmap = null
                 prefetchedImageId = 0L
+                prefetchedGroupId = 0L
                 prefetchedSwitchMode = null
                 prefetchedRotateCw = null
                 prefetchedAt = 0L
@@ -3231,6 +3641,18 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         /**
+         * True for the triggers the user performs by hand: the floating button,
+         * a double tap on the desktop, or the "立即切换壁纸" button. These get
+         * their own tap queue (each tap switches) and always leave a prefetched
+         * next image behind, so tapping again is a ~20ms texture upload instead
+         * of a ~250ms decode ("不跟手").
+         */
+        private fun isUserTapSource(source: String): Boolean =
+            source == SOURCE_FLOATING ||
+                source == SOURCE_DOUBLE_TAP ||
+                source == SOURCE_MANUAL
+
+        /**
          * Release optional memory on system low-memory pressure: the
          * prefetched next-image bitmap. The currently displayed media and its
          * GL resources are untouched; the next switch decodes fresh.
@@ -3259,30 +3681,40 @@ class LiveWallpaperService : WallpaperService() {
          * records shown items only when a switch actually applies them), so a
          * prefetch that is invalidated or fails can never skip an item.
          */
-        private fun maybePrefetchNext(source: String, sincePreviousSwitchMs: Long) {
+        private fun maybePrefetchNext(
+            source: String,
+            sincePreviousSwitchMs: Long,
+            groupId: Long = 0L,
+        ) {
             if (!isVisible || !powerManager.isInteractive()) return
             synchronized(prefetchLock) {
                 if (prefetchedImageId > 0L || prefetchedBitmap != null) return
             }
             // Prefetch ONLY while the user keeps switching rapidly: a warm
             // decode is what makes a double-tap burst / a run of floating-button
-            // taps feel instant. A timer tick, or a user switch that came long
-            // after the previous one, is decoded on demand in ~100ms instead -
-            // pre-decoding there just doubled the number of media-library reads
-            // ("每次切换都会访问手机和视频").
+            // taps feel instant.
             if (source == SOURCE_TIMER) {
                 AppLog.d(TAG, "Timer switch: skipping prefetch (media access)")
                 return
             }
-            if (sincePreviousSwitchMs <= 0L) {
-                // First switch of this engine: there is no "previous" to compare
-                // against, so this is never a rapid burst.
-                AppLog.d(TAG, "First switch of this engine; skipping prefetch")
-                return
-            }
-            if (sincePreviousSwitchMs > PREFETCH_RAPID_GAP_MS) {
-                AppLog.d(TAG, "Not a rapid switch (${sincePreviousSwitchMs}ms); skipping prefetch")
-                return
+            // 用户手动切换之后总是预解码下一张：用户此刻正看着桌面，很可能会
+            // 再点一次，预解码把下一次点击从"现解码 ~250ms"变成"纹理上传 ~20ms"
+            // （这就是"悬浮按钮不跟手"的直接原因）。定时切换仍然不预取，避免
+            // 成倍增加媒体库读取（用户此前明确提过）。
+            if (!isUserTapSource(source)) {
+                if (sincePreviousSwitchMs <= 0L) {
+                    // First switch of this engine: there is no "previous" to
+                    // compare against, so this is never a rapid burst.
+                    AppLog.d(TAG, "First switch of this engine; skipping prefetch")
+                    return
+                }
+                if (sincePreviousSwitchMs > PREFETCH_RAPID_GAP_MS) {
+                    AppLog.d(
+                        TAG,
+                        "Not a rapid switch (${sincePreviousSwitchMs}ms); skipping prefetch"
+                    )
+                    return
+                }
             }
             if (!prefetchInProgress.compareAndSet(false, true)) return
             scope.launch {
@@ -3290,18 +3722,56 @@ class LiveWallpaperService : WallpaperService() {
                     val dao = db.settingsDao()
                     val imageDao = db.wallpaperImageDao()
                     if (db.wallpaperGroupDao().getEnabledGroupsSync().isEmpty()) return@launch
-                    val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
-                    val switchMode = try {
+                    val globalMode = try {
                         SwitchMode.valueOf(dao.getString(SettingsKeys.GLOBAL_SWITCH_MODE, SwitchMode.RANDOM.name))
                     } catch (_: Exception) { SwitchMode.RANDOM }
-                    val next = pickNextImage(
-                        switchMode, imageDao, lastId, dao,
-                        forPrefetch = true,
-                        enabledCount = enabledCountCached(imageDao, HOME_SLOT)
-                    ) ?: return@launch
+                    // Prefetch the image the NEXT switch of THIS group will show
+                    // (its own mode + its own cursor), so the cached bitmap is
+                    // usable by that switch and not by another group's.
+                    val pickSeq = dao.getLong(SettingsKeys.PICK_SEQ)
+                    val group = if (groupId > 0L) {
+                        db.wallpaperGroupDao().getGroupById(groupId)?.takeIf {
+                            it.isEnabled && WallpaperTarget.fromName(it.target).includesHome
+                        }
+                    } else null
+                    val scopedGroupId = group?.id ?: 0L
+                    val favoriteWeight =
+                        com.wallpaperswitcher.engine.PickOptions.favoriteWeight(dao)
+                    val recentWindow =
+                        com.wallpaperswitcher.engine.PickOptions.recentWindow(dao)
+                    val recentIds = com.wallpaperswitcher.engine.PickOptions
+                        .recentIds(db, HOME_SLOT, recentWindow)
+                    val next = if (scopedGroupId > 0L) {
+                        val lastId = try {
+                            db.groupScheduleDao().get(scopedGroupId, HOME_SLOT)?.lastMediaId ?: 0L
+                        } catch (_: Exception) {
+                            0L
+                        }
+                        GroupPick.pick(
+                            db, HOME_SLOT, scopedGroupId, globalMode, lastId,
+                            forPrefetch = true, pickSeq = pickSeq,
+                            filter = com.wallpaperswitcher.engine.GroupRules.mediaFilter(group!!),
+                            favoriteWeight = favoriteWeight,
+                            recentIds = recentIds,
+                        )
+                    } else {
+                        pickNextImage(
+                            globalMode, imageDao, dao.getLong(SettingsKeys.LAST_IMAGE_ID), dao,
+                            forPrefetch = true,
+                            enabledCount = enabledCountCached(imageDao, HOME_SLOT),
+                            // Same seed the following switch will use (the counter
+                            // only moves once that switch is applied).
+                            pickSeq = pickSeq,
+                            favoriteWeight = favoriteWeight,
+                            recentIds = recentIds
+                        )
+                    } ?: return@launch
                     if (MediaTypes.isMotion(next.mediaType)) return@launch
                     if (next.id == lastDisplayedId || next.id in failedMediaIds) return@launch
-                    AppLog.d(TAG, "Prefetching next image: ${next.displayName} id=${next.id}")
+                    AppLog.d(
+                        TAG,
+                        "Prefetching next image: ${next.displayName} id=${next.id} group=$scopedGroupId"
+                    )
                     val prefetchedImage = loadBitmapWithTimeout(next.uri, media = next)
                     val bmp = prefetchedImage?.bitmap
                     if (bmp == null || bmp.isRecycled) return@launch
@@ -3316,7 +3786,8 @@ class LiveWallpaperService : WallpaperService() {
                         } else {
                             prefetchedImageId = next.id
                             prefetchedBitmap = bmp
-                            prefetchedSwitchMode = switchMode
+                            prefetchedGroupId = scopedGroupId
+                            prefetchedSwitchMode = globalMode
                             prefetchedRotateCw = prefetchedImage.rotateCw
                             storedPrefetch = true
                         }
@@ -3334,11 +3805,15 @@ class LiveWallpaperService : WallpaperService() {
 
         private suspend fun pickNextImage(
             switchMode: SwitchMode, imageDao: WallpaperImageDao, lastId: Long, dao: SettingsDao,
-            forPrefetch: Boolean = false, enabledCount: Int = -1
+            forPrefetch: Boolean = false, enabledCount: Int = -1, pickSeq: Long = 0L,
+            favoriteWeight: Int = 1, recentIds: Collection<Long> = emptyList(),
         ): WallpaperImage? {
             return when (switchMode) {
                 SwitchMode.RANDOM -> {
-                    MediaPick.random(imageDao, HOME_SLOT, lastId, enabledCount)
+                    MediaPick.random(
+                        imageDao, HOME_SLOT, lastId, enabledCount, pickSeq,
+                        favoriteWeight, recentIds
+                    )
                 }
                 SwitchMode.SEQUENTIAL -> {
                     val count = if (enabledCount >= 0) enabledCount
@@ -3399,7 +3874,11 @@ class LiveWallpaperService : WallpaperService() {
                             imageDao = imageDao,
                             slot = HOME_SLOT,
                             shownIds = shuffleShownIds,
-                            excludeId = lastId
+                            excludeId = lastId,
+                            generation = MediaScanner.currentGeneration(applicationContext),
+                            knownCount = totalCount,
+                            pickSeq = pickSeq,
+                            favoriteWeight = favoriteWeight
                         )
                         if (candidate == null) {
                             // Every enabled media has been shown (or the only
@@ -3663,8 +4142,7 @@ class LiveWallpaperService : WallpaperService() {
                                     suppressFadeUntilFirstFrame =
                                         orientationRedraw || resumedFromPowerSave
                                     fadePendingForFirstFrame =
-                                        !orientationRedraw && !resumedFromPowerSave &&
-                                            !wasRapidSwitch()
+                                        !orientationRedraw && !resumedFromPowerSave
                                 } else {
                                     lastDisplayedId = 0L
                                 }
@@ -3799,49 +4277,40 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         /**
-         * Start the fade-in transition after a switch when the setting is
-         * enabled and the wallpaper is actually visible (skip it while covered
-         * or the screen is off - nobody can see it then).
+         * Play the 过渡动画 after a switch, when the setting is enabled and the
+         * wallpaper is actually visible (skip it while covered or the screen is
+         * off - nobody can see it then).
+         *
+         * Manual triggers (悬浮按钮 / 双击 / 「立即切换壁纸」) play it too: the user
+         * asked for the transition to apply to EVERY switch, including a rapid
+         * double-tap run: the transitions used to be skipped within 700ms of the
+         * previous switch, which is exactly when the user double-taps again, so
+         * the animation "disappeared". A transition that is already running is
+         * simply restarted by the next switch (see WallpaperRenderer).
          */
-        private suspend fun maybeFade(force: Boolean = false) {
+        private suspend fun maybeFade() {
             if (renderer?.powerSaveMode == true) return
             if (renderer?.isSurfaceReady() != true) return
-            // 用户主动点击（悬钮 / 双击 / 「立即切换壁纸」）不淡入：淡入的第一帧
-            // 是纯黑，再花 200ms 渐显，点一下要等这段黑场才看到新图，就是"不跟手"
-            // 的来源。过渡动画设置仍然作用于自动切换（定时 / 解锁 / 恢复）。
-            if (isManualSwitchSource(currentSwitchSource)) {
-                AppLog.d(TAG, "Manual switch, skipping fade (instant response)")
-                return
-            }
-            // Rapid successive switches (double-tap bursts / quick taps) skip
-            // the fade so the wallpaper changes feel instant.
-            // [force] is used by the video first-frame path, where the decision
-            // was already made when the switch started (the frame arrives a few
-            // hundred ms later and would otherwise always look "rapid").
-            if (!force && wasRapidSwitch()) {
-                AppLog.d(TAG, "Rapid switch, skipping fade")
-                return
-            }
             val enabled = try {
                 db.settingsDao().getBool(SettingsKeys.SWITCH_FADE_ENABLED, true)
             } catch (_: Exception) {
                 true
             }
             if (enabled) {
-                AppLog.d(TAG, "Fade-in requested")
-                renderer?.requestFade()
+                // 过渡动画 setting (fade / slide / zoom / none). Read here so a
+                // change applies from the very next switch, no restart needed.
+                val transition = try {
+                    db.settingsDao().getString(
+                        SettingsKeys.SWITCH_TRANSITION,
+                        SettingsKeys.SWITCH_TRANSITION_DEFAULT
+                    )
+                } catch (_: Exception) {
+                    SettingsKeys.SWITCH_TRANSITION_DEFAULT
+                }
+                AppLog.d(TAG, "Transition requested: $transition")
+                renderer?.requestTransition(transition)
             }
         }
-
-        /** True for the triggers a user performs by hand (see [maybeFade]). */
-        private fun isManualSwitchSource(source: String): Boolean =
-            source == SOURCE_MANUAL ||
-                source == SOURCE_DOUBLE_TAP ||
-                source == SOURCE_FLOATING
-
-        /** True when the previous switch finished less than the fade-skip window ago. */
-        private fun wasRapidSwitch(): Boolean =
-            SystemClock.elapsedRealtime() - lastSwitchCompletedAt < RAPID_SWITCH_FADE_SKIP_MS
 
         /**
          * Position (µs) this video should resume at, when it is the media whose

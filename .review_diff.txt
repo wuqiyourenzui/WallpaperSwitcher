@@ -1,0 +1,2812 @@
+diff --git a/app/src/main/java/com/wallpaperswitcher/data/SettingsKeys.kt b/app/src/main/java/com/wallpaperswitcher/data/SettingsKeys.kt
+index af52a02..ec7adaf 100644
+--- a/app/src/main/java/com/wallpaperswitcher/data/SettingsKeys.kt
++++ b/app/src/main/java/com/wallpaperswitcher/data/SettingsKeys.kt
+@@ -111,5 +111,14 @@ object SettingsKeys {
+      */
+     const val SHUFFLE_ALL_COUNT = "shuffle_all_count"
+     // Theme
++    /** Custom accent colour as "#RRGGBB"; empty = 跟随系统 (Monet on Android 12+). */
+     const val THEME_COLOR = "theme_color"
++    /**
++     * Light/dark mode: "system" (follow the phone) / "light" / "dark".
++     * Missing or unknown values behave like "system".
++     */
++    const val THEME_MODE = "theme_mode"
++    const val THEME_MODE_SYSTEM = "system"
++    const val THEME_MODE_LIGHT = "light"
++    const val THEME_MODE_DARK = "dark"
+ }
+diff --git a/app/src/main/java/com/wallpaperswitcher/engine/ColorContrast.kt b/app/src/main/java/com/wallpaperswitcher/engine/ColorContrast.kt
+new file mode 100644
+index 0000000..2346a4f
+--- /dev/null
++++ b/app/src/main/java/com/wallpaperswitcher/engine/ColorContrast.kt
+@@ -0,0 +1,115 @@
++package com.wallpaperswitcher.engine
++
++import kotlin.math.abs
++import kotlin.math.max
++import kotlin.math.min
++import kotlin.math.pow
++
++/**
++ * WCAG contrast helpers for the custom theme colour.
++ *
++ * The user picks any colour as the accent; two things then have to stay readable:
++ *
++ *  * text/icons drawn *on* the accent (chips, switches) - solved by
++ *    [readableOn] picking black or white by luminance instead of hard-coding
++ *    `Color.White` (a pale accent with white text was unreadable);
++ *  * accent-coloured text drawn on the *surface* (section labels, values) - solved
++ *    by [ensureReadable], which darkens/lightens the accent along its own lightness
++ *    axis (hue and saturation untouched) until it reaches a target contrast ratio.
++ *    The scheme used to set `onSurfaceVariant = primary`, so a pale accent turned
++ *    every secondary label into pale-on-pale (the reported "文字和图形随主题颜色
++ *    变化，影响识别").
++ *
++ * Pure Kotlin so the maths can be unit tested; see ColorContrastTest.
++ */
++object ColorContrast {
++
++    /** WCAG AA for normal text. */
++    const val AA_NORMAL = 4.5f
++
++    /** WCAG AA for large text / graphical objects. */
++    const val AA_LARGE = 3.0f
++
++    /** Relative luminance of an opaque ARGB colour (WCAG 2.1). */
++    fun luminance(argb: Int): Float {
++        fun channel(value: Int): Float {
++            val c = (value and 0xFF) / 255f
++            return if (c <= 0.03928f) c / 12.92f else ((c + 0.055f) / 1.055f).pow(2.4f)
++        }
++        val r = channel(argb shr 16)
++        val g = channel(argb shr 8)
++        val b = channel(argb)
++        return 0.2126f * r + 0.7152f * g + 0.0722f * b
++    }
++
++    /** Contrast ratio between two opaque colours, 1.0 .. 21.0. */
++    fun contrastRatio(a: Int, b: Int): Float {
++        val la = luminance(a)
++        val lb = luminance(b)
++        val lighter = max(la, lb)
++        val darker = min(la, lb)
++        return (lighter + 0.05f) / (darker + 0.05f)
++    }
++
++    /**
++     * Black or white - whichever reads better on [background]. Used for the
++     * "on accent" slots of the custom colour scheme.
++     */
++    fun readableOn(background: Int): Int {
++        val onWhite = contrastRatio(0xFFFFFFFF.toInt(), background)
++        val onBlack = contrastRatio(0xFF000000.toInt(), background)
++        // Prefer white on a tie: Material's default look for a dark accent.
++        return if (onWhite >= onBlack) 0xFFFFFFFF.toInt() else 0xFF000000.toInt()
++    }
++
++    /**
++     * [color] adjusted along its lightness axis until it contrasts with
++     * [background] by at least [minRatio]. Hue and saturation are preserved, so the
++     * accent still looks like the colour the user picked - it is just pushed away
++     * from the background until it is legible.
++     *
++     * If the ratio cannot be reached (e.g. a mid grey background), the extreme that
++     * got closest is returned.
++     */
++    fun ensureReadable(color: Int, background: Int, minRatio: Float = AA_NORMAL): Int {
++        if (contrastRatio(color, background) >= minRatio) return color
++        val hsl = toHsl(color)
++        // Walk away from the background's lightness, in small steps.
++        val backgroundIsLight = luminance(background) > 0.5f
++        val step = if (backgroundIsLight) -0.02f else 0.02f
++        var best = color
++        var bestRatio = contrastRatio(color, background)
++        var lightness = hsl[2]
++        repeat(50) {
++            lightness = (lightness + step).coerceIn(0f, 1f)
++            val candidate = ColorPickerGrid.hslToRgb(hsl[0], lightness, hsl[1])
++            val ratio = contrastRatio(candidate, background)
++            if (ratio > bestRatio) {
++                bestRatio = ratio
++                best = candidate
++            }
++            if (ratio >= minRatio) return candidate
++            if (lightness <= 0f || lightness >= 1f) return best
++        }
++        return best
++    }
++
++    /** ARGB -> [hue (deg), saturation, lightness]. */
++    fun toHsl(argb: Int): FloatArray {
++        val r = ((argb shr 16) and 0xFF) / 255f
++        val g = ((argb shr 8) and 0xFF) / 255f
++        val b = (argb and 0xFF) / 255f
++        val max = maxOf(r, g, b)
++        val min = minOf(r, g, b)
++        val l = (max + min) / 2f
++        val d = max - min
++        if (d == 0f) return floatArrayOf(0f, 0f, l)
++        val s = d / (1f - abs(2f * l - 1f))
++        val h = when (max) {
++            r -> 60f * (((g - b) / d) % 6f)
++            g -> 60f * (((b - r) / d) + 2f)
++            else -> 60f * (((r - g) / d) + 4f)
++        }
++        return floatArrayOf(((h % 360f) + 360f) % 360f, s, l)
++    }
++}
+diff --git a/app/src/main/java/com/wallpaperswitcher/engine/ColorPickerGrid.kt b/app/src/main/java/com/wallpaperswitcher/engine/ColorPickerGrid.kt
+new file mode 100644
+index 0000000..bec7244
+--- /dev/null
++++ b/app/src/main/java/com/wallpaperswitcher/engine/ColorPickerGrid.kt
+@@ -0,0 +1,127 @@
++package com.wallpaperswitcher.engine
++
++/**
++ * Model behind the colour picker (the Material-style grid the user asked for):
++ * a hue x tone matrix plus the hex/alpha helpers the settings screens need.
++ *
++ * Pure maths on purpose - no Compose, no Android - so the grid can be unit tested
++ * and both the theme colour and the floating-button colour share exactly one
++ * definition of "what the picker offers".
++ *
++ * Layout: columns are evenly spaced hues around the wheel (red -> orange -> ...
++ * -> magenta -> red), rows are tones from near-white down to near-black, which is
++ * what makes the grid read like the palette in Material's own pickers.
++ */
++object ColorPickerGrid {
++
++    /** Hue columns (12 x 30 degrees). */
++    const val COLUMNS = 12
++
++    /** Tone rows, light to dark. */
++    val TONES = floatArrayOf(0.95f, 0.80f, 0.65f, 0.50f, 0.35f, 0.20f)
++
++    val ROWS: Int get() = TONES.size
++
++    /** Hue in degrees for a column (0-based, clamped). */
++    fun hueAt(column: Int): Float =
++        column.coerceIn(0, COLUMNS - 1) * (360f / COLUMNS)
++
++    /** Lightness for a row (0-based, clamped). */
++    fun toneAt(row: Int): Float = TONES[row.coerceIn(0, TONES.size - 1)]
++
++    /** Opaque ARGB for a grid cell. */
++    fun colorAt(column: Int, row: Int): Int =
++        hslToRgb(hueAt(column), toneAt(row), saturation = 1f)
++
++    /**
++     * HSL -> ARGB, fully saturated by default. Hue wraps, lightness is clamped to
++     * 0..1, and the result is always opaque (the picker's alpha slider only ever
++     * changes the window/button translucency, never the stored colour).
++     */
++    fun hslToRgb(hue: Float, lightness: Float, saturation: Float = 1f): Int {
++        val l = lightness.coerceIn(0f, 1f)
++        val s = saturation.coerceIn(0f, 1f)
++        val h = ((hue % 360f) + 360f) % 360f
++        val c = (1f - kotlin.math.abs(2f * l - 1f)) * s
++        val x = c * (1f - kotlin.math.abs((h / 60f) % 2f - 1f))
++        val m = l - c / 2f
++        val (r1, g1, b1) = when {
++            h < 60f -> Triple(c, x, 0f)
++            h < 120f -> Triple(x, c, 0f)
++            h < 180f -> Triple(0f, c, x)
++            h < 240f -> Triple(0f, x, c)
++            h < 300f -> Triple(x, 0f, c)
++            else -> Triple(c, 0f, x)
++        }
++        val r = ((r1 + m) * 255f).toInt().coerceIn(0, 255)
++        val g = ((g1 + m) * 255f).toInt().coerceIn(0, 255)
++        val b = ((b1 + m) * 255f).toInt().coerceIn(0, 255)
++        return (0xFF shl 24) or (r shl 16) or (g shl 8) or b
++    }
++
++    /** `#RRGGBB` (upper case) for an ARGB colour; alpha is dropped. */
++    fun toHex(argb: Int): String =
++        String.format("#%06X", argb and 0x00FFFFFF)
++
++    /** Same colour with the given 0..100 alpha (used for previews only). */
++    fun withAlphaPercent(argb: Int, percent: Int): Int {
++        val a = Math.round(percent.coerceIn(0, 100) * 255f / 100f) and 0xFF
++        return (a shl 24) or (argb and 0x00FFFFFF)
++    }
++
++    /**
++     * Parse `#RRGGBB` / `RRGGBB` into an opaque ARGB int, or null.
++     *
++     * Deliberately pure Kotlin instead of [com.wallpaperswitcher.util.parseHexColorInt]:
++     * that helper goes through `android.graphics.Color`, which is not available in
++     * plain JVM unit tests, and the picker's "which cell is this colour?" logic has
++     * to stay testable.
++     */
++    fun parseHex(hex: String?): Int? {
++        val clean = hex?.trim()?.removePrefix("#") ?: return null
++        if (clean.length != 6) return null
++        val value = clean.toLongOrNull(radix = 16) ?: return null
++        return (0xFF shl 24) or (value.toInt() and 0x00FFFFFF)
++    }
++
++    /**
++     * Grid cell closest to a stored colour, so the picker can mark the current
++     * selection. Compares in HSL space (hue distance wraps around). Returns null
++     * when [hex] cannot be parsed - the caller then simply marks nothing.
++     */
++    fun nearestCellOf(hex: String): Pair<Int, Int>? {
++        val argb = parseHex(hex) ?: return null
++        val r = ((argb shr 16) and 0xFF) / 255f
++        val g = ((argb shr 8) and 0xFF) / 255f
++        val b = (argb and 0xFF) / 255f
++        val max = maxOf(r, g, b)
++        val min = minOf(r, g, b)
++        val l = (max + min) / 2f
++        val d = max - min
++        val h = when {
++            d == 0f -> 0f
++            max == r -> 60f * (((g - b) / d) % 6f)
++            max == g -> 60f * (((b - r) / d) + 2f)
++            else -> 60f * (((r - g) / d) + 4f)
++        }.let { ((it % 360f) + 360f) % 360f }
++
++        var bestColumn = 0
++        var bestRow = 0
++        var bestDistance = Float.MAX_VALUE
++        for (row in 0 until ROWS) {
++            for (column in 0 until COLUMNS) {
++                val hueDistance = kotlin.math.abs(
++                    ((h - hueAt(column) + 540f) % 360f) - 180f
++                )
++                val toneDistance = kotlin.math.abs(l - toneAt(row)) * 360f
++                val distance = hueDistance + toneDistance
++                if (distance < bestDistance) {
++                    bestDistance = distance
++                    bestColumn = column
++                    bestRow = row
++                }
++            }
++        }
++        return bestColumn to bestRow
++    }
++}
+diff --git a/app/src/main/java/com/wallpaperswitcher/ui/MainActivity.kt b/app/src/main/java/com/wallpaperswitcher/ui/MainActivity.kt
+index 11b818b..8e10cdd 100644
+--- a/app/src/main/java/com/wallpaperswitcher/ui/MainActivity.kt
++++ b/app/src/main/java/com/wallpaperswitcher/ui/MainActivity.kt
+@@ -9,9 +9,12 @@ import androidx.compose.runtime.*
+ import androidx.compose.ui.Modifier
+ import androidx.lifecycle.compose.collectAsStateWithLifecycle
+ import androidx.lifecycle.viewmodel.compose.viewModel
++import com.wallpaperswitcher.util.AppLog
++import com.wallpaperswitcher.wallpaper.FloatingSwitchButton
+ import com.wallpaperswitcher.wallpaper.LiveWallpaperService
+ import com.wallpaperswitcher.service.WallpaperSwitchService
+ import com.wallpaperswitcher.ui.theme.WallpaperSwitcherTheme
++import com.wallpaperswitcher.ui.theme.ThemeMode
+ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
+ 
+ class MainActivity : ComponentActivity() {
+@@ -22,6 +25,7 @@ class MainActivity : ComponentActivity() {
+         setContent {
+             val vm: WallpaperViewModel = viewModel()
+             val themeColor by vm.themeColor.collectAsStateWithLifecycle()
++            val themeMode by vm.themeMode.collectAsStateWithLifecycle()
+ 
+             // Ask for the notification permission on Android 13+: the timer is
+             // a foreground service and its notification is the only visible
+@@ -46,7 +50,12 @@ class MainActivity : ComponentActivity() {
+             // screen as a permanent card (it re-reads the engine state on every
+             // ON_RESUME). A second Toast here only duplicated the same message
+             // right on top of it.
+-            WallpaperSwitcherTheme(themeColorHex = themeColor) {
++            // "system" follows the phone, "light"/"dark" force one mode (see
++            // ThemeMode). Anything else falls back to following the system.
++            WallpaperSwitcherTheme(
++                darkTheme = ThemeMode.from(themeMode).isDark(),
++                themeColorHex = themeColor
++            ) {
+                 Surface(
+                     modifier = Modifier.fillMaxSize(),
+                     color = MaterialTheme.colorScheme.background
+@@ -63,8 +72,14 @@ class MainActivity : ComponentActivity() {
+         // background. Self-heal the timer whenever the app is brought back to
+         // the foreground (and on every app launch).
+         WallpaperSwitchService.ensureRunning(this)
+-        // Hide the floating double-tap button the moment the app opens, so it
+-        // never lingers over the UI during the window transition.
++        // Hide the floating button the moment the app opens, so it never lingers
++        // over the UI during the window transition.
++        //
++        // Two paths on purpose: the direct one works even when no wallpaper
++        // engine is alive (the button is process-wide and outlives an engine
++        // restart, so asking the engine used to leave it on screen), and the
++        // engine one also re-evaluates its own bookkeeping.
++        FloatingSwitchButton.hideShared()
+         LiveWallpaperService.dismissFloatingButtonIfAny()
+         // Re-evaluate the floating button (e.g. right after the user granted
+         // the overlay permission in system settings) so it appears without
+@@ -78,6 +93,12 @@ class MainActivity : ComponentActivity() {
+         // onStop) must not fire while the grid is on screen.
+         (application as? com.wallpaperswitcher.WallpaperSwitcherApp)
+             ?.cancelThumbnailCacheTrim()
++        // Earliest chance to get the overlay out of the way: onStart runs before
++        // the activity window is drawn, so hiding here removes the button before
++        // the user ever sees it over the UI (the engine's visibility callback
++        // only arrives after the window animation).
++        AppLog.d(TAG, "onStart: hiding the floating button")
++        FloatingSwitchButton.hideShared()
+         // Tell the wallpaper engine our UI is in front RIGHT NOW: its own
+         // visibility callback lags behind the window animation, so without this
+         // the video's audio kept playing (and the floating button kept showing)
+@@ -94,8 +115,24 @@ class MainActivity : ComponentActivity() {
+         // disappears - cancelled in onStart() if the user comes straight back.
+         (application as? com.wallpaperswitcher.WallpaperSwitcherApp)
+             ?.scheduleThumbnailCacheTrim()
+-        // Leaving the UI: the wallpaper may be visible again (home screen), in
+-        // which case the audio resumes and the floating button comes back.
++    }
++
++    /**
++     * The UI lost the foreground: the wallpaper is in front again as soon as the
++     * next screen (the launcher) takes over, and that happens BEFORE [onStop].
++     *
++     * Measured on the Redmi tablet: `onStop` arrived **1104ms** after HOME (it
++     * waits for the app's exit animation), so flipping the engine's
++     * app-foreground flag there left the video frozen - or black on a freshly
++     * created engine - for that whole second before playback resumed
++     * (reports: 「设置视频为壁纸后，返回桌面要黑屏一会才开始播放」、
++     * 「进入壁纸软件后，再退出，视频会卡一下再播放」). onPause fires with the
++     * transition itself (~50ms), so the decode/audio resume together with the
++     * launcher animation instead of after it.
++     */
++    override fun onPause() {
++        super.onPause()
++        AppLog.d(TAG, "onPause: UI left the foreground")
+         LiveWallpaperService.setAppForeground(false)
+         // The desktop timer idles after its one switch while the app is in the
+         // foreground (see the app-foreground gate in WallpaperSwitchService):
+@@ -103,4 +140,8 @@ class MainActivity : ComponentActivity() {
+         // instead of waiting for the loop's fallback re-check.
+         WallpaperSwitchService.poke(this)
+     }
++
++    private companion object {
++        private const val TAG = "MainActivity"
++    }
+ }
+diff --git a/app/src/main/java/com/wallpaperswitcher/ui/screens/ColorGridPicker.kt b/app/src/main/java/com/wallpaperswitcher/ui/screens/ColorGridPicker.kt
+new file mode 100644
+index 0000000..5e44589
+--- /dev/null
++++ b/app/src/main/java/com/wallpaperswitcher/ui/screens/ColorGridPicker.kt
+@@ -0,0 +1,264 @@
++package com.wallpaperswitcher.ui.screens
++
++import androidx.compose.foundation.background
++import androidx.compose.foundation.border
++import androidx.compose.foundation.clickable
++import androidx.compose.foundation.layout.Arrangement
++import androidx.compose.foundation.layout.Box
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.Row
++import androidx.compose.foundation.layout.Spacer
++import androidx.compose.foundation.layout.aspectRatio
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.height
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.shape.CircleShape
++import androidx.compose.foundation.shape.RoundedCornerShape
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.filled.Check
++import androidx.compose.material3.AlertDialog
++import androidx.compose.material3.Icon
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.Slider
++import androidx.compose.material3.SliderDefaults
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Alignment
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.draw.clip
++import androidx.compose.ui.draw.drawBehind
++import androidx.compose.ui.geometry.Offset
++import androidx.compose.ui.geometry.Size
++import androidx.compose.ui.graphics.Brush
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.toArgb
++import androidx.compose.ui.unit.dp
++import com.wallpaperswitcher.engine.ColorPickerGrid
++
++/**
++ * Material-style colour picker: a hue x tone grid plus an optional translucency
++ * slider and a preview bar (the layout the user asked for, see 4.9.50).
++ *
++ * The grid itself is described by [ColorPickerGrid] (pure maths, unit tested); this
++ * file only draws it. Tapping a cell moves the local selection - nothing is applied
++ * until the surrounding dialog's 保存 button is pressed, so a user who changes their
++ * mind can back out with 取消.
++ */
++@Composable
++fun ColorGridPicker(
++    selectedHex: String,
++    onPick: (String) -> Unit,
++    modifier: Modifier = Modifier,
++    alphaPercent: Int? = null,
++    onAlphaChange: ((Int) -> Unit)? = null
++) {
++    val selected = remember(selectedHex) { ColorPickerGrid.parseHex(selectedHex) }
++    val selectedCell = remember(selectedHex) { ColorPickerGrid.nearestCellOf(selectedHex) }
++    val previewColor = selected?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
++    val previewAlpha = (alphaPercent ?: 100) / 100f
++
++    Column(modifier = modifier.fillMaxWidth()) {
++        // Preview bar: grey/white checkerboard underneath so translucency is visible.
++        Box(
++            modifier = Modifier
++                .fillMaxWidth()
++                .height(40.dp)
++                .clip(RoundedCornerShape(8.dp))
++                .checkerboard()
++                .background(previewColor.copy(alpha = previewAlpha))
++                .border(
++                    1.dp,
++                    MaterialTheme.colorScheme.outlineVariant,
++                    RoundedCornerShape(8.dp)
++                )
++        )
++        Spacer(modifier = Modifier.height(14.dp))
++
++        // Hue x tone grid. Cells keep their aspect ratio, so the grid fills the
++        // dialog width the way Material's own pickers do.
++        for (row in 0 until ColorPickerGrid.ROWS) {
++            Row(
++                modifier = Modifier.fillMaxWidth(),
++                horizontalArrangement = Arrangement.spacedBy(2.dp)
++            ) {
++                for (column in 0 until ColorPickerGrid.COLUMNS) {
++                    val argb = remember(column, row) { ColorPickerGrid.colorAt(column, row) }
++                    val color = Color(argb)
++                    val hex = remember(argb) { ColorPickerGrid.toHex(argb) }
++                    val isSelected = selectedCell?.let { it.first == column && it.second == row } == true
++                    Box(
++                        modifier = Modifier
++                            .weight(1f)
++                            .aspectRatio(1f)
++                            .clip(RoundedCornerShape(2.dp))
++                            .background(color)
++                            .clickable { onPick(hex) },
++                        contentAlignment = Alignment.Center
++                    ) {
++                        if (isSelected) {
++                            // Same affordance as the reference picker: a white ring
++                            // with a soft outer border so it reads on light colours.
++                            Box(
++                                modifier = Modifier
++                                    .size(18.dp)
++                                    .clip(CircleShape)
++                                    .border(2.dp, Color.White, CircleShape)
++                                    .border(3.dp, Color.Black.copy(alpha = 0.25f), CircleShape)
++                            )
++                        }
++                    }
++                }
++            }
++            if (row != ColorPickerGrid.ROWS - 1) Spacer(modifier = Modifier.height(2.dp))
++        }
++
++        if (alphaPercent != null && onAlphaChange != null) {
++            Spacer(modifier = Modifier.height(14.dp))
++            Text(
++                "透明度 $alphaPercent%",
++                style = MaterialTheme.typography.labelMedium,
++                color = MaterialTheme.colorScheme.onSurfaceVariant
++            )
++            Box(
++                modifier = Modifier
++                    .fillMaxWidth()
++                    .height(40.dp)
++                    .clip(RoundedCornerShape(8.dp))
++                    .checkerboard()
++                    .background(
++                        Brush.horizontalGradient(
++                            listOf(previewColor.copy(alpha = 0f), previewColor.copy(alpha = 1f))
++                        )
++                    )
++            ) {
++                Slider(
++                    value = alphaPercent.toFloat(),
++                    onValueChange = { onAlphaChange(it.toInt()) },
++                    valueRange = 0f..100f,
++                    colors = SliderDefaults.colors(
++                        // The gradient underneath is the track.
++                        activeTrackColor = Color.Transparent,
++                        inactiveTrackColor = Color.Transparent,
++                        thumbColor = Color.White
++                    ),
++                    modifier = Modifier.fillMaxWidth()
++                )
++            }
++        }
++    }
++}
++
++/**
++ * Dialog wrapper: picks a colour and only reports it when 保存 is pressed.
++ *
++ * [systemOption] adds the "跟随系统" choice the theme colour needs (it stores an
++ * empty string meaning "let Android/Monet decide"); [withAlpha] exposes the
++ * translucency slider, which the floating button uses for its rest opacity.
++ */
++@Composable
++fun ColorGridPickerDialog(
++    title: String,
++    currentHex: String,
++    onDismiss: () -> Unit,
++    onConfirm: (String) -> Unit,
++    systemOption: Boolean = false,
++    withAlpha: Boolean = false,
++    alphaPercent: Int = 100,
++    onConfirmAlpha: ((Int) -> Unit)? = null
++) {
++    var picked by remember(currentHex) { mutableStateOf(currentHex) }
++    var pickedAlpha by remember(alphaPercent) { mutableStateOf(alphaPercent) }
++
++    AlertDialog(
++        onDismissRequest = onDismiss,
++        title = { Text(title) },
++        text = {
++            Column {
++                if (systemOption) {
++                    Row(
++                        modifier = Modifier
++                            .fillMaxWidth()
++                            .clip(RoundedCornerShape(8.dp))
++                            .clickable { picked = "" }
++                            .padding(vertical = 10.dp),
++                        verticalAlignment = Alignment.CenterVertically
++                    ) {
++                        Box(
++                            modifier = Modifier
++                                .size(28.dp)
++                                .clip(CircleShape)
++                                .background(MaterialTheme.colorScheme.primary),
++                            contentAlignment = Alignment.Center
++                        ) {
++                            if (picked.isEmpty()) {
++                                Icon(
++                                    Icons.Filled.Check,
++                                    contentDescription = null,
++                                    tint = MaterialTheme.colorScheme.onPrimary,
++                                    modifier = Modifier.size(16.dp)
++                                )
++                            }
++                        }
++                        Spacer(modifier = Modifier.size(12.dp))
++                        Text(
++                            "跟随系统 Monet（用壁纸配色，Android 12+）",
++                            style = MaterialTheme.typography.bodyMedium
++                        )
++                    }
++                    Spacer(modifier = Modifier.height(10.dp))
++                }
++                ColorGridPicker(
++                    selectedHex = picked,
++                    onPick = { picked = it },
++                    alphaPercent = if (withAlpha) pickedAlpha else null,
++                    onAlphaChange = if (withAlpha) {
++                        { pickedAlpha = it }
++                    } else {
++                        null
++                    }
++                )
++            }
++        },
++        confirmButton = {
++            TextButton(
++                onClick = {
++                    onConfirm(picked)
++                    if (withAlpha) onConfirmAlpha?.invoke(pickedAlpha)
++                }
++            ) { Text("保存") }
++        },
++        dismissButton = {
++            TextButton(onClick = onDismiss) { Text("取消") }
++        }
++    )
++}
++
++/** Grey/white checkerboard, the usual affordance for "this is translucent". */
++private fun Modifier.checkerboard(cell: androidx.compose.ui.unit.Dp = 8.dp): Modifier =
++    drawBehind {
++        val step = cell.toPx()
++        var y = 0f
++        var row = 0
++        while (y < size.height) {
++            var x = 0f
++            var column = 0
++            while (x < size.width) {
++                val light = (row + column) % 2 == 0
++                drawRect(
++                    color = if (light) Color(0xFFEDEDED) else Color(0xFFCFCFCF),
++                    topLeft = Offset(x, y),
++                    size = Size(minOf(step, size.width - x), minOf(step, size.height - y))
++                )
++                x += step
++                column++
++            }
++            y += step
++            row++
++        }
++    }
+diff --git a/app/src/main/java/com/wallpaperswitcher/ui/screens/GroupDetailScreen.kt b/app/src/main/java/com/wallpaperswitcher/ui/screens/GroupDetailScreen.kt
+index a73afa9..b0cadb0 100644
+--- a/app/src/main/java/com/wallpaperswitcher/ui/screens/GroupDetailScreen.kt
++++ b/app/src/main/java/com/wallpaperswitcher/ui/screens/GroupDetailScreen.kt
+@@ -63,6 +63,7 @@ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.delay
+ import kotlinx.coroutines.launch
+ import kotlinx.coroutines.withContext
++import com.wallpaperswitcher.ui.theme.LocalAccentColor
+ 
+ // Grid thumbnails decode deliberately below the ~312px cell (3x density) so
+ // memory traffic and decode time stay tiny; slight softness is accepted in
+@@ -777,7 +778,7 @@ private fun SelectionToolbar(
+         Text(
+             "已选 $selectedCount/$totalCount",
+             style = MaterialTheme.typography.bodyMedium,
+-            color = MaterialTheme.colorScheme.primary,
++            color = LocalAccentColor.current,
+             textAlign = TextAlign.End,
+             maxLines = 1,
+             modifier = Modifier.weight(1f)
+@@ -1239,7 +1240,9 @@ fun FolderPickerDialog(
+                         },
+                         style = MaterialTheme.typography.bodySmall,
+                         color = if (scanning) {
+-                            MaterialTheme.colorScheme.primary
++                            // Accent text on the surface: use the contrast-safe
++                            // accent, not the raw user colour.
++                            LocalAccentColor.current
+                         } else {
+                             MaterialTheme.colorScheme.onSurfaceVariant
+                         },
+diff --git a/app/src/main/java/com/wallpaperswitcher/ui/screens/HomeScreen.kt b/app/src/main/java/com/wallpaperswitcher/ui/screens/HomeScreen.kt
+index 9352502..e301ef1 100644
+--- a/app/src/main/java/com/wallpaperswitcher/ui/screens/HomeScreen.kt
++++ b/app/src/main/java/com/wallpaperswitcher/ui/screens/HomeScreen.kt
+@@ -1,9 +1,10 @@
+ package com.wallpaperswitcher.ui.screens
+ 
+ import androidx.compose.foundation.BorderStroke
++import androidx.compose.foundation.ExperimentalFoundationApi
+ import androidx.compose.foundation.background
+ import androidx.compose.foundation.border
+-import androidx.compose.foundation.clickable
++import androidx.compose.foundation.combinedClickable
+ import androidx.compose.foundation.layout.*
+ import androidx.compose.foundation.lazy.LazyColumn
+ import androidx.compose.foundation.lazy.items
+@@ -31,6 +32,7 @@ import com.wallpaperswitcher.data.WallpaperGroup
+ import com.wallpaperswitcher.engine.WallpaperTarget
+ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
+ import com.wallpaperswitcher.wallpaper.LiveWallpaperService
++import com.wallpaperswitcher.ui.theme.LocalAccentColor
+ 
+ /** How often the home screen re-checks whether the live wallpaper engine is alive. */
+ private const val ENGINE_STATE_POLL_MS = 5_000L
+@@ -50,6 +52,12 @@ fun HomeScreen(
+     val serviceEnabled = homeUiState.serviceEnabled
+     val lockTimerEnabled = homeUiState.lockTimerEnabled
+     var showCreateDialog by remember { mutableStateOf(false) }
++    // 分组多选：批量删除 / 批量启用。The selection map is read per card (a
++    // snapshot read) so ticking one group only recomposes that card.
++    var groupSelectionMode by remember { mutableStateOf(false) }
++    val selectedGroupIds =
++        remember { androidx.compose.runtime.snapshots.SnapshotStateMap<Long, Boolean>() }
++    var confirmDeleteGroups by remember { mutableStateOf(false) }
+ 
+     Column(
+         modifier = Modifier
+@@ -185,13 +193,46 @@ fun HomeScreen(
+                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                 )
+             }
+-            FilledTonalButton(onClick = { showCreateDialog = true }) {
+-                Icon(Icons.Filled.Add, "新建", modifier = Modifier.size(18.dp))
+-                Spacer(modifier = Modifier.width(4.dp))
+-                Text("新建分组")
++            Row(verticalAlignment = Alignment.CenterVertically) {
++                // 多选入口（图标按钮，窄屏也不挤压「新建分组」）
++                if (groups.isNotEmpty() && !groupSelectionMode) {
++                    IconButton(
++                        onClick = {
++                            selectedGroupIds.clear()
++                            groupSelectionMode = true
++                        }
++                    ) {
++                        Icon(Icons.Filled.Checklist, "多选分组", modifier = Modifier.size(22.dp))
++                    }
++                    Spacer(modifier = Modifier.width(4.dp))
++                }
++                FilledTonalButton(onClick = { showCreateDialog = true }) {
++                    Icon(Icons.Filled.Add, "新建", modifier = Modifier.size(18.dp))
++                    Spacer(modifier = Modifier.width(4.dp))
++                    Text("新建分组")
++                }
+             }
+         }
+ 
++        // 多选工具栏：与分组详情里的选择栏同一套交互（退出 / 全选 / 已选 / 动作）
++        if (groupSelectionMode) {
++            Spacer(modifier = Modifier.height(4.dp))
++            GroupSelectionToolbar(
++                selectedMap = selectedGroupIds,
++                allIds = groups.map { it.id },
++                onExit = {
++                    selectedGroupIds.clear()
++                    groupSelectionMode = false
++                },
++                onEnable = {
++                    viewModel.setGroupsEnabled(selectedGroupIds.keys.toSet(), true)
++                    selectedGroupIds.clear()
++                    groupSelectionMode = false
++                },
++                onDelete = { confirmDeleteGroups = true }
++            )
++        }
++
+         Spacer(modifier = Modifier.height(12.dp))
+ 
+         if (groups.isEmpty()) {
+@@ -205,7 +246,28 @@ fun HomeScreen(
+                     GroupCard(
+                         group = group,
+                         mediaCount = mediaCounts[group.id] ?: 0,
+-                        onClick = { onGroupClick(group.id) },
++                        selectionMode = groupSelectionMode,
++                        isSelected = selectedGroupIds.containsKey(group.id),
++                        onClick = {
++                            if (groupSelectionMode) {
++                                if (selectedGroupIds.containsKey(group.id)) {
++                                    selectedGroupIds.remove(group.id)
++                                } else {
++                                    selectedGroupIds[group.id] = true
++                                }
++                            } else {
++                                onGroupClick(group.id)
++                            }
++                        },
++                        // Long-press enters multi-select with this group ticked -
++                        // the same gesture the media grid would use.
++                        onLongClick = {
++                            if (!groupSelectionMode) {
++                                selectedGroupIds.clear()
++                                selectedGroupIds[group.id] = true
++                                groupSelectionMode = true
++                            }
++                        },
+                         onToggle = { viewModel.toggleGroupEnabled(group.id, it) }
+                     )
+                 }
+@@ -226,6 +288,35 @@ fun HomeScreen(
+             }
+         )
+     }
++
++    if (confirmDeleteGroups) {
++        val count = selectedGroupIds.size
++        AlertDialog(
++            onDismissRequest = { confirmDeleteGroups = false },
++            title = { Text("删除分组") },
++            text = {
++                Text(
++                    "确定删除选中的 $count 个分组吗？分组里的媒体记录会一起移除" +
++                        "（手机里的照片/视频文件不会被删除）。"
++                )
++            },
++            confirmButton = {
++                TextButton(
++                    onClick = {
++                        viewModel.deleteGroups(selectedGroupIds.keys.toSet())
++                        selectedGroupIds.clear()
++                        groupSelectionMode = false
++                        confirmDeleteGroups = false
++                    }
++                ) {
++                    Text("删除", color = MaterialTheme.colorScheme.error)
++                }
++            },
++            dismissButton = {
++                TextButton(onClick = { confirmDeleteGroups = false }) { Text("取消") }
++            }
++        )
++    }
+ }
+ 
+ @Composable
+@@ -358,29 +449,38 @@ private fun ServiceControlCard(
+     }
+ }
+ 
++@OptIn(ExperimentalFoundationApi::class)
+ @Composable
+ private fun GroupCard(
+     group: WallpaperGroup,
+     mediaCount: Int,
++    selectionMode: Boolean = false,
++    isSelected: Boolean = false,
+     onClick: () -> Unit,
++    onLongClick: () -> Unit = {},
+     onToggle: (Boolean) -> Unit
+ ) {
+     Card(
+         modifier = Modifier
+             .fillMaxWidth()
+-            .clickable(onClick = onClick),
++            // Long-press is the usual way into a multi-select list; a plain tap
++            // still opens the group (or ticks it while selecting).
++            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+         shape = RoundedCornerShape(20.dp),
+         colors = CardDefaults.cardColors(
+-            containerColor = if (group.isEnabled)
+-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+-            else
+-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f)
++            containerColor = when {
++                isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
++                group.isEnabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
++                else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f)
++            }
+         ),
+         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+-        border = if (group.isEnabled)
+-            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+-        else
+-            null
++        border = when {
++            isSelected -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
++            group.isEnabled ->
++                BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
++            else -> null
++        }
+     ) {
+         Row(
+             modifier = Modifier
+@@ -467,10 +567,100 @@ private fun GroupCard(
+                 )
+             }
+ 
+-            Switch(
+-                checked = group.isEnabled,
+-                onCheckedChange = onToggle
++            if (selectionMode) {
++                // Ticking is handled by the card's own click - the box is a
++                // read-only indicator here, so tapping it does not fight the
++                // card's selection toggle.
++                Checkbox(checked = isSelected, onCheckedChange = null)
++            } else {
++                Switch(
++                    checked = group.isEnabled,
++                    onCheckedChange = onToggle
++                )
++            }
++        }
++    }
++}
++
++/**
++ * Multi-select bar for the GROUP list: exit / select-all / count / 批量启用 /
++ * 批量删除.
++ *
++ * Mirrors the media grid's SelectionToolbar (GroupDetailScreen) so both
++ * selection modes look and behave the same, and reads the selection INSIDE this
++ * composable (a snapshot read) so ticking one group does not recompose the whole
++ * screen.
++ */
++@Composable
++private fun GroupSelectionToolbar(
++    selectedMap: androidx.compose.runtime.snapshots.SnapshotStateMap<Long, Boolean>,
++    allIds: List<Long>,
++    onExit: () -> Unit,
++    onEnable: () -> Unit,
++    onDelete: () -> Unit
++) {
++    val selectedCount = selectedMap.size
++    val isAllSelected = allIds.isNotEmpty() && selectedCount == allIds.size
++    Row(
++        modifier = Modifier
++            .fillMaxWidth()
++            .padding(top = 2.dp, bottom = 2.dp),
++        horizontalArrangement = Arrangement.spacedBy(4.dp),
++        verticalAlignment = Alignment.CenterVertically
++    ) {
++        IconButton(modifier = Modifier.size(40.dp), onClick = onExit) {
++            Icon(Icons.Filled.Close, "退出多选", modifier = Modifier.size(20.dp))
++        }
++        TextButton(
++            modifier = Modifier.heightIn(min = 40.dp),
++            contentPadding = PaddingValues(horizontal = 10.dp),
++            onClick = {
++                if (isAllSelected) {
++                    selectedMap.clear()
++                } else {
++                    selectedMap.clear()
++                    allIds.forEach { selectedMap[it] = true }
++                }
++            }
++        ) {
++            Icon(
++                if (isAllSelected) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank,
++                null,
++                modifier = Modifier.size(18.dp)
+             )
++            Spacer(modifier = Modifier.width(4.dp))
++            Text(if (isAllSelected) "取消全选" else "全选", maxLines = 1)
++        }
++        Text(
++            "已选 $selectedCount/${allIds.size}",
++            style = MaterialTheme.typography.bodyMedium,
++            color = LocalAccentColor.current,
++            maxLines = 1,
++            modifier = Modifier.weight(1f)
++        )
++        if (selectedCount > 0) {
++            Button(
++                onClick = onEnable,
++                modifier = Modifier.heightIn(min = 40.dp),
++                contentPadding = PaddingValues(horizontal = 12.dp)
++            ) {
++                Icon(Icons.Filled.CheckCircle, "启用", modifier = Modifier.size(18.dp))
++                Spacer(modifier = Modifier.width(4.dp))
++                Text("启用", maxLines = 1)
++            }
++            Button(
++                onClick = onDelete,
++                modifier = Modifier.heightIn(min = 40.dp),
++                contentPadding = PaddingValues(horizontal = 12.dp),
++                colors = ButtonDefaults.buttonColors(
++                    containerColor = MaterialTheme.colorScheme.errorContainer,
++                    contentColor = MaterialTheme.colorScheme.onErrorContainer
++                )
++            ) {
++                Icon(Icons.Filled.Delete, "删除", modifier = Modifier.size(18.dp))
++                Spacer(modifier = Modifier.width(4.dp))
++                Text("删除", maxLines = 1)
++            }
+         }
+     }
+ }
+diff --git a/app/src/main/java/com/wallpaperswitcher/ui/screens/SettingsScreen.kt b/app/src/main/java/com/wallpaperswitcher/ui/screens/SettingsScreen.kt
+index 5aaa83c..119f96c 100644
+--- a/app/src/main/java/com/wallpaperswitcher/ui/screens/SettingsScreen.kt
++++ b/app/src/main/java/com/wallpaperswitcher/ui/screens/SettingsScreen.kt
+@@ -3,6 +3,7 @@ package com.wallpaperswitcher.ui.screens
+ import android.content.Context
+ import android.content.Intent
+ import android.net.Uri
++import android.os.Build
+ import androidx.activity.compose.rememberLauncherForActivityResult
+ import androidx.activity.result.contract.ActivityResultContracts
+ import androidx.compose.foundation.BorderStroke
+@@ -23,6 +24,7 @@ import androidx.compose.runtime.*
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+ import androidx.compose.ui.draw.clip
++import androidx.compose.ui.graphics.Brush
+ import androidx.compose.ui.graphics.Color
+ import androidx.compose.ui.graphics.vector.ImageVector
+ import androidx.compose.ui.layout.ContentScale
+@@ -37,9 +39,11 @@ import com.wallpaperswitcher.data.SettingsKeys
+ import com.wallpaperswitcher.engine.FloatingButtonContentPolicy
+ import com.wallpaperswitcher.data.SwitchMode
+ import com.wallpaperswitcher.ui.theme.parseHexColor
++import com.wallpaperswitcher.ui.theme.ThemeMode
+ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
+ import java.io.File
+ import kotlinx.coroutines.launch
++import com.wallpaperswitcher.ui.theme.LocalAccentColor
+ 
+ /** Preset colors for the floating switch button. */
+ private val floatingButtonColors = listOf(
+@@ -82,6 +86,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
+     val lockTimerEnabled = settingsUiState.lockTimerEnabled
+     val lockIntervalMs = settingsUiState.lockIntervalMs
+     val themeColor = settingsUiState.themeColor
++    val themeMode = settingsUiState.themeMode
+     val autoScanEnabled = settingsUiState.autoScanEnabled
+     val autoScanIntervalMs = settingsUiState.autoScanIntervalMs
+     val autoScanLastRunAt = settingsUiState.autoScanLastRunAt
+@@ -89,6 +94,8 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
+     var showIntervalDialog by remember { mutableStateOf(false) }
+     var showLockIntervalDialog by remember { mutableStateOf(false) }
+     var showColorDialog by remember { mutableStateOf(false) }
++    // Free colour choice for the floating button (hue x tone grid + translucency).
++    var showButtonColorDialog by remember { mutableStateOf(false) }
+     var showAutoScanIntervalDialog by remember { mutableStateOf(false) }
+     // Custom picture for the floating button. OpenDocument (not the photo
+     // picker) because only its URI can be PERSISTED: the button lives in the
+@@ -269,7 +276,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
+                     Text(
+                         "修改",
+                         style = MaterialTheme.typography.labelLarge,
+-                        color = MaterialTheme.colorScheme.primary
++                        color = LocalAccentColor.current
+                     )
+                 }
+             }
+@@ -368,7 +375,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
+                     Text(
+                         "修改",
+                         style = MaterialTheme.typography.labelLarge,
+-                        color = MaterialTheme.colorScheme.primary
++                        color = LocalAccentColor.current
+                     )
+                 }
+             }
+@@ -438,7 +445,7 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
+                     Text(
+                         "$floatingButtonAlpha%",
+                         style = MaterialTheme.typography.titleMedium,
+-                        color = MaterialTheme.colorScheme.primary
++                        color = LocalAccentColor.current
+                     )
+                 }
+                 Spacer(modifier = Modifier.height(4.dp))
+@@ -520,6 +527,39 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
+                             Text(name, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                         }
+                     }
++                    // Free choice from the hue x tone grid (see ColorGridPicker),
++                    // for colours the fixed palette above does not cover.
++                    Column(
++                        horizontalAlignment = Alignment.CenterHorizontally,
++                        modifier = Modifier.clickable { showButtonColorDialog = true }
++                    ) {
++                        Box(
++                            modifier = Modifier
++                                .size(40.dp)
++                                .clip(CircleShape)
++                                .background(
++                                    Brush.sweepGradient(
++                                        listOf(
++                                            Color(0xFFF44336), Color(0xFFFFEB3B),
++                                            Color(0xFF4CAF50), Color(0xFF00BCD4),
++                                            Color(0xFF2196F3), Color(0xFF9C27B0),
++                                            Color(0xFFF44336)
++                                        )
++                                    )
++                                )
++                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
++                            contentAlignment = Alignment.Center
++                        ) {
++                            Icon(
++                                Icons.Outlined.Colorize,
++                                contentDescription = null,
++                                tint = Color.White,
++                                modifier = Modifier.size(20.dp)
++                            )
++                        }
++                        Spacer(modifier = Modifier.height(4.dp))
++                        Text("自定义", style = MaterialTheme.typography.labelSmall, maxLines = 1)
++                    }
+                 }
+             }
+ 
+@@ -632,6 +672,34 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
+ 
+         // Theme
+         SettingsSection(title = "外观") {
++            // 浅色/深色：跟随系统 or 强制其中一种
++            Row(
++                modifier = Modifier
++                    .fillMaxWidth()
++                    .padding(horizontal = 16.dp, vertical = 12.dp),
++                verticalAlignment = Alignment.CenterVertically
++            ) {
++                Icon(
++                    Icons.Outlined.Brightness4,
++                    null,
++                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
++                    modifier = Modifier.size(24.dp)
++                )
++                Spacer(modifier = Modifier.width(16.dp))
++                Text("主题模式", modifier = Modifier.weight(1f))
++                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
++                    ThemeMode.entries.forEach { mode ->
++                        FilterChip(
++                            selected = ThemeMode.from(themeMode) == mode,
++                            onClick = { viewModel.setThemeMode(mode.value) },
++                            label = { Text(mode.label) }
++                        )
++                    }
++                }
++            }
++
++            Divider(modifier = Modifier.padding(horizontal = 16.dp))
++
+             Row(
+                 modifier = Modifier
+                 .fillMaxWidth()
+@@ -644,7 +712,14 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
+                 Column(modifier = Modifier.weight(1f)) {
+                     Text("主题颜色", style = MaterialTheme.typography.bodyLarge)
+                     Text(
+-                        if (themeColor.isEmpty()) "跟随系统" else themeColor,
++                        when {
++                            themeColor.isNotEmpty() -> themeColor
++                            // Android 12+ paints the whole UI from the wallpaper's
++                            // palette (Monet); older versions fall back to the
++                            // built-in scheme. Say which one is in effect.
++                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> "跟随系统（Monet）"
++                            else -> "跟随系统"
++                        },
+                         style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant
+                     )
+@@ -870,6 +945,21 @@ fun SettingsScreen(viewModel: WallpaperViewModel) {
+             )
+         }
+ 
++        if (showButtonColorDialog) {
++            // Same picker as the theme colour, plus the translucency slider that
++            // drives the button's rest opacity (the 透明度 slider above shows the
++            // same setting, so either control keeps the other in sync).
++            ColorGridPickerDialog(
++                title = "按钮颜色",
++                currentHex = floatingButtonColor,
++                withAlpha = true,
++                alphaPercent = floatingButtonAlpha,
++                onConfirmAlpha = { viewModel.setFloatingButtonAlpha(it) },
++                onConfirm = { viewModel.setFloatingButtonColor(it) },
++                onDismiss = { showButtonColorDialog = false }
++            )
++        }
++
+         if (showAutoScanIntervalDialog) {
+             AutoScanIntervalDialog(
+                 currentMs = autoScanIntervalMs,
+@@ -939,13 +1029,13 @@ private fun SettingsSection(
+                 modifier = Modifier
+                 .size(width = 4.dp, height = 14.dp)
+                 .clip(RoundedCornerShape(2.dp))
+-                .background(MaterialTheme.colorScheme.primary)
++                .background(LocalAccentColor.current)
+             )
+             Spacer(modifier = Modifier.width(8.dp))
+             Text(
+                 title,
+                 style = MaterialTheme.typography.labelLarge,
+-                color = MaterialTheme.colorScheme.primary,
++                color = LocalAccentColor.current,
+                 fontWeight = FontWeight.SemiBold
+             )
+         }
+@@ -1077,7 +1167,7 @@ fun IntervalPickerDialog(
+                 Text(
+                     "自定义时间",
+                     style = MaterialTheme.typography.labelLarge,
+-                    color = MaterialTheme.colorScheme.primary,
++                    color = LocalAccentColor.current,
+                     modifier = Modifier.padding(start = 12.dp, top = 8.dp)
+                 )
+                 Row(
+@@ -1123,93 +1213,16 @@ fun ThemeColorPickerDialog(
+     onDismiss: () -> Unit,
+     onSelect: (String) -> Unit
+ ) {
+-    // Predefined theme colors
+-    val colors = listOf(
+-        "" to "跟随系统",
+-        "#6750A4" to "紫罗兰",
+-        "#006C51" to "翡翠绿",
+-        "#006E1C" to "翠绿",
+-        "#0061A4" to "海洋蓝",
+-        "#006874" to "青色",
+-        "#984061" to "玫瑰红",
+-        "#7D5260" to "棕色",
+-        "#B82E2E" to "红色",
+-        "#E65100" to "橙色",
+-        "#F9A825" to "琥珀",
+-        "#33691E" to "深绿",
+-        "#01579B" to "深蓝",
+-        "#4A148C" to "紫色",
+-        "#880E4F" to "玫红",
+-        "#BF360C" to "深橙",
+-        "#263238" to "蓝灰",
+-    )
+-
+-    AlertDialog(
+-        onDismissRequest = onDismiss,
+-        title = { Text("主题颜色") },
+-        text = {
+-            Column {
+-                Text(
+-                    "选择主题颜色，立即生效",
+-                    style = MaterialTheme.typography.bodySmall,
+-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+-                    modifier = Modifier.padding(bottom = 16.dp)
+-                )
+-                // Grid of color circles
+-                val chunked = colors.chunked(4)
+-                chunked.forEach { row ->
+-                    Row(
+-                        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+-                        horizontalArrangement = Arrangement.SpaceEvenly
+-                    ) {
+-                        row.forEach { (hex, name) ->
+-                            val isSelected = hex == currentHex
+-                            val color = if (hex.isEmpty()) MaterialTheme.colorScheme.primary
+-                            else parseHexColor(hex) ?: Color.Gray
+-                            Column(
+-                                horizontalAlignment = Alignment.CenterHorizontally,
+-                                modifier = Modifier.clickable { onSelect(hex) }
+-                            ) {
+-                                Box(
+-                                    modifier = Modifier
+-                                    .size(40.dp)
+-                                    .clip(CircleShape)
+-                                    .background(color)
+-                                    .then(
+-                                        if (isSelected) Modifier.border(
+-                                            3.dp,
+-                                            MaterialTheme.colorScheme.onSurface,
+-                                            CircleShape
+-                                        ) else Modifier
+-                                    ),
+-                                    contentAlignment = Alignment.Center
+-                                ) {
+-                                    if (isSelected) {
+-                                        Icon(
+-                                            Icons.Filled.Check,
+-                                            contentDescription = null,
+-                                            tint = Color.White,
+-                                            modifier = Modifier.size(20.dp)
+-                                        )
+-                                    }
+-                                }
+-                                Spacer(modifier = Modifier.height(4.dp))
+-                                Text(
+-                                    name,
+-                                    style = MaterialTheme.typography.labelSmall,
+-                                    maxLines = 1
+-                                )
+-                            }
+-                        }
+-                        // Fill empty slots in last row
+-                        repeat(4 - row.size) {
+-                            Spacer(modifier = Modifier.width(40.dp))
+-                        }
+-                    }
+-                }
+-            }
+-        },
+-        confirmButton = { TextButton(onClick = onDismiss) { Text("取消") } }
++    // Material-style picker: hue x tone grid + the "follow the system" row.
++    // "" keeps the system accent (Android 12+ paints the UI from the wallpaper's
++    // palette - Monet); the grid covers everything else. Nothing is applied until
++    // 保存, so 取消 really cancels.
++    ColorGridPickerDialog(
++        title = "主题颜色",
++        currentHex = currentHex,
++        systemOption = true,
++        onConfirm = onSelect,
++        onDismiss = onDismiss
+     )
+ }
+ 
+diff --git a/app/src/main/java/com/wallpaperswitcher/ui/theme/Theme.kt b/app/src/main/java/com/wallpaperswitcher/ui/theme/Theme.kt
+index 84b9a16..c01c933 100644
+--- a/app/src/main/java/com/wallpaperswitcher/ui/theme/Theme.kt
++++ b/app/src/main/java/com/wallpaperswitcher/ui/theme/Theme.kt
+@@ -5,8 +5,13 @@ import androidx.compose.foundation.isSystemInDarkTheme
+ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material3.*
+ import androidx.compose.runtime.Composable
++import androidx.compose.runtime.staticCompositionLocalOf
++import androidx.compose.runtime.CompositionLocalProvider
+ import androidx.compose.runtime.remember
+ import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.toArgb
++
++import com.wallpaperswitcher.engine.ColorContrast
+ import androidx.compose.ui.platform.LocalContext
+ import androidx.compose.ui.text.TextStyle
+ import androidx.compose.ui.text.font.FontWeight
+@@ -109,21 +114,67 @@ private val AppTypography = Typography(
+ fun parseHexColor(hex: String): Color? =
+     com.wallpaperswitcher.util.parseHexColorInt(hex)?.let { Color(it) }
+ 
++/**
++ * Light/dark choice from Settings: 跟随系统 / 浅色 / 深色.
++ *
++ * Stored as [com.wallpaperswitcher.data.SettingsKeys.THEME_MODE]'s string value;
++ * anything unknown (or a missing row, e.g. right after an update) behaves like
++ * [SYSTEM] so the UI never ends up in a state the user cannot name.
++ */
++enum class ThemeMode(val value: String, val label: String) {
++    SYSTEM(com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_SYSTEM, "跟随系统"),
++    LIGHT(com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_LIGHT, "浅色"),
++    DARK(com.wallpaperswitcher.data.SettingsKeys.THEME_MODE_DARK, "深色");
++
++    /** Whether this mode wants [MaterialTheme]'s dark scheme right now. */
++    @Composable
++    fun isDark(): Boolean = when (this) {
++        LIGHT -> false
++        DARK -> true
++        SYSTEM -> isSystemInDarkTheme()
++    }
++
++    companion object {
++        fun from(value: String?): ThemeMode =
++            entries.firstOrNull { it.value == value } ?: SYSTEM
++    }
++}
++
++/**
++ * Accent colour that is guaranteed to be legible on the current surface.
++ *
++ * The custom scheme feeds a contrast-corrected accent into `onSurfaceVariant`, so
++ * text drawn with this local stays readable no matter which colour the user picks
++ * (a pale accent used to make every secondary label pale-on-pale - the reported
++ * "文字和图形随主题颜色变化，影响识别"). Falls back to the scheme's primary for
++ * previews that are not wrapped in [WallpaperSwitcherTheme].
++ */
++val LocalAccentColor = staticCompositionLocalOf { Color.Unspecified }
++
+ /**
+  * Generate a light color scheme with a custom primary color. The container
+  * and surface tones are tinted with the primary so the whole UI follows the
+  * chosen accent instead of only the buttons.
++ *
++ * On-colours are derived from the accent instead of hard-coded: [readableOn] picks
++ * black or white for text drawn *on* the accent, and [ensureReadable] pushes the
++ * accent away from the surface until accent-coloured text reaches WCAG AA.
+  */
+ fun customLightColorScheme(primary: Color): ColorScheme {
++    // The scheme below is built from Material defaults (only the accent slots are
++    // overridden), so the accent must be tuned against THAT surface - using the
++    // app's own LightColorScheme.surface left dark-mode accents below AA.
++    val surface = lightColorScheme().surface
++    val accentText = readableAccent(primary, surface)
+     return lightColorScheme(
+         primary = primary,
+-        onPrimary = Color.White,
++        onPrimary = Color(ColorContrast.readableOn(primary.toArgb())),
+         primaryContainer = primary.copy(alpha = 0.15f),
+-        onPrimaryContainer = primary,
++        onPrimaryContainer = accentText,
+         secondaryContainer = primary.copy(alpha = 0.12f),
+-        onSecondaryContainer = primary,
++        onSecondaryContainer = accentText,
+         surfaceVariant = primary.copy(alpha = 0.10f),
+-        onSurfaceVariant = primary,
++        onSurfaceVariant = accentText,
+     )
+ }
+ 
+@@ -131,18 +182,29 @@ fun customLightColorScheme(primary: Color): ColorScheme {
+  * Generate a dark color scheme with a custom primary color.
+  */
+ fun customDarkColorScheme(primary: Color): ColorScheme {
++    val surface = darkColorScheme().surface
++    val accentText = readableAccent(primary, surface)
+     return darkColorScheme(
+         primary = primary,
+-        onPrimary = Color.Black,
++        onPrimary = Color(ColorContrast.readableOn(primary.toArgb())),
+         primaryContainer = primary.copy(alpha = 0.3f),
+-        onPrimaryContainer = primary,
++        onPrimaryContainer = accentText,
+         secondaryContainer = primary.copy(alpha = 0.22f),
+-        onSecondaryContainer = primary,
++        onSecondaryContainer = accentText,
+         surfaceVariant = primary.copy(alpha = 0.18f),
+-        onSurfaceVariant = primary,
++        onSurfaceVariant = accentText,
+     )
+ }
+ 
++/** The accent, darkened/lightened until accent-coloured text is readable on [surface]. */
++private fun readableAccent(primary: Color, surface: Color): Color = Color(
++    ColorContrast.ensureReadable(
++        primary.toArgb(),
++        surface.toArgb(),
++        ColorContrast.AA_NORMAL
++    )
++)
++
+ @Composable
+ fun WallpaperSwitcherTheme(
+     darkTheme: Boolean = isSystemInDarkTheme(),
+@@ -175,10 +237,12 @@ fun WallpaperSwitcherTheme(
+         }
+     }
+ 
+-    MaterialTheme(
+-        colorScheme = colorScheme,
+-        shapes = AppShapes,
+-        typography = AppTypography,
+-        content = content
+-    )
++    CompositionLocalProvider(LocalAccentColor provides colorScheme.onSurfaceVariant) {
++        MaterialTheme(
++            colorScheme = colorScheme,
++            shapes = AppShapes,
++            typography = AppTypography,
++            content = content
++        )
++    }
+ }
+diff --git a/app/src/main/java/com/wallpaperswitcher/viewmodel/WallpaperViewModel.kt b/app/src/main/java/com/wallpaperswitcher/viewmodel/WallpaperViewModel.kt
+index bb9c6ec..1743cc4 100644
+--- a/app/src/main/java/com/wallpaperswitcher/viewmodel/WallpaperViewModel.kt
++++ b/app/src/main/java/com/wallpaperswitcher/viewmodel/WallpaperViewModel.kt
+@@ -456,30 +456,76 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
+             // too; otherwise the UI could briefly show the deleted group's
+             // residual list.
+             if (_selectedGroupId.value == group.id) selectGroup(null)
+-            // Clear last image ID if it belonged to the deleted group
+-            // (CASCADE deletes images, so the ID would point to nothing)
+-            val lastId = settingsDao.getLong(SettingsKeys.LAST_IMAGE_ID)
+-            val image = imageDao.getImageById(lastId)
+-            if (image == null) {
+-                settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, 0L)
+-            }
+-            // Same for the lock screen's own cursor / write memo.
+-            val lastLockId = settingsDao.getLong(SettingsKeys.LAST_IMAGE_ID_LOCK)
+-            if (lastLockId > 0L && imageDao.getImageById(lastLockId) == null) {
+-                settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID_LOCK, 0L)
+-            }
+-            val lastLockWrite = settingsDao.getLong(SettingsKeys.LAST_LOCK_WRITE_ID)
+-            if (lastLockWrite > 0L && imageDao.getImageById(lastLockWrite) == null) {
+-                settingsDao.setLong(SettingsKeys.LAST_LOCK_WRITE_ID, 0L)
+-            }
+-            val lastHomeWrite = settingsDao.getLong(SettingsKeys.LAST_HOME_WRITE_ID)
+-            if (lastHomeWrite > 0L && imageDao.getImageById(lastHomeWrite) == null) {
+-                settingsDao.setLong(SettingsKeys.LAST_HOME_WRITE_ID, 0L)
++            clearCursorsOfDeletedMedia()
++        }
++    }
++
++    /**
++     * Delete several groups at once (home screen multi-select).
++     *
++     * Each group's media ROWS go with it (the Room relation cascades) - the files
++     * on the phone are untouched, exactly like the single-group delete.
++     */
++    fun deleteGroups(ids: Set<Long>) {
++        if (ids.isEmpty()) return
++        guardedWrite("删除分组失败") {
++            ids.forEach { id ->
++                groupDao.getGroupById(id)?.let { groupDao.delete(it) }
+             }
+-            val manualPick = settingsDao.getLong(SettingsKeys.MANUAL_PICK_MEDIA_ID)
+-            if (manualPick > 0L && imageDao.getImageById(manualPick) == null) {
+-                settingsDao.setLong(SettingsKeys.MANUAL_PICK_MEDIA_ID, 0L)
++            // The detail screen must not keep showing a group that is now gone.
++            if (_selectedGroupId.value?.let { it in ids } == true) selectGroup(null)
++            clearCursorsOfDeletedMedia()
++        }
++    }
++
++    /**
++     * Enable/disable several groups at once (home screen multi-select).
++     *
++     * One [WallpaperSwitchService.poke] at the end instead of one per group: the
++     * timer loops only need to re-evaluate which groups may feed each screen, and
++     * poking N times would restart those loops N times.
++     */
++    fun setGroupsEnabled(ids: Set<Long>, enabled: Boolean) {
++        if (ids.isEmpty()) return
++        guardedWrite("批量切换分组失败") {
++            var changed = false
++            ids.forEach { id ->
++                val group = groupDao.getGroupById(id) ?: return@forEach
++                if (group.isEnabled != enabled) {
++                    groupDao.update(group.copy(isEnabled = enabled))
++                    changed = true
++                }
+             }
++            if (changed) WallpaperSwitchService.poke(getApplication())
++        }
++    }
++
++    /**
++     * Drop cursors / write memos that pointed at media of a group that was just
++     * deleted: their rows are gone (CASCADE), so a stale id would make the engine
++     * or the lock enforcement chase a media that no longer exists.
++     */
++    private suspend fun clearCursorsOfDeletedMedia() {
++        val lastId = settingsDao.getLong(SettingsKeys.LAST_IMAGE_ID)
++        if (lastId > 0L && imageDao.getImageById(lastId) == null) {
++            settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID, 0L)
++        }
++        // Same for the lock screen's own cursor / write memo.
++        val lastLockId = settingsDao.getLong(SettingsKeys.LAST_IMAGE_ID_LOCK)
++        if (lastLockId > 0L && imageDao.getImageById(lastLockId) == null) {
++            settingsDao.setLong(SettingsKeys.LAST_IMAGE_ID_LOCK, 0L)
++        }
++        val lastLockWrite = settingsDao.getLong(SettingsKeys.LAST_LOCK_WRITE_ID)
++        if (lastLockWrite > 0L && imageDao.getImageById(lastLockWrite) == null) {
++            settingsDao.setLong(SettingsKeys.LAST_LOCK_WRITE_ID, 0L)
++        }
++        val lastHomeWrite = settingsDao.getLong(SettingsKeys.LAST_HOME_WRITE_ID)
++        if (lastHomeWrite > 0L && imageDao.getImageById(lastHomeWrite) == null) {
++            settingsDao.setLong(SettingsKeys.LAST_HOME_WRITE_ID, 0L)
++        }
++        val manualPick = settingsDao.getLong(SettingsKeys.MANUAL_PICK_MEDIA_ID)
++        if (manualPick > 0L && imageDao.getImageById(manualPick) == null) {
++            settingsDao.setLong(SettingsKeys.MANUAL_PICK_MEDIA_ID, 0L)
+         }
+     }
+ 
+@@ -783,6 +829,15 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
+         .map { it ?: "" }
+         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+ 
++    // Light/dark mode: "system" (follow the phone) / "light" / "dark".
++    val themeMode: StateFlow<String> = settingsDao.getValueFlow(SettingsKeys.THEME_MODE)
++        .map { it ?: SettingsKeys.THEME_MODE_SYSTEM }
++        .stateIn(
++            viewModelScope,
++            SharingStarted.WhileSubscribed(5000),
++            SettingsKeys.THEME_MODE_SYSTEM
++        )
++
+     // --- Combined screen states ---
+     //
+     // Each screen subscribes to ONE combined StateFlow instead of N separate
+@@ -833,6 +888,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
+         const val VIDEO_SOUND_ENABLED = 19
+         const val FLOATING_BUTTON_TEXT = 20
+         const val FLOATING_BUTTON_IMAGE_URI = 21
++        const val THEME_MODE = 22
+     }
+ 
+     /**
+@@ -879,7 +935,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
+         lockIntervalMs,
+         videoSoundEnabled,
+         floatingButtonText,
+-        floatingButtonImageUri
++        floatingButtonImageUri,
++        themeMode
+     ) { a ->
+         SettingsUiState(
+             serviceEnabled = combined(a, SettingsField.SERVICE_ENABLED, "serviceEnabled", Boolean::class.javaObjectType) ?: false,
+@@ -896,6 +953,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
+             clarityMode = combined(a, SettingsField.CLARITY_MODE, "clarityMode", String::class.java) ?: "auto",
+             switchFadeEnabled = combined(a, SettingsField.SWITCH_FADE_ENABLED, "switchFadeEnabled", Boolean::class.javaObjectType) ?: true,
+             themeColor = combined(a, SettingsField.THEME_COLOR, "themeColor", String::class.java) ?: "",
++            themeMode = combined(a, SettingsField.THEME_MODE, "themeMode", String::class.java)
++                ?: SettingsKeys.THEME_MODE_SYSTEM,
+             autoScanEnabled = combined(a, SettingsField.AUTO_SCAN_ENABLED, "autoScanEnabled", Boolean::class.javaObjectType) ?: false,
+             autoScanIntervalMs = combined(a, SettingsField.AUTO_SCAN_INTERVAL_MS, "autoScanIntervalMs", Long::class.javaObjectType) ?: 24L * 60 * 60 * 1000,
+             autoScanLastRunAt = combined(a, SettingsField.AUTO_SCAN_LAST_RUN_AT, "autoScanLastRunAt", Long::class.javaObjectType) ?: 0L,
+@@ -913,6 +972,13 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
+         }
+     }
+ 
++    /** Light/dark mode: [SettingsKeys.THEME_MODE_SYSTEM] / _LIGHT / _DARK. */
++    fun setThemeMode(mode: String) {
++        guardedWrite("保存主题模式失败") {
++            settingsDao.setString(SettingsKeys.THEME_MODE, mode)
++        }
++    }
++
+     fun addImage(groupId: Long, uri: Uri, displayName: String) {
+         guardedWrite("添加图片失败") {
+             if (groupDao.getGroupById(groupId) == null) return@guardedWrite
+@@ -1233,6 +1299,20 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
+         viewModelScope.launch {
+             try {
+                 val group = groupDao.getGroupById(image.groupId)
++                // A DISABLED group is not part of the rotation: its media must
++                // not be settable from the group screen either (user report:
++                // 「当分组图片未启用时，里面的图片仍能设置为壁纸」). The engine, the
++                // static applier and both timers only ever pick from ENABLED
++                // groups, so applying this media produced a wallpaper the next
++                // redraw/switch replaced again.
++                if (group != null && !group.isEnabled) {
++                    AppLog.d(
++                        TAG,
++                        "setImageAsWallpaper ignored: group ${group.id} is disabled"
++                    )
++                    _toastMessage.emit("该分组未启用，请先打开分组开关")
++                    return@launch
++                }
+                 val target = WallpaperTarget.fromName(group?.target)
+                 AppLog.d(
+                     TAG,
+@@ -1341,6 +1421,18 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
+         viewModelScope.launch {
+             try {
+                 val group = groupDao.getGroupById(image.groupId)
++                // Same rule as setImageAsWallpaper: a disabled group's media is
++                // not settable (see the comment there). Checked BEFORE the HOME
++                // cursor is moved / the picker is launched, so a disabled pick
++                // cannot reach the engine or leave a pending preview pick behind.
++                if (group != null && !group.isEnabled) {
++                    AppLog.d(
++                        TAG,
++                        "setAsLiveWallpaper ignored: group ${group.id} is disabled"
++                    )
++                    _toastMessage.emit("该分组未启用，请先打开分组开关")
++                    return@launch
++                }
+                 val target = WallpaperTarget.fromName(group?.target)
+                 AppLog.d(
+                     TAG,
+@@ -1665,6 +1757,8 @@ data class SettingsUiState(
+     val clarityMode: String = "auto",
+     val switchFadeEnabled: Boolean = true,
+     val themeColor: String = "",
++    /** "system" (follow the phone) / "light" / "dark". */
++    val themeMode: String = SettingsKeys.THEME_MODE_SYSTEM,
+     val autoScanEnabled: Boolean = false,
+     val autoScanIntervalMs: Long = 24L * 60 * 60 * 1000,
+     /** Wall-clock ms of the last auto-scan run; 0 = never. */
+diff --git a/app/src/main/java/com/wallpaperswitcher/wallpaper/FloatingSwitchButton.kt b/app/src/main/java/com/wallpaperswitcher/wallpaper/FloatingSwitchButton.kt
+index 4c22e6c..5c3c485 100644
+--- a/app/src/main/java/com/wallpaperswitcher/wallpaper/FloatingSwitchButton.kt
++++ b/app/src/main/java/com/wallpaperswitcher/wallpaper/FloatingSwitchButton.kt
+@@ -87,6 +87,27 @@ class FloatingSwitchButton private constructor(context: Context) {
+         @Volatile
+         private var shared: FloatingSwitchButton? = null
+ 
++        /**
++         * Hide the process-wide button without going through the engine.
++         *
++         * The activity used to ask the engine (`dismissFloatingButtonIfAny`), which
++         * is a no-op while no engine is alive - and because the button is now
++         * process-wide it outlives an engine restart, so a button created by a
++         * previous engine instance stayed on screen after opening the app (user
++         * report: it did not disappear when entering the app). Hiding it directly
++         * also removes the delay, since the engine's own visibility callback only
++         * arrives after the activity window has been drawn.
++         */
++        fun hideShared() {
++            val instance = shared
++            if (instance == null) {
++                AppLog.d(TAG, "hideShared: no button instance in this process")
++                return
++            }
++            AppLog.d(TAG, "hideShared: hiding (id=${System.identityHashCode(instance)})")
++            instance.hideNow()
++        }
++
+         /**
+          * The process-wide button. Engines come and go (the wallpaper is
+          * re-applied, the picker's preview engine starts, ...); the overlay window
+@@ -114,6 +135,8 @@ class FloatingSwitchButton private constructor(context: Context) {
+     private var lastRawX = 0f
+     private var lastRawY = 0f
+     private var dragging = false
++    /** Y the window was parked at by [hideOverlay] (null while shown). */
++    private var hiddenY: Int? = null
+ 
+     /** URI currently loaded into [imageView] (or being loaded). */
+     private var activeImageUri: String? = null
+@@ -175,6 +198,17 @@ class FloatingSwitchButton private constructor(context: Context) {
+             if (existing.visibility != View.VISIBLE) {
+                 existing.visibility = View.VISIBLE
+                 setTouchable(true)
++                // Undo what hideOverlay() did to the window (see there): the ROM
++                // keeps drawing a hidden overlay's last buffer, so hiding parks the
++                // window transparent and off-screen.
++                layoutParams?.let { lp ->
++                    lp.alpha = 1f
++                    lp.y = hiddenY ?: lp.y
++                    hiddenY = null
++                    try {
++                        windowManager.updateViewLayout(existing, lp)
++                    } catch (_: Exception) {}
++                }
+                 AppLog.d(TAG, "Floating button shown (id=${System.identityHashCode(this)})")
+             }
+             return
+@@ -275,6 +309,13 @@ class FloatingSwitchButton private constructor(context: Context) {
+     /**
+      * Hide the button while keeping the window attached (no `removeView`, see the
+      * class comment): the view goes invisible and stops accepting touches.
++     *
++     * A `GONE` view is not enough on MIUI: measured on the phone, the overlay
++     * window survived and kept the button visible over the app even though the
++     * hide ran 1ms after the activity started (the user report: the button did not
++     * disappear when entering the app). So the *window* is made invisible as well -
++     * alpha 0 plus parked above the screen - and `updateViewLayout` pushes the
++     * change through. [showOnDesktop] restores both.
+      */
+     fun hideOverlay() {
+         val v = button ?: return
+@@ -282,9 +323,26 @@ class FloatingSwitchButton private constructor(context: Context) {
+         layoutParams?.let { persistPosition(it.x, it.y) }
+         v.visibility = View.GONE
+         setTouchable(false)
++        layoutParams?.let { lp ->
++            if (hiddenY == null) hiddenY = lp.y
++            lp.alpha = 0f
++            lp.y = -lp.height
++            try {
++                windowManager.updateViewLayout(v, lp)
++            } catch (_: Exception) {}
++        }
+         AppLog.d(TAG, "Floating button hidden (id=${System.identityHashCode(this)})")
+     }
+ 
++    /** Hide from any thread (the activity's lifecycle callbacks use this). */
++    fun hideNow() {
++        if (Looper.myLooper() == Looper.getMainLooper()) {
++            hideOverlay()
++        } else {
++            mainHandler.post { hideOverlay() }
++        }
++    }
++
+     /**
+      * Really remove the window. Only for "the user turned the feature off" and
+      * for a final teardown - a normal hide must use [hideOverlay].
+diff --git a/app/src/main/java/com/wallpaperswitcher/wallpaper/LiveWallpaperService.kt b/app/src/main/java/com/wallpaperswitcher/wallpaper/LiveWallpaperService.kt
+index d5bd0f6..224aea5 100644
+--- a/app/src/main/java/com/wallpaperswitcher/wallpaper/LiveWallpaperService.kt
++++ b/app/src/main/java/com/wallpaperswitcher/wallpaper/LiveWallpaperService.kt
+@@ -98,6 +98,30 @@ class LiveWallpaperService : WallpaperService() {
+          * dialog's closing animation the user is looking at.
+          */
+         private const val PICK_CONFIRM_ENFORCE_DELAY_MS = 1_200L
++        /**
++         * How long after our own UI leaves the foreground the engine resumes.
++         *
++         * The wallpaper engine shares the app's process, so resuming instantly
++         * put the decoder + GL + audio back on the CPU/GPU while our Activity was
++         * still running its close animation - the video's first frames then came
++         * out uneven (user report: 「壁纸软件进出视频就是比其他软件进出会卡顿」;
++         * entering/leaving other apps never touches this process). Shorter than
++         * the animation, so the picture is live again once the desktop is fully
++         * revealed.
++         */
++        private const val APP_EXIT_RESUME_GRACE_MS = 250L
++        /**
++         * How long the video keeps PLAYING after our own UI comes to the front,
++         * while the audio is already muted.
++         *
++         * The app's open animation runs for ~0.3-0.5s and the wallpaper is visible
++         * underneath it; MIUI reports us as "covered" at ~+0.6s. Pausing the
++         * decode at once (the old behaviour) froze the picture in the middle of
++         * that animation - a stutter only OUR app has, because other apps reach us
++         * through the system's covered report (measured +0.65~1.25s). The audio
++         * mutes instantly either way (see WallpaperRenderer.muteAudioKeepingVideo).
++         */
++        private const val APP_ENTRY_PAUSE_GRACE_MS = 600L
+         /**
+          * Fire-and-forget bookkeeping that must survive the engine scope being
+          * cancelled in onDestroy (e.g. the shuffle deck flush), with the same
+@@ -165,12 +189,20 @@ class LiveWallpaperService : WallpaperService() {
+          * button removing/adding its overlay every ~2s while the desktop was in
+          * use: the ROM reports "wallpaper covered" for 250-400ms in those
+          * moments, 400ms was just below that, so the button vanished (a visible
+-         * blink) and each add/remove fed the ROM another visibility flip. With
+-         * 1500ms those blips never reach the overlay at all; a genuine cover
+-         * (another app in front) still hides the button, up to 1.5s later, and
+-         * our own UI's opening hides it immediately (hideFloatingButtonNow).
++         * blink) and each add/remove fed the ROM another visibility flip.
++         *
++         * Lowered back to 150ms once the overlay stopped churning: the button is a
++         * process-wide window that is only made invisible (see
++         * FloatingSwitchButton), so hiding no longer removes/re-adds the window and
++         * cannot feed the ROM another flip - which was the actual reason for the
++         * long settle. The measured cost of 1500ms was that a *genuine* cover (the
++         * user switches to another app) left the button visible for 1.5s (device
++         * log 09-30 23:37: covered at .389, hidden at .947 = 1.56s; user report
++         * "进入其他应用还是没有立即消失"). 150ms is below perception and still
++         * swallows very short flips; our own UI's opening hides it immediately
++         * (MainActivity -> FloatingSwitchButton.hideShared).
+          */
+-        private const val FLOATING_BUTTON_HIDE_SETTLE_MS = 1_500L
++        private const val FLOATING_BUTTON_HIDE_SETTLE_MS = 150L
+         /**
+          * How often the GIF ticker re-checks the visibility while it is paused.
+          * Only a safety net - [nudgeGifTicker] resumes it immediately when the
+@@ -368,6 +400,34 @@ class LiveWallpaperService : WallpaperService() {
+             realApplySincePick = false
+         }
+ 
++        /**
++         * HOME cursor as the target of a confirmed pick, for the case where the
++         * preview session no longer knows the picked id (see the caller).
++         *
++         * Returns 0 unless the cursor still points at a media whose group is
++         * ENABLED and targets the home screen: a disabled group's media must never
++         * be pushed to the engine (user report: 「当分组图片未启用时，里面的图片仍能
++         * 设置为壁纸」), and a lock-only media has no business on the desktop.
++         */
++        private suspend fun homeCursorForConfirmedPick(context: Context): Long {
++            return try {
++                val appDb = AppDatabase.getInstance(context)
++                val cursor = appDb.settingsDao().getLong(SettingsKeys.LAST_IMAGE_ID, 0L)
++                if (cursor <= 0L) return 0L
++                val media = appDb.wallpaperImageDao().getImageById(cursor) ?: return 0L
++                val group = appDb.wallpaperGroupDao().getGroupById(media.groupId) ?: return 0L
++                if (!group.isEnabled) return 0L
++                if (!com.wallpaperswitcher.engine.WallpaperTarget
++                        .fromName(group.target).includesHome
++                ) {
++                    return 0L
++                }
++                cursor
++            } catch (_: Exception) {
++                0L
++            }
++        }
++
+         /**
+          * Undo the HOME cursor move of a pick the user cancelled (see the fields
+          * above). Only restores when the cursor still points at the previewed
+@@ -884,6 +944,15 @@ class LiveWallpaperService : WallpaperService() {
+          */
+         @Volatile private var powerSaveVisibleInput = true
+         private var powerSavePending: Runnable? = null
++        /**
++         * When our own UI last left the foreground (0 = it never did / it is back).
++         * A resume inside [APP_EXIT_RESUME_GRACE_MS] of that is delayed, so the
++         * Activity's close animation finishes before the decoder/GL/audio come
++         * back (see APP_EXIT_RESUME_GRACE_MS).
++         */
++        private var appLeftAtMs = 0L
++        /** Pending "pause the decode after the app-open animation" task. */
++        private var appEntryPauseRunnable: Runnable? = null
+         /** True while [powerSavePending] is a delayed visibility-blip pause. */
+         private var pauseCoalescePending = false
+         /** Pending "release the parked video/GIF" task (see the constant). */
+@@ -1637,11 +1706,24 @@ class LiveWallpaperService : WallpaperService() {
+             appInForeground = foreground
+             if (foreground) {
+                 visibleBeforeAppForeground = isVisible
+-                AppLog.d(TAG, "App UI foreground: mute audio + hide floating button")
++                // Back already (a quick app switch): no exit grace is pending.
++                appLeftAtMs = 0L
++                AppLog.d(TAG, "App UI foreground: mute audio now, pause decode after the open animation")
++                // The sound stops with the tap (user requirement), but the picture
++                // keeps playing until our UI has really covered the wallpaper:
++                // pausing the decode at once froze the video DURING the app-open
++                // animation, which is visible only for our own app - other apps
++                // reach us through the system's covered report ~1.1s later
++                // (measured; see APP_ENTRY_PAUSE_GRACE_MS).
++                renderer?.muteAudioKeepingVideo()
+                 // Only this input changes; the state is re-derived from all of
+                 // them, so a "visible" callback arriving while our UI is up can no
+-                // longer resume the audio behind it (see ScreenPowerPolicy).
+-                refreshPowerSave("app-foreground")
++                // longer resume the audio behind it (see ScreenPowerPolicy). The
++                // evaluation is deferred so the decode survives the animation; a
++                // covered report that arrives earlier pauses us right away anyway.
++                val pauseForUi = Runnable { refreshPowerSave("app-foreground") }
++                appEntryPauseRunnable = pauseForUi
++                mainHandler.postDelayed(pauseForUi, APP_ENTRY_PAUSE_GRACE_MS)
+                 hideFloatingButtonNow()
+             } else {
+                 AppLog.d(TAG, "App UI hidden: re-evaluating wallpaper state")
+@@ -1667,6 +1749,13 @@ class LiveWallpaperService : WallpaperService() {
+                     // corrects this input as soon as it arrives.
+                     powerSaveVisibleInput = true
+                 }
++                // Arms the exit grace: the resume itself is delayed inside
++                // refreshPowerSave (whichever signal asks for it first).
++                appLeftAtMs = SystemClock.elapsedRealtime()
++                // The app is gone again before the entry grace expired: that
++                // pending pause evaluation would only re-derive the same state.
++                appEntryPauseRunnable?.let { mainHandler.removeCallbacks(it) }
++                appEntryPauseRunnable = null
+                 refreshPowerSave("app-left")
+                 updateFloatingButton()
+             }
+@@ -1848,13 +1937,15 @@ class LiveWallpaperService : WallpaperService() {
+                                 // cannot have advanced in the meantime).
+                                 var targetHomeId = pickedHomeId
+                                 if (targetHomeId <= 0L) {
+-                                    targetHomeId = try {
+-                                        AppDatabase.getInstance(appContext)
+-                                            .settingsDao()
+-                                            .getLong(SettingsKeys.LAST_IMAGE_ID, 0L)
+-                                    } catch (_: Exception) {
+-                                        0L
+-                                    }
++                                    // The pending pick is normally still there; it is
++                                    // gone when a REAL engine was created between the
++                                    // tap and this check (its onCreate clears it).
++                                    // The HOME cursor the pick moved is then the
++                                    // remaining record of what the user chose - and
++                                    // it is still validated below (enabled,
++                                    // home-capable group) so a stale cursor can never
++                                    // re-apply a disabled group's media.
++                                    targetHomeId = homeCursorForConfirmedPick(appContext)
+                                 }
+                                 if (targetHomeId > 0L) {
+                                     pushConfirmedPickToEngine(targetHomeId)
+@@ -2133,6 +2224,7 @@ class LiveWallpaperService : WallpaperService() {
+             floatingButtonHideRunnable = null
+         }
+ 
++
+         private fun flushShuffleState() {
+             // onCreate() bails out early when the database cannot be opened, so
+             // `db` can still be uninitialized when onDestroy() runs - reading it
+@@ -2304,9 +2396,40 @@ class LiveWallpaperService : WallpaperService() {
+                     applyPowerSave(hint)
+                 }
+             } else {
+-                val runnable = Runnable { applyPowerSave(hint) }
+-                powerSavePending = runnable
+-                mainHandler.postDelayed(runnable, VISIBILITY_DEBOUNCE_MS)
++                // A resume triggered by OUR app leaving the foreground (or by the
++                // screen coming back) is a deliberate transition, not a window
++                // burst: the wallpaper is in front and interactive. Debouncing it
++                // froze the video for ~250ms after every return to the desktop
++                // (reports: 「设置视频为壁纸后返回桌面黑屏一会才开始播放」、
++                // 「进出壁纸软件后视频卡一下再播放」). The blip protection is not
++                // lost: a covered report that follows is handled by the pause path
++                // (and a brief one is coalesced by VISIBILITY_PAUSE_COALESCE_MS).
++                val deliberateResume = !appInForeground && powerSaveVisibleInput &&
++                    isScreenInteractive()
++                // Our own UI just left: let its exit animation finish before the
++                // decoder/GL/audio come back. Measured - resuming inside that
++                // animation made the video's first frames uneven, because the
++                // engine shares this process with the Activity that is animating
++                // (that is why entering/leaving OUR app looks worse than other
++                // apps, which never touch this process).
++                val sinceAppLeft = if (appLeftAtMs > 0L) {
++                    SystemClock.elapsedRealtime() - appLeftAtMs
++                } else {
++                    Long.MAX_VALUE
++                }
++                val delayMs = when {
++                    sinceAppLeft < APP_EXIT_RESUME_GRACE_MS ->
++                        APP_EXIT_RESUME_GRACE_MS - sinceAppLeft
++                    deliberateResume -> 0L
++                    else -> VISIBILITY_DEBOUNCE_MS
++                }
++                if (delayMs <= 0L) {
++                    applyPowerSave(hint)
++                } else {
++                    val runnable = Runnable { applyPowerSave(hint) }
++                    powerSavePending = runnable
++                    mainHandler.postDelayed(runnable, delayMs)
++                }
+             }
+         }
+ 
+@@ -2320,8 +2443,22 @@ class LiveWallpaperService : WallpaperService() {
+                 screenInteractive = isScreenInteractive()
+             )
+             val pause = reasons.isNotEmpty()
+-            if (renderer?.powerSaveMode == pause) return
++            if (renderer?.powerSaveMode == pause) {
++                // No state change - but a quick enter/leave of our own UI never
++                // paused at all, so an "own UI opened" audio mute still has to be
++                // undone here.
++                if (!pause) renderer?.unmuteAudioReanchored()
++                return
++            }
+             renderer?.powerSaveMode = pause
++            if (!pause) {
++                // Audible again: undo an "own UI opened" audio mute, joined to the
++                // frame that is on screen right now - the decode kept running while
++                // the sound was muted, so continuing where the audio stopped would
++                // leave it behind the picture. AFTER the flag flip: the unmute
++                // returns early while powerSaveMode is still true.
++                renderer?.unmuteAudioReanchored()
++            }
+             // ON: every input that asked for it, so the log shows WHY (including
+             // the case where two inputs disagree). OFF: the signal that triggered
+             // this re-evaluation. The instance kind is part of the line because the
+@@ -2733,10 +2870,14 @@ class LiveWallpaperService : WallpaperService() {
+                 // A manual selection supersedes any prefetched next image.
+                 clearPrefetchCache()
+                 val img = imageDao.getImageById(targetId)
+-                // Explicit user selection always applies the chosen media,
+-                // regardless of the group's enabled state (the static path in
+-                // WallpaperApplier behaves the same way). Silently replacing a
+-                // manual pick with a random image was confusing.
++                // Explicit user selection always applies the chosen media.
++                // Silently replacing a manual pick with a random image was
++                // confusing. A DISABLED group's media never reaches this point:
++                // the user-facing entry points (setAsLiveWallpaper /
++                // setImageAsWallpaper) refuse a disabled group, and the internal
++                // callers (media-type repair, a confirmed pick) take their id from
++                // an enabled pick - so this permissive rule cannot re-apply media
++                // from a group the user switched off.
+                 img ?: pickNextImage(SwitchMode.RANDOM, imageDao, 0L, dao)
+             } else {
+                 val lastId = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
+diff --git a/app/src/main/java/com/wallpaperswitcher/wallpaper/WallpaperRenderer.kt b/app/src/main/java/com/wallpaperswitcher/wallpaper/WallpaperRenderer.kt
+index 4fecfc6..213ddf3 100644
+--- a/app/src/main/java/com/wallpaperswitcher/wallpaper/WallpaperRenderer.kt
++++ b/app/src/main/java/com/wallpaperswitcher/wallpaper/WallpaperRenderer.kt
+@@ -339,6 +339,11 @@ class WallpaperRenderer(
+      * the beginning after every lock.
+      */
+     @Volatile var lastVideoPositionUs: Long = 0L
++    /**
++     * True while the video's audio was silenced for our OWN UI opening but the
++     * picture deliberately kept playing (see [muteAudioKeepingVideo]).
++     */
++    private var audioMutedForOwnUi = false
+         private set
+     // Monitor for the pass handshake (wait/notify, not a lock around state).
+     private val audioPassLock = Object()
+@@ -689,6 +694,7 @@ class WallpaperRenderer(
+         currentVideoUri = null
+         currentVideoCachePath = null
+         audioPending = null
++        audioMutedForOwnUi = false
+         audioSession.release()
+         val handler = renderHandler
+         val thread = renderThread
+@@ -1089,6 +1095,9 @@ class WallpaperRenderer(
+         // A stale cache path from the previous video would make the audio thread
+         // open the wrong file.
+         currentVideoCachePath = null
++        // A fresh video starts its own soundtrack: any "muted because our own UI
++        // opened" state belonged to the previous clip.
++        audioMutedForOwnUi = false
+         // First stop any existing video
+         stopVideoInternal()
+ 
+@@ -1247,6 +1256,42 @@ class WallpaperRenderer(
+         }
+     }
+ 
++    /**
++     * Silence the video's audio immediately while the PICTURE keeps playing.
++     *
++     * Used when our own UI comes to the foreground: the sound has to stop with
++     * the tap (user requirement), but pausing the decode at that instant froze
++     * the video in the middle of the app-open animation - visible only for our
++     * own app, because other apps reach us through the system's "covered" report
++     * ~1.1s later, when the wallpaper is already hidden
++     * (see LiveWallpaperService.APP_ENTRY_PAUSE_GRACE_MS).
++     *
++     * [unmuteAudioReanchored] puts the sound back - joined to the frame that is
++     * on screen by then, so the muted interval is skipped instead of playing late.
++     */
++    fun muteAudioKeepingVideo() {
++        if (!videoSoundEnabled || !isVideoPlaying) return
++        if (audioMutedForOwnUi) return
++        audioMutedForOwnUi = true
++        stopAudio()
++        AppLog.d(TAG, "Audio muted (own UI opening; video keeps playing)")
++    }
++
++    /**
++     * Undo [muteAudioKeepingVideo]. The audio starts at the picture's CURRENT
++     * position: while it was muted the video kept advancing, so continuing the
++     * audio where it stopped would leave the sound behind the picture by the
++     * whole muted interval.
++     */
++    fun unmuteAudioReanchored() {
++        if (!audioMutedForOwnUi) return
++        audioMutedForOwnUi = false
++        if (!videoSoundEnabled || !isVideoPlaying || powerSaveMode) return
++        val uri = currentVideoUri ?: return
++        startAudio(uri, videoGeneration.get(), lastVideoPositionUs)
++        AppLog.d(TAG, "Audio unmuted, re-anchored at ${lastVideoPositionUs / 1000}ms")
++    }
++
+     /** Start the audio thread for [uriStr]; only called when sound is enabled. */
+     private fun startAudio(uriStr: String, gen: Int, startPositionUs: Long = 0L) {
+         stopAudio()
+diff --git a/app/src/test/java/com/wallpaperswitcher/engine/ColorContrastTest.kt b/app/src/test/java/com/wallpaperswitcher/engine/ColorContrastTest.kt
+new file mode 100644
+index 0000000..73dc328
+--- /dev/null
++++ b/app/src/test/java/com/wallpaperswitcher/engine/ColorContrastTest.kt
+@@ -0,0 +1,112 @@
++package com.wallpaperswitcher.engine
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class ColorContrastTest {
++
++    private val white = 0xFFFFFFFF.toInt()
++    private val black = 0xFF000000.toInt()
++
++    @Test
++    fun `luminance spans black to white`() {
++        assertEquals(0f, ColorContrast.luminance(black), 0.001f)
++        assertEquals(1f, ColorContrast.luminance(white), 0.001f)
++    }
++
++    @Test
++    fun `contrast ratio matches the WCAG extremes`() {
++        assertEquals(21f, ColorContrast.contrastRatio(black, white), 0.01f)
++        assertEquals(1f, ColorContrast.contrastRatio(white, white), 0.001f)
++        // Order does not matter.
++        assertEquals(
++            ColorContrast.contrastRatio(black, white),
++            ColorContrast.contrastRatio(white, black),
++            0.001f
++        )
++    }
++
++    @Test
++    fun `readableOn picks the opposite end for extreme accents`() {
++        assertEquals(white, ColorContrast.readableOn(0xFF3F51B5.toInt()))   // dark indigo
++        assertEquals(black, ColorContrast.readableOn(0xFFFFF59D.toInt()))   // pale yellow
++    }
++
++    @Test
++    fun `readableOn always yields a usable pairing for mid tones`() {
++        for (color in listOf(0xFF808080, 0xFF6750A4, 0xFF00BCD4, 0xFFF44336, 0xFF4CAF50)) {
++            val accent = color.toInt()
++            val on = ColorContrast.readableOn(accent)
++            assertTrue(
++                "on-colour for %08X must reach 3:1".format(accent),
++                ColorContrast.contrastRatio(on, accent) >= ColorContrast.AA_LARGE
++            )
++        }
++    }
++
++    @Test
++    fun `ensureReadable fixes a pale accent on a light surface`() {
++        val surface = 0xFFFFFBFE.toInt()
++        val paleAccent = 0xFFFFF9C4.toInt()                     // 淡黄，正是问题场景
++        assertTrue(
++            "pale yellow on white is unreadable to begin with",
++            ColorContrast.contrastRatio(paleAccent, surface) < ColorContrast.AA_NORMAL
++        )
++        val fixed = ColorContrast.ensureReadable(paleAccent, surface)
++        assertTrue(
++            "adjusted accent must reach AA: %.2f".format(
++                ColorContrast.contrastRatio(fixed, surface)
++            ),
++            ColorContrast.contrastRatio(fixed, surface) >= ColorContrast.AA_NORMAL
++        )
++        // Hue is preserved (yellow stays yellow, it just gets darker).
++        val before = ColorContrast.toHsl(paleAccent)
++        val after = ColorContrast.toHsl(fixed)
++        assertEquals("hue", before[0], after[0], 2f)
++        assertTrue("must get darker", after[2] < before[2])
++    }
++
++    @Test
++    fun `ensureReadable fixes a dark accent on a dark surface`() {
++        val darkSurface = 0xFF141218.toInt()
++        val darkAccent = 0xFF1B1B2F.toInt()
++        val fixed = ColorContrast.ensureReadable(darkAccent, darkSurface)
++        assertTrue(
++            "adjusted accent must reach AA on dark: %.2f".format(
++                ColorContrast.contrastRatio(fixed, darkSurface)
++            ),
++            ColorContrast.contrastRatio(fixed, darkSurface) >= ColorContrast.AA_NORMAL
++        )
++        assertTrue("must get lighter", ColorContrast.toHsl(fixed)[2] > ColorContrast.toHsl(darkAccent)[2])
++    }
++
++    @Test
++    fun `ensureReadable leaves an already readable accent untouched`() {
++        val surface = 0xFFFFFBFE.toInt()
++        val good = 0xFF6750A4.toInt()
++        assertTrue(ColorContrast.contrastRatio(good, surface) >= ColorContrast.AA_NORMAL)
++        assertEquals(good, ColorContrast.ensureReadable(good, surface))
++    }
++
++    @Test
++    fun `hsl conversion round trips through the picker grid`() {
++        for (column in 0 until ColorPickerGrid.COLUMNS) {
++            for (row in 0 until ColorPickerGrid.ROWS) {
++                val argb = ColorPickerGrid.colorAt(column, row)
++                val hsl = ColorContrast.toHsl(argb)
++                val rebuilt = ColorPickerGrid.hslToRgb(hsl[0], hsl[2], hsl[1])
++                // Byte-accurate would be nicer, but the grid is generated *from*
++                // HSL, so a 1/255 rounding difference per channel is expected.
++                for (shift in listOf(16, 8, 0)) {
++                    val a = (argb shr shift) and 0xFF
++                    val b = (rebuilt shr shift) and 0xFF
++                    assertTrue(
++                        "cell ($column,$row) channel %d: %d vs %d".format(shift, a, b),
++                        kotlin.math.abs(a - b) <= 1
++                    )
++                }
++            }
++        }
++    }
++}
+diff --git a/app/src/test/java/com/wallpaperswitcher/engine/ColorPickerGridTest.kt b/app/src/test/java/com/wallpaperswitcher/engine/ColorPickerGridTest.kt
+new file mode 100644
+index 0000000..c192836
+--- /dev/null
++++ b/app/src/test/java/com/wallpaperswitcher/engine/ColorPickerGridTest.kt
+@@ -0,0 +1,102 @@
++package com.wallpaperswitcher.engine
++
++import org.junit.Assert.assertEquals
++import org.junit.Assert.assertNull
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++class ColorPickerGridTest {
++
++    @Test
++    fun `hue columns are evenly spaced around the wheel`() {
++        assertEquals(0f, ColorPickerGrid.hueAt(0), 0.01f)
++        assertEquals(30f, ColorPickerGrid.hueAt(1), 0.01f)
++        assertEquals(330f, ColorPickerGrid.hueAt(11), 0.01f)
++        // Clamped, never out of range.
++        assertEquals(330f, ColorPickerGrid.hueAt(99), 0.01f)
++        assertEquals(0f, ColorPickerGrid.hueAt(-3), 0.01f)
++    }
++
++    @Test
++    fun `tones go light to dark and cover the whole grid`() {
++        assertEquals(ColorPickerGrid.ROWS, ColorPickerGrid.TONES.size)
++        for (i in 1 until ColorPickerGrid.TONES.size) {
++            assertTrue(
++                "row $i must be darker than row ${i - 1}",
++                ColorPickerGrid.TONES[i] < ColorPickerGrid.TONES[i - 1]
++            )
++        }
++        assertEquals(0.95f, ColorPickerGrid.toneAt(0), 0.001f)
++        assertEquals(0.20f, ColorPickerGrid.toneAt(ColorPickerGrid.ROWS - 1), 0.001f)
++    }
++
++    @Test
++    fun `every cell is opaque and the corners match the expected hues`() {
++        for (row in 0 until ColorPickerGrid.ROWS) {
++            for (column in 0 until ColorPickerGrid.COLUMNS) {
++                val argb = ColorPickerGrid.colorAt(column, row)
++                assertEquals("cell ($column,$row) must be opaque", 0xFF, (argb ushr 24) and 0xFF)
++            }
++        }
++        // Column 0 at full saturation is red, column 4 (120°) green, column 8 (240°) blue.
++        val red = ColorPickerGrid.colorAt(0, 3)
++        val green = ColorPickerGrid.colorAt(4, 3)
++        val blue = ColorPickerGrid.colorAt(8, 3)
++        assertTrue("red cell should be red-dominant", (red shr 16 and 0xFF) > (red and 0xFF))
++        assertTrue("green cell should be green-dominant", (green shr 8 and 0xFF) > (green and 0xFF))
++        assertTrue("blue cell should be blue-dominant", (blue and 0xFF) > (blue shr 16 and 0xFF))
++    }
++
++    @Test
++    fun `hsl conversion hits the primaries`() {
++        assertEquals(0xFFFF0000.toInt(), ColorPickerGrid.hslToRgb(0f, 0.5f))
++        assertEquals(0xFF00FF00.toInt(), ColorPickerGrid.hslToRgb(120f, 0.5f))
++        assertEquals(0xFF0000FF.toInt(), ColorPickerGrid.hslToRgb(240f, 0.5f))
++        // Extremes are black/white regardless of hue.
++        assertEquals(0xFF000000.toInt(), ColorPickerGrid.hslToRgb(200f, 0f))
++        assertEquals(0xFFFFFFFF.toInt(), ColorPickerGrid.hslToRgb(200f, 1f))
++    }
++
++    @Test
++    fun `hex round trip drops alpha and uppercases`() {
++        assertEquals("#1E88E5", ColorPickerGrid.toHex(0xFF1E88E5.toInt()))
++        assertEquals("#00FF00", ColorPickerGrid.toHex(0x8000FF00.toInt()))
++    }
++
++    @Test
++    fun `alpha percent maps onto the high byte`() {
++        val base = 0xFF1E88E5.toInt()
++        assertEquals(0xFF, (ColorPickerGrid.withAlphaPercent(base, 100) ushr 24) and 0xFF)
++        assertEquals(0x80, (ColorPickerGrid.withAlphaPercent(base, 50) ushr 24) and 0xFF)
++        assertEquals(0x00, (ColorPickerGrid.withAlphaPercent(base, 0) ushr 24) and 0xFF)
++        // Clamped and colour-preserving.
++        assertEquals(0xFF, (ColorPickerGrid.withAlphaPercent(base, 250) ushr 24) and 0xFF)
++        assertEquals("#1E88E5", ColorPickerGrid.toHex(ColorPickerGrid.withAlphaPercent(base, 30)))
++    }
++
++    @Test
++    fun `nearest cell finds the swatch a colour came from`() {
++        for (row in 0 until ColorPickerGrid.ROWS) {
++            for (column in 0 until ColorPickerGrid.COLUMNS) {
++                val hex = ColorPickerGrid.toHex(ColorPickerGrid.colorAt(column, row))
++                assertEquals(
++                    "round trip for $hex",
++                    column to row,
++                    ColorPickerGrid.nearestCellOf(hex)
++                )
++            }
++        }
++    }
++
++    @Test
++    fun `nearest cell tolerates unknown input`() {
++        assertNull(ColorPickerGrid.nearestCellOf("not-a-color"))
++        assertNull(ColorPickerGrid.nearestCellOf(""))
++        // The floating button's default (#1E88E5) must land somewhere sane.
++        val cell = ColorPickerGrid.nearestCellOf("#1E88E5")
++        assertTrue("default button colour should map to a cell", cell != null)
++        val (column, row) = cell!!
++        assertTrue(column in 0 until ColorPickerGrid.COLUMNS)
++        assertTrue(row in 0 until ColorPickerGrid.ROWS)
++    }
++}
+diff --git a/app/src/test/java/com/wallpaperswitcher/ui/theme/CustomColorSchemeTest.kt b/app/src/test/java/com/wallpaperswitcher/ui/theme/CustomColorSchemeTest.kt
+new file mode 100644
+index 0000000..5c2b295
+--- /dev/null
++++ b/app/src/test/java/com/wallpaperswitcher/ui/theme/CustomColorSchemeTest.kt
+@@ -0,0 +1,81 @@
++package com.wallpaperswitcher.ui.theme
++
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.graphics.toArgb
++import com.wallpaperswitcher.engine.ColorContrast
++import org.junit.Assert.assertTrue
++import org.junit.Test
++
++/**
++ * The custom colour scheme must stay legible for *any* accent the user picks.
++ *
++ * This is the regression test for "软件界面有些文字和图形会随主题颜色变化，影响识别":
++ * the scheme used to hard-code `onPrimary = White` and set
++ * `onSurfaceVariant = primary`, so a pale accent (pale yellow on a white surface,
++ * or a dark accent in dark mode) made accent text unreadable.
++ */
++class CustomColorSchemeTest {
++
++    /** Accents a user can realistically pick, including the hostile ones. */
++    private val accents = listOf(
++        0xFFFFF9C4, // 淡黄 - the reported case
++        0xFFFFFFFF, // 纯白
++        0xFFEEEEEE, // 浅灰
++        0xFF6750A4, // 默认紫
++        0xFF1E88E5, // 默认蓝
++        0xFF000000, // 纯黑
++        0xFF141218, // 近黑
++        0xFF00FF00, // 高饱和绿
++        0xFFFF00FF, // 品红
++    )
++
++    @Test
++    fun `light scheme keeps accent text readable on the surface`() {
++        for (hex in accents) {
++            val scheme = customLightColorScheme(Color(hex.toInt()))
++            val surface = scheme.surface.toArgb()
++            val ratio = ColorContrast.contrastRatio(scheme.onSurfaceVariant.toArgb(), surface)
++            assertTrue(
++                "light: accent %08X gives onSurfaceVariant contrast %.2f".format(hex, ratio),
++                ratio >= ColorContrast.AA_NORMAL
++            )
++            val onPrimary = ColorContrast.contrastRatio(scheme.onPrimary.toArgb(), hex.toInt())
++            assertTrue(
++                "light: onPrimary for %08X contrasts %.2f".format(hex, onPrimary),
++                onPrimary >= ColorContrast.AA_LARGE
++            )
++        }
++    }
++
++    @Test
++    fun `dark scheme keeps accent text readable on the surface`() {
++        for (hex in accents) {
++            val scheme = customDarkColorScheme(Color(hex.toInt()))
++            val surface = scheme.surface.toArgb()
++            val ratio = ColorContrast.contrastRatio(scheme.onSurfaceVariant.toArgb(), surface)
++            assertTrue(
++                "dark: accent %08X gives onSurfaceVariant contrast %.2f".format(hex, ratio),
++                ratio >= ColorContrast.AA_NORMAL
++            )
++            val onPrimary = ColorContrast.contrastRatio(scheme.onPrimary.toArgb(), hex.toInt())
++            assertTrue(
++                "dark: onPrimary for %08X contrasts %.2f".format(hex, onPrimary),
++                onPrimary >= ColorContrast.AA_LARGE
++            )
++        }
++    }
++
++    @Test
++    fun `container text stays readable too`() {
++        for (hex in accents) {
++            val scheme = customLightColorScheme(Color(hex.toInt()))
++            val surface = scheme.surface.toArgb()
++            val onContainer =
++                ColorContrast.contrastRatio(scheme.onPrimaryContainer.toArgb(), surface)
++            assertTrue(
++                "onPrimaryContainer for %08X contrasts %.2f".format(hex, onContainer),
++                onContainer >= ColorContrast.AA_NORMAL
++            )
++        }
++    }
++}
+diff --git a/docs/TECHNICAL_DOCUMENTATION.md b/docs/TECHNICAL_DOCUMENTATION.md
+index c43e4ec..86c517f 100644
+--- a/docs/TECHNICAL_DOCUMENTATION.md
++++ b/docs/TECHNICAL_DOCUMENTATION.md
+@@ -2304,6 +2304,319 @@ ON/OFF 常常属于**两个不同实例**（实测同一时刻出现 `ON(visibil
+ **回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、**143 单测全绿** ✓、`lintDebug` 0 error ✓、
+ 括号余量 0 ✓、dex 字符串 oracle 与修复前一致（无文案丢失）✓。
+ 
++#### 4.9.48 悬浮按钮进入应用不消失（两条独立的原因）
++
++用户报"悬浮按钮进入应用无法立即消失"。真机复现 + 日志定位后发现是**两层**问题叠加：
++
++**原因一：Activity 的隐藏请求依赖引擎实例**
++
++`MainActivity.onResume()` 走的是 `LiveWallpaperService.dismissFloatingButtonIfAny()` → `activeEngine?.hideFloatingButtonNow()`。
++**引擎实例为 null 时（被系统回收、或还没注册）这行是空操作** —— 在 4.9.45 把按钮改成"进程级单例"之前这不致命：
++旧实现里每个引擎各持一份按钮，引擎销毁时会把窗口一起 `dismiss()`；改成单例后按钮能跨引擎存活，于是
++"上一个引擎创建的按钮"就留在了屏幕上 ✗。
++
++**原因二：MIUI 会继续绘制"视图 GONE"的覆盖窗口**
++
++即使隐藏逻辑执行了（实测 `hideShared → Floating button hidden` 只相隔 **1 ms**），
++`dumpsys window` 里窗口依旧存在、按钮依旧可见 ✗ —— 视图 `GONE` 并不足以让这个 ROM 停止绘制覆盖窗口的
++最后一帧缓冲。
++
++**修法**
++
++| 改动 | 位置 |
++|---|---|
++| 新增 `FloatingSwitchButton.hideShared()`（进程级、任意线程）+ 实例 `hideNow()`，Activity **直接**隐藏，不再依赖引擎 | `FloatingSwitchButton.kt` |
++| `MainActivity.onStart()`（窗口绘制之前，最早时机）与 `onResume()` 都调用它；引擎路径保留（它还负责自身记账） | `MainActivity.kt` |
++| `hideOverlay()` 除视图 `GONE` 外，**把窗口本身也设为不可见**：`alpha = 0f` + 移出屏幕上方 + `updateViewLayout` 强制事务 | `FloatingSwitchButton.kt` |
++| `showOnDesktop()` 对应恢复 `alpha = 1f` 与移出前的位置 | `FloatingSwitchButton.kt` |
++
++**真机验证（手机 25102RKBEC）**
++
++```
++23:35:57.107 MainActivity: onStart: hiding the floating button
++23:35:57.107 FloatingSwitchButton: hideShared: hiding (id=70791749)
++23:35:57.108 FloatingSwitchButton: Floating button hidden (id=70791749)      ← 1 ms
++23:35:57.108 LiveWallpaperService: App UI foreground: mute audio + hide floating button
++23:35:57.118 VideoAudio: Video audio paused (wallpaper not visible)
++```
++
++* 应用内截图：**没有浮钮覆盖** ✓
++* 回桌面：日志 `Floating button shown (id=70791749)`（同一实例）+ 窗口仍在 ✓，**点击两次都成功切换**
++  （`Switch done: floating-tap` ×2，第二次日志 `Not a rapid switch (3855ms)` 说明节流也在工作）✓
++
++**测量陷阱（记下来避免下次误判）**：用"`dumpsys window` 里覆盖窗口的数量"判断按钮是否可见**不可靠** ✗ ——
++隐藏后窗口对象仍会留在列表里（alpha=0、不再绘制），真正的判据是**截图**和 `isVisible`/alpha 字段。
++
++**回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、143 单测 ✓、lint 0 error ✓。
++
++#### 4.9.49 悬浮按钮切到**别的**应用时也要立刻消失（去抖从 1500ms 降到 150ms）
++
++用户报"进入其他应用还是没有立即消失"。这条路径与 4.9.48 不同：不是我们自己的 Activity（那条已即时隐藏 ✓），
++而是**任何外部应用盖住壁纸**时的隐藏 —— 它走 `FLOATING_BUTTON_HIDE_SETTLE_MS`（`FLOATING_BUTTON_HIDE_SETTLE_MS`）。
++
++**实测（手机，打开系统设置）**：
++
++```
++23:37:37.389 Wallpaper covered: pausing decode/audio
++23:37:38.947 Floating button hidden          ← 间隔 1560 ms ✗
++```
++
++同刻音频 0.6s 就停了，只有浮钮在等那 1.5 秒 ✗。
++
++**为什么当初是 1500ms**：ROM 在桌面使用过程中会报 250–400ms 的"壁纸被遮挡"抖动，400ms 刚好低于它 →
++按钮闪烁 ✗，而且**每次翻转都会 `removeView` + `addView` 覆盖窗口两次**，又反过来喂给 ROM 新的可见性翻转 ✗。
++
++**为什么现在可以降下来**：4.9.45 之后按钮是**常驻的进程级窗口**，隐藏只改 `alpha`/可见性，**不再增删窗口**
++→ 不可能再喂翻转 ✓。把去抖降到 **150ms**（低于感知阈值，仍能吞掉极短抖动）。
++
++**改后实测**：
++
++| 场景 | 之前 | 现在 |
++|---|---|---|
++| 切到别的应用（设置） | 1560 ms ✗ | **156 ms** ✓（`covered 23:39:13.904 → hidden 23:39:14.060`）|
++| 打开我们自己的应用 | 1 ms ✓ | 1 ms ✓ |
++| 桌面静置 60 秒的显隐次数 | — | **0 次**（可见性事件也是 0）✓ 无抖动 |
++| 桌面点击浮钮 | — | `Switch done: floating-tap` ✓ |
++
++**回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、143 单测 ✓。
++
++#### 4.9.40 未启用分组里的图片不能再被设为壁纸
++
++用户反馈：「当分组图片未启用时，里面的图片仍能设置为壁纸」。
++
++原因：两条用户入口都**没有校验分组状态**——
++
++- `WallpaperViewModel.setAsLiveWallpaper()`（点图片 → 系统动态壁纸界面）
++- `WallpaperViewModel.setImageAsWallpaper()`（三点菜单 →「设为壁纸」→ 预览确认）
++
++而引擎的目标切换曾经刻意"显式选择无视分组启用状态"（避免手动选中的图片被随机图替换），于是
++用户能把已关闭分组里的图片设成壁纸；但轮换、预取、锁屏/桌面定时和 `getFirstFromEnabledGroups`
++都只从**启用**分组里挑，下一次切换/重绘又把它换掉——等于设了个"注定被覆盖"的壁纸。
++
++修法：
++
++1. 两个入口在读取分组后立即判断 `group != null && !group.isEnabled` → 记录
++   `setAsLiveWallpaper ignored: group N is disabled` / `setImageAsWallpaper ignored: ...`
++   并提示「该分组未启用，请先打开分组开关」，**不移动 HOME 游标、不打开系统界面、不写任何状态**
++   （守卫放在最前面，因此也不会留下 pending preview pick）。
++2. 确认路径的兜底目标（预览会话已丢失 pending pick 时用 HOME 游标）新增
++   `homeCursorForConfirmedPick()`：只有游标仍指向**启用且支持桌面**的分组媒体才返回，否则返回 0，
++   确保"确认后推送"也不会复活已关闭分组的图片。
++3. 引擎目标切换处的注释更新为"用户入口已拦截 + 内部调用自带校验"，避免后人误以为这里仍需放行。
++
++**真机实测（Redmi 平板 25102RKBEC / 1200×2608，release 包）**：
++
++| 操作（分组已关闭） | 日志 | 结果 |
++|---|---|---|
++| 点图片 | `setAsLiveWallpaper ignored: group 37 is disabled` | 系统界面不打开，壁纸不变 |
++| 三点 →「设为壁纸」→ 确定 | `setImageAsWallpaper ignored: group 37 is disabled` | 无 `Wallpaper applied` / 无切换 |
++| 打开分组开关后再点图片 | `setAsLiveWallpaper: id=… target=…` | 系统界面正常打开；返回取消 → `pick cancelled` + 游标复原 |
++
++测试后已把该分组恢复为关闭；构建 + `:app:testDebugUnitTest`（130 条）全绿。
++
++#### 4.9.41 回到桌面 / 退出软件时视频要停一下（可见性恢复被去抖）
++
++用户反馈两件事，其实是同一个根因：
++
++- 「设置视频为壁纸后，返回桌面要黑屏一会才开始播放」
++- 「进入壁纸软件后，再退出，视频会卡一下再播放」
++
++真机日志（Redmi 平板 25102RKBEC）里每次回到桌面都固定多出约 250ms：
++
++```
++07:03:54.910 LiveWallpaperService: App UI hidden: re-evaluating wallpaper state
++07:03:55.162 VideoDecode: Video resumed (wallpaper visible again)   ← +252ms
++07:03:55.202 WallpaperRenderer: Video frame rendered                ← 第一帧
++```
++
++原因：`refreshPowerSave()` 对**所有**恢复都套了 `VISIBILITY_DEBOUNCE_MS = 250ms` 去抖，本意是吸收
++窗口/Activity 过渡期间成串的可见性回调（每次翻转在视频路径上都是一次解码器暂停+时钟重锚）。
++但"我们自己的 App 退到后台 / 亮屏"是**确定性**转换——壁纸就在前台且可交互，去抖只会让画面白停
++250ms；如果是刚被系统重建过的新引擎（还没有画过任何一帧），这 250ms 就是**纯黑屏**。
++
++修法（`LiveWallpaperService.refreshPowerSave`）：恢复时先判断
++`!appInForeground && powerSaveVisibleInput && isScreenInteractive()`（即"App 已退到后台、壁纸确实
++可见、屏幕已亮"）→ 立即 `applyPowerSave(hint)`；其余情况仍走 250ms 去抖。抖动保护没有丢：随后
++的 covered 报告由暂停路径处理，短暂 covered 仍会被 `VISIBILITY_PAUSE_COALESCE_MS` 合并
++（日志里 `Visibility blip coalesced: …` 仍然生效）。
++
++**实测（release 包，同一台平板）**：
++
++| | 修改前 | 修改后 |
++|---|---|---|
++| `App UI hidden` → `Power save OFF` | +252ms | **+1ms**（两轮复测：+1ms、0ms） |
++| 每轮进出 App 的暂停/恢复次数 | 1/1 | 1/1（无来回抖动，无 `blip` 误报） |
++
++按 07:03:55 那次的实测数字推算：新引擎 + 已初始化解码器的情况下，返回桌面到第一帧由约 290ms
++降到约 40ms（去抖残差 + 唤醒），"黑屏一会"与"卡一下"随之消失。
++
++#### 4.9.42 返回桌面时视频停顿 1 秒：app-foreground 标志挂在 onStop 上
++
++用户反馈（承接 §4.9.41）：「设置视频为壁纸后，返回桌面要黑屏一会才开始播放」「进入壁纸软件后，
++再退出，视频会卡一下再播放」。
++
++实测把 HOME 按键和日志时间对齐后，问题非常具体（Redmi 平板 25102RKBEC）：
++
++```
++HOME 按下                07:21:51.931
++App UI hidden           07:21:53.035   ← 1104ms 之后
++Video resumed           07:21:53.037
++```
++
++原因：引擎的"我们自己的 UI 在前台"标志由 `MainActivity.onStop()` 翻转，而 MIUI 要等**退出动画
++走完**才回调 onStop（实测 +1104ms）。这段时间里 launcher 已经在前面、壁纸已经可见，但解码仍被
++`app-foreground` 判为暂停，所以画面停住（新引擎还没画过一帧时就是黑屏）。壁纸自身的
++`onVisibilityChanged` 在这台 ROM 上要晚 1.5-2.5s（这正是当初引入该标志的原因），所以只能换触发点。
++
++修法：把 `setAppForeground(false)` 与 `WallpaperSwitchService.poke()` 从 `onStop()` 移到
++`MainActivity.onPause()`——onPause 与窗口切换同拍触发（实测 +84~127ms）；`onStop()` 只保留缩略图
++缓存回收（本来就有 60s 延迟）。引擎侧无需改动：§4.9.41 的"立即恢复"判断
++(`!appInForeground && 可见 && 屏幕亮`) 现在能在正确的时刻生效。
++
++**实测（release 包）**：
++
++| | 修改前 | 修改后 |
++|---|---|---|
++| HOME → `onPause` | —（挂在 onStop） | **+84ms / +127ms** |
++| HOME → 引擎恢复 | +1104ms | **+128ms** |
++| HOME → 首帧 | ~+1123ms | **+158ms** |
++| 两轮进出 App 的暂停/恢复次数 | 1/1 | 1/1（无抖动、无 blip 误报） |
++
++注意（既有策略的延伸）：引擎对"回到桌面"采用**乐观恢复**——先恢复，等系统可见性回调到达再纠正，
++所以"从我们 App 里打开别的应用"这种情况会比以前早约 1s 恢复解码/声音（原来是在 onStop 时恢复，
++同样存在这个窗口，只是更晚）。这是"少 1 秒静音/黑屏" 与"多 1 秒后台解码"之间的取舍，与
++`applyAppForeground` 里已记录的乐观恢复注释一致。
++
++#### 4.9.43 为什么"进出壁纸软件"比进出别的应用更容易看到视频卡顿
++
++用户问："壁纸软件进出视频就是比其他软件进出会卡顿"。同一台平板、同一段视频，用同一套
++`am start` / `KEYCODE_HOME` 流程对照测量（Redmi 平板 25102RKBEC）：
++
++| | 进入（视频暂停） | 退出（视频恢复） |
++|---|---|---|
++| 我们 App | **+105ms**（app-foreground 输入立即生效） | **+44~130ms**（onPause / 可见性回调） |
++| 系统设置 | +649ms 收到"被覆盖"，+1253ms 真正暂停 | +126ms（可见性回调） |
++
++差异来自两件**只有我们自己的 App 才会发生**的事：
++
++1. **进入我们 App 时，暂停比系统回调早约 1.1s**。引擎把"我们自己的 UI 在前台"
++   （`appInForeground`，由 `MainActivity.onStart/onPause` 维护）当作最快的暂停输入——这是为了
++   「打开应用时声音立刻关闭」。代价是：**MIUI 的开启动画还没结束、壁纸仍然可见的时候，视频就冻住了**。
++   别的应用不会有这个输入，暂停要等系统"壁纸被覆盖"回调（+0.6~1.3s），等它到达时壁纸早已被完全
++   遮住，所以用户看不到那一帧的停顿。
++2. **退出我们 App 时，引擎和动画在同一个进程里抢资源**。恢复由 onPause/可见性回调触发
++   （+44~130ms），而此刻**我们自己 Activity 的关闭动画还在跑**——解码器、GL 上传、音频轨道重建
++   都要和这个动画争 CPU/GPU，所以视频头几帧不均匀。别的应用退出时它的动画不牵扯我们的进程，
++   引擎恢复时 GPU 是空的。
++
++改动（退出侧）：新增 `APP_EXIT_RESUME_GRACE_MS = 250ms`——`appLeftAtMs` 记录 UI 离开的时刻，
++`refreshPowerSave()` 里的恢复（无论先到的是 app-left 还是可见性回调）都不早于该时刻 +250ms，
++让关闭动画先跑完。实测 HOME → 恢复由 +44ms 变为 **+350ms（= onPause + 252ms）**，动画期间不再有
++解码竞争；两轮复测仍是各一次暂停/恢复。
++
++进入侧**暂未改动**：要让画面在开启动画期间继续播放，必须把"立即静音"与"暂停解码"拆开
++（立即 `audioSession.pause()`，解码延后到被覆盖），并在恢复时把音频**重新对齐到视频当前位置**
++——否则音频会落后约 0.5s（音频线程在静音期间仍会写入并阻塞，恢复后从缓冲开头继续）。这需要动
++音频管线，风险高于收益，先记录方案待确认。
++
++#### 4.9.44 进入我们 App 时不再冻结画面（立即静音 + 延后暂停 + 音频重新对齐）
++
++承接 §4.9.43 的对照结论：进入我们 App 时暂停由 `app-foreground` **立即**触发（实测 +105ms），而
++系统"壁纸被覆盖"回调要 +0.6~1.3s——于是视频是在**开启动画仍在进行、壁纸仍然可见**的时候冻住的；
++别的应用没有这个输入，等回调到达时壁纸早已被遮住，所以看不到那一顿。用户选择方案 A：进我们 App
++时**画面继续播、声音立刻静音**。
++
++实现（三处）：
++
++1. **只静音、不停画面**：新增 `WallpaperRenderer.muteAudioKeepingVideo()`——立刻 `stopAudio()`
++   （音频线程停、`AudioTrack.pause()` 立即无声），但**不动** `powerSaveMode`，解码与渲染继续。
++   引擎侧 `applyAppForeground(true)` 改为此调用 + **延后** `refreshPowerSave()` 到
++   `APP_ENTRY_PAUSE_GRACE_MS = 600ms`（若系统"被覆盖"回调更早到达，则按回调立即暂停，符合实际遮挡）。
++2. **恢复时把音频重新对齐到画面**：新增 `unmuteAudioReanchored()`，用
++   `startAudio(uri, gen, lastVideoPositionUs)`（与"视频声音开关"同一条 re-anchor 路径）。静音期间
++   画面一直在走，若让音频从原处继续就会落后整个静音时长。
++3. **顺序修正（实测发现）**：解除静音必须发生在 `powerSaveMode = false` **之后**——写在前面时
++   `unmuteAudioReanchored()` 会因为 `powerSaveMode` 仍为 true 而提前返回，声音再也回不来；同时把
++   "状态没有变化但需要解除静音"（快速进出 App，从未真正暂停）也覆盖。`startVideo()`/`release()`
++   清掉该状态，避免跨视频泄漏。
++
++**实测（release 包，两轮复测一致）**：
++
++| 阶段 | 改前 | 改后 |
++|---|---|---|
++| 进入 App · 静音 | +105ms（同时冻结画面） | **+155ms 静音，画面继续播** |
++| 进入 App · 画面暂停 | +105ms（动画中，可见） | **+535ms（系统"被覆盖"回调后，不可见）** |
++| 退出 App · 画面恢复 | +44~130ms（与关闭动画抢资源） | **+251ms（关闭动画结束后）** |
++| 退出 App · 声音 | 随画面一起恢复（可能落后） | **`Audio unmuted, re-anchored at Nms` 接回当前画面** |
++| 每轮音频线程 | — | 1 次结束 + 1 次启动，无泄漏/无重复线程 |
++
++#### 4.9.50 主题色 / 悬浮按钮颜色：Material 风格网格选色器
++
++需求（用户给了参考截图）："主题和悬浮按钮颜色支持这种选择" —— 即色相×明度**网格**选色 + **透明度滑块**
++（棋盘格轨道）+ 预览条 + 取消/保存。
++
++**实现**（沿用项目惯例：纯逻辑进 `engine/` 并配单测，UI 只负责画）
++
++| 文件 | 内容 |
++|---|---|
++| `engine/ColorPickerGrid.kt` | 网格的纯数学：`COLUMNS=12`（每列 30°）、`TONES=[0.95,0.80,0.65,0.50,0.35,0.20]`（上浅下深）、`colorAt(col,row)`、`hslToRgb`、`toHex`、`withAlphaPercent`、`parseHex`、**`nearestCellOf(hex)`**（把当前颜色映射回格子，用于白圈标记） |
++| `ui/screens/ColorGridPicker.kt` | `ColorGridPicker`（预览条 + 网格 + 可选透明度滑块，棋盘格用 `drawBehind` 画）+ `ColorGridPickerDialog`（标题/取消/保存；**选中只改本地状态，按保存才生效**） |
++| `SettingsScreen.kt` | `ThemeColorPickerDialog` 内部改为新选色器（保留「跟随系统 Monet」行，存空串）；悬浮按钮颜色行新增**彩虹「自定义」圆点** → 打开带透明度滑块的选色器（透明度写的就是既有的 `setFloatingButtonAlpha`，与设置页的「透明度」滑块是同一个值、互相同步） |
++
++**为什么 `parseHex` 自己实现**：`util.parseHexColorInt` 走 `android.graphics.Color`，在 JVM 单测里不可用 ✗
++（第一版有 3 个测试因此失败 ✗），而"当前颜色落在哪个格子"必须可测 ✓。
++
++**单测**（`ColorPickerGridTest`，8 例）：列间距与行单调变暗 ✓、每格不透明 ✓、三原色位置 ✓、HSL 边界（黑/白）✓、
++hex 往返、alpha 映射（50% → 0x80，四舍五入 ✓）、**全矩阵往返**（每格颜色都能映射回自己 ✓）、非法输入返回 null ✓。
++
++**真机验收**（截图 `picker_button.png` / `picker_theme.png`）：网格 12×6 上浅下深 ✓、当前色白圈标记正确
++（默认蓝 `#1E88E5` 落在第 9 列第 4 行 ✓）、透明度滑块带棋盘格+渐变 ✓、取消/保存 ✓、两个入口均可用 ✓、无崩溃 ✓；
++`:app:testDebugUnitTest` **151 条全绿**（新增 8 条）、`lintDebug` 0 error ✓。
++
++**说明**：选色器的透明度显示的是数据库里已有的值（默认 10%；若用户曾拖到 100% 就显示 100%），它只是如实
++镜像该设置，不是 bug。
++
++#### 4.9.51 自定义主题色的可读性（对比度）
++
++用户报"软件界面有些文字和图形会随主题颜色变化，影响识别"。根因在 `Theme.kt` 的自定义配色方案里，
++on-色槽**写死了**：
++
++```kotlin
++onPrimary = Color.White,        // 淡色主题色 + 白字 = 看不见
++onPrimaryContainer = primary,   // 用主题色当"容器上的文字"
++onSecondaryContainer = primary,
++onSurfaceVariant = primary,     // ✗✗ 这是全应用的"次要文字"颜色 → 浅底浅字
++```
++
++`onSurfaceVariant` 被用来画说明/副标题（"最多 4 个字…"、"已设置…"、分组副标题…），所以用户一选浅色
++（淡黄/淡绿）就整片读不清 ✗；选深色 + 深色模式同理 ✗。
++
++**修法**（纯逻辑 + 单测，沿用项目惯例）
++
++| 文件 | 内容 |
++|---|---|
++| `engine/ColorContrast.kt` | WCAG 相对亮度、对比度、`readableOn(background)`（在黑/白里挑对比度更高的那个 → 用于 `onPrimary`）、`ensureReadable(color, background, 4.5)`（**沿亮度轴**把颜色推到达到 AA，色相饱和度不变）、`toHsl` |
++| `ui/theme/Theme.kt` | `customLightColorScheme` / `customDarkColorScheme` 改为：`onPrimary = readableOn(primary)`、`onSurfaceVariant`/`onPrimaryContainer`/`onSecondaryContainer = readableAccent(...)`；并用 `CompositionLocalProvider(LocalAccentColor provides colorScheme.onSurfaceVariant)` 把"可读的强调色"暴露给界面 |
++| 三个界面 | 8 处**在表面上用主题色画的文字/装饰条**（"修改"、间隔值、透明度百分比、分组标题、自定义时间、选中计数、扫描状态、分组标题竖条）改用 `LocalAccentColor.current` |
++
++**测试**（新增 11 条，套件 162 条全绿）
++
++* `ColorContrastTest`（8 条）：亮度/对比度极值（黑白 = 21:1）✓、`readableOn` 对深/浅色分别给黑白 ✓、
++  淡黄在浅色表面上被**压暗**且**色相不变** ✓、深色在深色表面上被提亮 ✓、已经达标的颜色**原样返回** ✓、
++  HSL 往返（容忍 ±1/255）✓。
++* `CustomColorSchemeTest`（3 条）：对 9 种"刁钻"主题色（纯白、纯黑、淡黄、浅灰、近黑、高饱和绿、品红…）
++  断言浅色与深色两套方案的 `onSurfaceVariant` 达到 **AA（≥4.5:1）**、`onPrimary` 达到 **≥3:1**、
++  `onPrimaryContainer` 达到 AA ✓。
++
++**这个测试当场抓到一个真 bug** ✓：第一版对着**应用自定义的** `DarkColorScheme.surface` 计算强调色 ✗，而
++`customDarkColorScheme` 实际产生的是 **Material 默认**表面色 ✗ → 深色模式下部分强调色达不到 AA ✗。
++改成 `lightColorScheme().surface` / `darkColorScheme().surface` 后通过 ✓。
++
++**诚实口径**：本机脚本始终没能点中选色网格（对话框布局与推算不一致 ✗），所以**没有**留下"浅色主题下的
++截图"✗；可读性由上述单测保证 ✓（比截图更硬），肉眼确认可以自己选一个淡黄色试一下 ✓。
++
++**回归**：`:app:assembleDebug` / `:app:assembleRelease` ✓、**162 单测全绿**（新增 11 条）✓、`lintDebug` 0 error ✓。
++
+ ## 五、服务与后台组件
+ 
+ ### 5.1 WallpaperSwitchService (定时切换服务)
+@@ -2406,6 +2719,14 @@ WallpaperSwitcherApp (Scaffold)
+ - 引擎未运行时的醒目警告卡片（定时/双击/解锁切换无法生效）
+ - 分组列表：名称 + 媒体数徽章 + 启用开关 + 类型图标
+ - "新建分组"对话框
++- **分组多选**：标题右侧的清单图标（或长按任意分组卡片）进入多选模式，顶栏换成工具条
++  ——退出 / 全选（`allIds` 直接来自列表，不需额外查询）/ 已选 N/M / **批量启用** / **批量删除**。
++  选中卡片用主色边框 + 主色底高亮，右侧开关换成只读 `Checkbox`（点卡片本身切换选中，避免与开关抢点击）。
++  选择状态用 `SnapshotStateMap<Long, Boolean>` per-key 读取，勾选一项只重组那一张卡片。
++  批量删除带确认对话框（分组里的媒体记录会一起移除，手机里的文件不动）；
++  `WallpaperViewModel.deleteGroups()` / `setGroupsEnabled()` 分别复用单条删除的游标清理逻辑
++  （`clearCursorsOfDeletedMedia()`：HOME/锁屏/最近写入/手动选择五处 id 若已悬空则清零）与一次
++  `WallpaperSwitchService.poke()`（批量启用只唤醒一次定时循环，而不是每个分组一次）。
+ 
+ ### 6.3 GroupDetailScreen (分组详情)
+ 
+@@ -2439,6 +2760,54 @@ WallpaperSwitcherApp (Scaffold)
+ 
+ ---
+ 
++#### 6.4 悬浮按钮在"别的应用"里晚 0.6~0.8s 消失（决定：维持现状）
++
++现象（用户报告）：进我们自己的 App 时悬浮按钮瞬间消失，进别的应用却要过一会。
++
++实测（Redmi 平板 25102RKBEC，`am start -a android.settings.SETTINGS`）：发起 → **+615ms** 收到系统
++"壁纸被覆盖"回调 → **+777ms** 按钮收起。我们自己的 App 是 +0ms，因为它走 `MainActivity` 生命周期
++（`setAppForeground(true)` 立即 `hideFloatingButtonNow()`）。
++
++原因：悬浮按钮是 `TYPE_APPLICATION_OVERLAY`，永远画在所有应用之上，**必须我们主动收**；而"另一个
++应用到了前台"这件事，系统只在壁纸窗口真正被完全遮住时才回调我们（就是那 0.6~0.8s，也正是视频/
++音频暂停的时刻）。Android 10+ 把 `getRunningTasks()` / `getRunningAppProcesses()` 限制为"只能看到
++自己"，所以没有免权限的即时信号。
++
++备选与结论：
++
++- **B. 申请「使用情况访问」+ 轮询前台应用**：可做到瞬间收起，但需要一个特殊权限 + 轮询耗电，
++  且 MIUI 可能限制查询频率 → 用户未选。
++- **C. 桌面闲置后自动淡出**：曾实现并真机验证（5s 闲置稳定淡出），但实测**这台启动器不把桌面触摸
++  转发给壁纸**（三个位置点按均无 `Touch DOWN` 日志），"完全隐藏后靠触摸桌面唤回"不成立；改成
++  "淡成 8% 幽灵态"虽然可用，但已偏离用户要的行为 → **用户最终选择 A：维持现状**，代码已完整回退。
++- **A（当前行为）**：按钮在桌面上始终显示；进我们 App 立即消失；进别的应用晚 0.6~0.8s 消失。
++  这段时间它悬在新应用画面上——已知且接受。
++
++#### 6.5 主题：浅色/深色模式、Monet、更多配色
++
++三项一起做（用户需求）：
++
++1. **浅色/深色模式**：新增设置项 `theme_mode`（`system` / `light` / `dark`，缺失或未知一律按 `system`）。
++   `WallpaperViewModel.themeMode` 走和主题色同一条 `settingsUiState` 通路；`MainActivity` 把它翻译成
++   `ThemeMode.from(...).isDark()` 传给 `WallpaperSwitcherTheme(darkTheme = …)`，所以切换即时生效
++   （不需要重建 Activity）。设置界面在「外观」区块顶部加了「主题模式」三个 `FilterChip`。
++2. **Monet（Android 12+ 跟随壁纸取色）**：`Theme.kt` 原本就有一条 `Build.VERSION.SDK_INT >= S →
++   dynamicLight/DarkColorScheme(context)` 的分支，但只有"主题颜色"为空时才会走到，界面上写着"跟随系统"
++   ——用户看不出它其实是 Monet。现在：设置行在该分支生效时显示 **「跟随系统（Monet）」**，颜色对话框的
++   第一项也标成 **「跟随系统 Monet」**（旧版本显示"跟随系统"，走内置配色）；自定义颜色仍然优先于 Monet。
++3. **更多配色**：预置色从 17 个扩到 **28 个**（按色相排列：紫罗兰→深紫→玫红→桃红→玫瑰红→红→砖红→
++   深橙→橙→琥珀→黄→橄榄→绿→翡翠→青→深青→蓝→海洋蓝→靛蓝→紫→蓝灰→黑灰→棕→灰玫瑰…），
++   对话框内容加 `heightIn(max = 420.dp)` + `verticalScroll`，7 行色卡在小屏上也能滚动查看。
++
++**真机验证（Redmi 平板 25102RKBEC）**：
++
++| 操作 | 结果 |
++|---|---|
++| 主题模式 = 浅色 | 截图平均亮度 **179.7** |
++| 主题模式 = 深色 | **62.8** |
++| 主题模式 = 跟随系统 | 随系统深色 → 53.9（设置项回到默认，行为与改动前一致） |
++| 打开颜色对话框 | 28 个色项可见、可滚动；设置行副标题显示「跟随系统（Monet）」 |
++
+ ## 七、权限声明
+ 
+ | 权限 | 用途 | API 级别 |

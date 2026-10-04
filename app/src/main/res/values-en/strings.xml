@@ -1,0 +1,676 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  English translation.
+
+  Only the keys listed here are translated; anything missing falls back to the
+  default (Chinese) resources, which is why the language picker offers a locale
+  only when its folder exists (see SettingsKeys.TRANSLATED_LOCALES). Screens are
+  being extracted from hard-coded literals into resources step by step - keys
+  appear here as that happens.
+-->
+<resources>
+    <string name="app_name">Wallpaper Switcher</string>
+    <string name="live_wallpaper_name">Live Wallpaper Switcher</string>
+    <string name="live_wallpaper_desc">Live wallpaper service that switches your wallpaper automatically</string>
+    <string name="notification_channel_name">Wallpaper switching</string>
+    <string name="notification_channel_desc">Notification for the automatic wallpaper switching service</string>
+    <string name="notification_title">Wallpaper switching is running</string>
+    <string name="notification_text">Tap to manage your wallpaper settings</string>
+
+    <string name="nav_home">Home</string>
+    <string name="nav_settings">Settings</string>
+    <string name="title_home">Wallpaper Switcher</string>
+    <string name="title_settings">Settings</string>
+    <string name="title_group_detail">Group</string>
+    <string name="action_back">Back</string>
+    <string name="settings_language">Language</string>
+    <string name="language_picker_title">Language</string>
+    <string name="language_system">System default</string>
+    <string name="language_note">Applies immediately</string>
+    <string name="theme_mode_system">System default</string>
+    <string name="theme_mode_light">Light</string>
+    <string name="theme_mode_dark">Dark</string>
+
+    <!-- Settings screen: wallpaper / switching -->
+    <string name="settings_wallpaper_title">Wallpaper</string>
+    <string name="settings_switch_mode">Switch mode</string>
+    <string name="switch_mode_random">Random</string>
+    <string name="switch_mode_sequential">Sequential</string>
+    <string name="switch_mode_shuffle">Shuffle</string>
+    <string name="settings_scale_mode">Scale mode</string>
+    <string name="scale_mode_fill">Fill</string>
+    <string name="scale_mode_fit">Fit</string>
+    <string name="scale_mode_stretch">Stretch</string>
+    <string name="settings_clarity">Clarity enhancement</string>
+    <string name="clarity_auto">Auto</string>
+    <string name="clarity_off">Off</string>
+    <string name="clarity_strong">Strong</string>
+    <string name="settings_auto_rotate">Auto-rotate mismatch</string>
+    <string name="settings_auto_rotate_hint">Rotate 90° on orientation mismatch (fit mode shows more)</string>
+    <string name="settings_rotate_direction">Rotation direction</string>
+    <string name="rotate_clockwise">Clockwise</string>
+    <string name="rotate_counter_clockwise">Counter-clockwise</string>
+    <string name="settings_switch_methods">Switching</string>
+    <string name="settings_section_methods">Switching</string>
+    <string name="settings_section_methods_hint">What triggers a switch</string>
+    <string name="settings_timed_switch">Timed switching</string>
+    <string name="settings_timed_switch_hint">Switch the wallpaper automatically at the set interval</string>
+    <string name="settings_switch_interval">Interval</string>
+    <string name="action_modify">Change</string>
+    <string name="settings_unlock_switch">Switch on unlock</string>
+    <string name="settings_unlock_switch_hint">Switch the wallpaper every time you unlock the screen</string>
+    <string name="settings_double_tap">Double-tap to switch</string>
+    <string name="settings_double_tap_hint">Double-tap the screen to switch (requires a live wallpaper)</string>
+    <string name="settings_floating_button">Floating switch button</string>
+    <string name="settings_floating_button_hint">One tap switches (some launchers do not forward double taps)</string>
+    <string name="settings_switch_fade">Switch transition</string>
+    <string name="settings_switch_fade_hint">Fade the new wallpaper in</string>
+    <string name="settings_video_sound">Play video sound</string>
+    <string name="settings_video_sound_hint">Play sound while the home screen is visible (muted elsewhere)</string>
+
+    <!-- Settings screen: lock screen -->
+    <string name="settings_section_lock">Lock screen switching (independent of the desktop)</string>
+    <string name="settings_lock_timer">Locked-screen timed switching</string>
+    <string name="settings_lock_timer_hint">Change the lock wallpaper on its own interval below</string>
+    <string name="settings_lock_interval">Lock switch interval</string>
+
+    <!-- Settings screen: folder scan -->
+    <string name="settings_section_scan">Folder auto-scan</string>
+    <string name="settings_auto_scan">Auto-scan folders</string>
+    <string name="settings_auto_scan_hint">Periodically add new media from imported folders</string>
+    <string name="settings_scan_interval">Scan interval</string>
+    <string name="settings_auto_scan_interval">Auto-scan interval</string>
+    <string name="settings_auto_scan_interval_hint">At most every ~15 min, as scheduled by the system</string>
+
+    <!-- Settings screen: floating button look -->
+    <string name="settings_section_button">Floating button</string>
+    <string name="settings_button_alpha">Transparency</string>
+    <string name="settings_button_alpha_hint">Lower values make the button more transparent (default 10%)</string>
+    <string name="settings_button_color">Button colour</string>
+    <string name="button_color_custom">Custom</string>
+    <string name="settings_button_text">Button text</string>
+    <string name="settings_button_text_custom">Custom text</string>
+    <string name="settings_button_text_slot">Text shown on the floating button</string>
+    <string name="settings_button_image">Custom image</string>
+    <string name="settings_button_image_hint">Pick a picture for the button (cropped to a circle; the text is hidden)</string>
+    <string name="settings_button_image_set">Set: the button shows the image, text hidden</string>
+    <string name="action_choose_image">Choose image</string>
+    <string name="action_replace_image">Replace image</string>
+    <string name="action_clear_image">Clear image</string>
+    <string name="button_color_blue">Blue</string>
+    <string name="button_color_green">Green</string>
+    <string name="button_color_red">Red</string>
+    <string name="button_color_orange">Orange</string>
+    <string name="button_color_purple">Purple</string>
+    <string name="button_color_cyan">Cyan</string>
+    <string name="button_color_pink">Pink</string>
+    <string name="button_color_white">White</string>
+    <string name="button_color_black">Black</string>
+
+    <!-- Settings screen: appearance -->
+    <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_theme_mode">Theme mode</string>
+    <string name="settings_theme_color">Theme colour</string>
+    <string name="theme_color_system">System default</string>
+
+    <!-- Settings screen: runtime log -->
+    <string name="settings_section_logs">Runtime log</string>
+    <string name="settings_export_logs">Export runtime log</string>
+    <string name="settings_export_logs_hint">Device info, settings and recent logs for troubleshooting</string>
+    <string name="action_exporting">Exporting…</string>
+    <string name="action_export_share">Export &amp; share</string>
+    <string name="action_clear_logs">Clear log</string>
+    <string name="action_save_to_phone">Save to phone</string>
+    <string name="log_share_subject">Wallpaper Switcher runtime log</string>
+    <string name="log_share_text">Wallpaper Switcher runtime log – please send it to the developer for analysis</string>
+    <string name="log_share_chooser">Share log</string>
+
+    <!-- Settings screen: guide / battery / about -->
+    <string name="settings_section_guide">Guide</string>
+    <string name="guide_title">How to use</string>
+    <string name="guide_step_1">1. Create a group, open it and tap “Add wallpaper” (multi-select or a whole folder).</string>
+    <string name="guide_step_2">2. Set “Apply to” at the top of the group: Home / Lock screen / Both.</string>
+    <string name="guide_step_3">3. Tapping a picture opens the system wallpaper screen; pick “Home screen” or “Home and lock screen” to apply.</string>
+    <string name="guide_step_4">4. Automatic switching: Settings → “Switching” for timed / double-tap / unlock / floating button; lock screen only: “Lock screen switching”.</string>
+    <string name="settings_section_power">Battery</string>
+    <string name="settings_power_hint">Uses coroutine scheduling; battery use is very low.</string>
+    <string name="settings_section_about">About</string>
+    <string name="about_version">Wallpaper Switcher v1.1</string>
+    <string name="about_desc">A lightweight automatic wallpaper switcher with group management and several switch modes.</string>
+
+    <!-- Durations / dialog actions -->
+    <string name="duration_10s">10 seconds</string>
+    <string name="duration_30s">30 seconds</string>
+    <string name="duration_1m">1 minute</string>
+    <string name="duration_5m">5 minutes</string>
+    <string name="duration_15m">15 minutes</string>
+    <string name="duration_30m">30 minutes</string>
+    <string name="duration_1h">1 hour</string>
+    <string name="duration_2h">2 hours</string>
+    <string name="duration_6h">6 hours</string>
+    <string name="duration_12h">12 hours</string>
+    <string name="duration_24h">24 hours</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_ok">OK</string>
+    <string name="interval_custom">Custom time</string>
+    <string name="interval_seconds_label">Seconds</string>
+    <string name="interval_seconds_hint">e.g. 45</string>
+    <string name="interval_min_10s">At least 10 seconds</string>
+    <!-- Target -->
+    <string name="target_home">Home screen</string>
+    <string name="target_lock">Lock screen</string>
+    <string name="target_both">Home and lock screen</string>
+    <string name="target_both_short">Both</string>
+    <!-- Home -->
+    <string name="home_engine_warning">Engine not running: double-tap and video effects are off; timed switching still works. Pick this app in the system wallpaper settings.</string>
+    <string name="home_no_home_group_warning">No group targets the home screen, so it shows a placeholder. Set a group to “Home screen” or “Both”.</string>
+    <string name="home_groups_title">Wallpaper groups</string>
+    <string name="cd_select_groups">Select groups</string>
+    <string name="cd_select_sources">Select subscriptions</string>
+    <string name="dialog_delete_sources_message">Delete the %1$d selected subscriptions? Pictures already added to groups are kept.</string>
+    <string name="action_new_group">New group</string>
+    <string name="home_status_home_lock">Home + lock screen running</string>
+    <string name="home_status_home">Home screen running</string>
+    <string name="home_status_lock">Lock screen running</string>
+    <string name="home_status_stopped">Stopped</string>
+    <string name="home_hint_running">Switching automatically — tap below to change now</string>
+    <string name="home_hint_lock_only">Lock screen timer only (home off)</string>
+    <string name="home_hint_stopped">Turn it on to rotate wallpapers</string>
+    <string name="action_switch_now">Switch now</string>
+    <string name="group_no_media">No media yet — tap to add</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_enable">Enable</string>
+    <string name="action_create">Create</string>
+    <string name="selection_exit">Exit selection</string>
+    <string name="selection_all">Select all</string>
+    <string name="selection_none">Deselect all</string>
+    <string name="selection_count">%1$d/%2$d selected</string>
+    <string name="dialog_delete_groups_title">Delete groups</string>
+    <string name="dialog_delete_groups_message">Delete the selected %1$d groups? Their media entries will be removed too (the photo/video files on your phone are not deleted).</string>
+    <string name="empty_groups_title">No wallpaper groups yet</string>
+    <string name="empty_groups_hint">Tap “New group” to start adding wallpapers</string>
+    <string name="dialog_new_group_title">New wallpaper group</string>
+    <string name="label_group_name">Group name</string>
+    <string name="new_group_note">A group can mix photos and videos</string>
+    <!-- Group detail -->
+    <string name="item_untitled">Untitled</string>
+    <string name="action_add_wallpaper">Add wallpapers</string>
+    <string name="action_batch_ops">Batch</string>
+    <string name="action_clean_broken">Clean broken</string>
+    <string name="action_cleaning">Cleaning…</string>
+    <string name="toast_no_broken_media">No broken media</string>
+    <string name="state_loading">Loading…</string>
+    <string name="permission_scan_denied">Storage permission is required to scan device folders. Enable it in system settings and try again.</string>
+    <string name="dialog_clean_broken_title">Clean broken media</string>
+    <string name="dialog_clean_broken_message">%1$d unreadable items found (the files may have been deleted or moved). Remove them from this group?</string>
+    <string name="toast_broken_deleted">Removed %1$d broken items</string>
+    <string name="group_loaded_count"> (%1$d loaded)</string>
+    <string name="label_target">Applies to</string>
+    <string name="action_rename">Rename</string>
+    <string name="action_save">Save</string>
+    <string name="dialog_delete_group_title">Delete group</string>
+    <string name="dialog_delete_group_message">Delete “%1$s” and all of its wallpapers? This cannot be undone.</string>
+    <string name="dialog_rename_group_title">Rename group</string>
+    <string name="cd_exit_selection">Exit selection</string>
+    <string name="action_delete_selected">Delete selected</string>
+    <string name="media_type_video">Video</string>
+    <string name="cd_more">More</string>
+    <string name="menu_set_as_wallpaper">Set as wallpaper</string>
+    <string name="empty_images_title">No wallpapers yet</string>
+    <string name="empty_images_hint">Tap “Add wallpapers” to start</string>
+    <string name="dialog_add_wallpaper_title">Add wallpapers</string>
+    <string name="action_pick_single">Pick one photo/video</string>
+    <string name="action_pick_multiple">Pick multiple photos/videos</string>
+    <string name="action_scan_folders">Scanned folders (multi-select)</string>
+    <string name="action_add_from_folder">Add from a folder</string>
+    <string name="toast_scan_empty">Scan finished: no folders found (make sure photo/video access is granted)</string>
+    <string name="toast_scan_added">Scan finished: %1$d folders / %2$d items (%3$d new folders)</string>
+    <string name="toast_scan_no_change">Scan finished: %1$d folders / %2$d items (nothing new)</string>
+    <string name="toast_scan_failed">Scan failed: %1$s</string>
+    <string name="title_select_folders">Select folders</string>
+    <string name="hint_search_folder">Search folder name or path</string>
+    <string name="cd_clear">Clear</string>
+    <string name="state_rescanning">Rescanning… (please wait)</string>
+    <string name="folder_selected_count"> · %1$d selected</string>
+    <string name="action_rescan">Rescan</string>
+    <string name="action_scanning">Scanning…</string>
+    <string name="sort_media_first">Most items</string>
+    <string name="sort_name">By name</string>
+    <string name="sort_time">By date</string>
+    <string name="state_scanning_folders">Scanning folders…</string>
+    <string name="folder_empty_scan">No folders with photos or videos were found</string>
+    <string name="folder_empty_filter">No matching folders</string>
+    <string name="folder_media_summary">%1$d photos · %2$d videos</string>
+    <string name="action_import_selected">Import selected (%1$d)</string>
+    <string name="dialog_set_wallpaper_title">Set as wallpaper</string>
+    <string name="set_wallpaper_video">Set this video as the wallpaper</string>
+    <string name="set_wallpaper_gif">Set this GIF as the wallpaper</string>
+    <string name="set_wallpaper_image">Set this photo as the wallpaper</string>
+    <!-- Runtime messages (toasts / hint bubble) -->
+    <string name="toast_save_failed">Could not save: %1$s</string>
+    <string name="toast_load_images_failed">Could not load media: %1$s</string>
+    <string name="toast_service_start_failed">Could not start the service: %1$s</string>
+    <string name="toast_create_group_failed">Could not create the group: %1$s</string>
+    <string name="toast_media_already_in_group">That item is already in this group</string>
+    <string name="toast_added_media">Added %1$d items</string>
+    <string name="toast_added_media_skipped">Added %1$d items (%2$d duplicates skipped)</string>
+    <string name="toast_folder_media_present">Everything in that folder is already in this group</string>
+    <string name="toast_no_media_found">No media found</string>
+    <string name="toast_import_failed">Import failed: %1$s</string>
+    <string name="toast_group_disabled">This group is off — turn it on first</string>
+    <string name="toast_lock_no_motion">Lock screens do not support video/GIF — skipped</string>
+    <string name="toast_wallpaper_busy">The system is writing the wallpaper, try again shortly</string>
+    <string name="toast_wallpaper_unreadable">Failed: this media file cannot be read</string>
+    <string name="toast_wallpaper_set">Set as the %1$s wallpaper</string>
+    <string name="toast_set_failed">Failed: %1$s</string>
+    <string name="toast_importing_folders">Importing from %1$d folders…</string>
+    <string name="toast_imported_media">Imported %1$d items</string>
+    <string name="toast_no_new_media">The selected folders had no new media</string>
+    <string name="scan_progress_checking">Checking %1$d/%2$d</string>
+    <string name="scan_progress_querying">Querying…</string>
+    <string name="scan_progress_querying_media">Querying — %1$d items</string>
+    <string name="hint_pick_both">Choose “Home screen and lock screen”</string>
+    <string name="hint_pick_home">Choose “Home screen” (this group is used on the home screen only)</string>
+    <string name="hint_pick_lock">Just tap “Set wallpaper” — the lock screen will show this group’s image automatically</string>
+    <!-- Colour picker -->
+    <string name="color_alpha">Opacity %1$d%%</string>
+    <!-- Durations / relative time -->
+    <string name="interval_seconds">%1$ds</string>
+    <string name="interval_minutes">%1$d min</string>
+    <string name="interval_hours">%1$dh</string>
+    <string name="interval_days">%1$dd</string>
+    <string name="interval_minutes_short"> %1$dm</string>
+    <string name="interval_hours_short"> %1$dh</string>
+    <string name="ago_never">Never</string>
+    <string name="ago_just_now">Just now</string>
+    <string name="ago_minutes">%1$d min ago</string>
+    <string name="ago_hours">%1$d h ago</string>
+    <string name="ago_days">%1$d d ago</string>
+    <string name="settings_auto_scan_last_run"> (last scan: %1$s)</string>
+    <string name="settings_button_text_hint">Up to 4 characters; leave it empty to restore “%1$s”</string>
+    <string name="settings_button_image_only">Custom image set — the button shows the image only</string>
+    <!-- Log export messages -->
+    <string name="toast_log_empty">The log is empty — export it again</string>
+    <string name="toast_log_no_write">Could not save: the chosen location is not writable</string>
+    <string name="toast_log_saved">Log saved (%1$d KB)</string>
+    <string name="toast_log_export_failed">Export failed: %1$s</string>
+    <string name="toast_log_build_failed">Could not build the log: %1$s</string>
+    <string name="toast_log_cleared">Log cleared</string>
+    <string name="toast_log_share_failed">Sharing failed — log file: %1$s</string>
+    <string name="toast_media_all_present">Those items are already in this group</string>
+    <string name="toast_no_addable_media">Nothing to add — no photos or videos</string>
+    <string name="hint_unlock_static_mode">Unlock switching is on: in static mode it swaps the still image (no animation)</string>
+    <string name="hint_motion_needs_engine">Video/GIF need a live wallpaper — pick this app in the system live wallpaper settings</string>
+    <string name="home_permission_warning">The imported photos/videos cannot be read without the “Photos and videos” permission. Grant it and try again.</string>
+    <string name="action_grant_permission">Grant</string>
+    <string name="settings_logs_privacy_note">Logs include your device model and folder names — share carefully</string>
+    <!-- Counts need plurals: a plain string renders "1 groups". -->
+    <plurals name="home_groups_count">
+        <item quantity="one">%1$d group</item>
+        <item quantity="other">%1$d groups</item>
+    </plurals>
+    <plurals name="group_media_count">
+        <item quantity="one">%1$d item · %2$s</item>
+        <item quantity="other">%1$d items · %2$s</item>
+    </plurals>
+    <plurals name="group_image_count">
+        <item quantity="one">%1$d item</item>
+        <item quantity="other">%1$d items</item>
+    </plurals>
+    <plurals name="folder_count">
+        <item quantity="one">%1$d folder</item>
+        <item quantity="other">%1$d folders</item>
+    </plurals>
+    <!-- Per-group rhythm (interval / mode / time window) -->
+    <string name="group_option_follow_global">Follow global</string>
+    <string name="group_interval_label">Interval</string>
+    <string name="group_window_label">Time window</string>
+    <string name="group_window_all_day">All day</string>
+    <string name="group_window_from">From</string>
+    <string name="group_window_to">To</string>
+    <string name="group_window_hint">24-hour format, e.g. 22:00 (may cross midnight)</string>
+    <!-- Snooze (switch later) -->
+    <string name="home_pause_button">Pause</string>
+    <string name="pause_dialog_title">Switch later</string>
+    <string name="pause_15m">15 minutes</string>
+    <string name="pause_30m">30 minutes</string>
+    <string name="pause_1h">1 hour</string>
+    <string name="pause_2h">2 hours</string>
+    <string name="pause_until_morning">Until 8 AM tomorrow</string>
+    <string name="pause_resume_now">Resume now</string>
+    <string name="pause_active_until">Paused until %1$s</string>
+    <!-- Next-wallpaper preview -->
+    <string name="home_preview_button">Preview next</string>
+    <string name="preview_title">Next wallpaper</string>
+    <string name="preview_apply">Set as wallpaper</string>
+    <string name="preview_empty">Nothing to preview</string>
+    <string name="preview_loading">Preparing preview…</string>
+    <!-- Quick settings tile and home-screen widget -->
+    <string name="tile_switch_label">Switch wallpaper</string>
+    <string name="tile_pause_label">Pause switching</string>
+    <string name="tile_resume_label">Resume switching</string>
+    <string name="tile_paused_toast">Wallpaper switching paused</string>
+    <string name="tile_resumed_toast">Wallpaper switching resumed</string>
+    <string name="widget_switch">Switch</string>
+    <string name="widget_pause">Pause</string>
+    <string name="widget_resume">Resume</string>
+    <!-- Scene rules -->
+    <string name="settings_scene_rules">Scene rules</string>
+    <string name="settings_scene_power_save">Pause switching in battery saver</string>
+    <string name="settings_scene_low_battery" formatted="false">Pause switching below 15% battery</string>
+    <string name="settings_scene_hint">No switches while held; resuming catches up immediately</string>
+    <!-- Transition -->
+    <string name="settings_transition">Transition</string>
+    <string name="settings_transition_hint">Transition effect, also used for a video first-frame fade</string>
+    <string name="transition_fade">Fade</string>
+    <string name="transition_slide">Slide</string>
+    <string name="transition_zoom">Zoom</string>
+    <string name="transition_none">None</string>
+    <!-- Config export / import -->
+    <string name="settings_config_backup">Config export / import</string>
+    <string name="settings_export_config">Export config</string>
+    <string name="settings_import_config">Import config</string>
+    <string name="settings_config_hint">Exports groups, intervals, modes and global settings (media files are not included)</string>
+    <string name="toast_config_exported">Config exported</string>
+    <string name="toast_config_export_failed">Export failed: %1$s</string>
+    <string name="toast_config_imported">Imported %1$d groups and %2$d subscriptions</string>
+    <string name="toast_config_import_failed">Import failed: %1$s</string>
+    <!-- Batch disable / custom snooze -->
+    <string name="action_disable">Disable</string>
+    <string name="pause_custom_title">Custom</string>
+    <string name="pause_custom_minutes">Minutes</string>
+    <string name="pause_custom_hint">1–%1$d minutes (max 7 days)</string>
+    <!-- Time rules · weekdays -->
+    <string name="group_days_label">Days</string>
+    <string name="group_days_every_day">Every day</string>
+    <string name="group_days_weekend">Weekends</string>
+    <string name="group_days_weekdays">Weekdays</string>
+    <!-- Per-group media type -->
+    <string name="group_media_label">Media</string>
+    <string name="group_media_both">Images and videos</string>
+    <string name="group_media_image">Images only</string>
+    <string name="group_media_video">Videos only</string>
+    <string name="group_media_hint">This group only switches the selected media type (GIFs count as videos)</string>
+    <string name="day_mon">M</string>
+    <string name="day_tue">T</string>
+    <string name="day_wed">W</string>
+    <string name="day_thu">T</string>
+    <string name="day_fri">F</string>
+    <string name="day_sat">S</string>
+    <string name="day_sun">S</string>
+    <!-- Follow dark mode -->
+    <string name="group_theme_label">Theme</string>
+    <string name="group_theme_any">Any</string>
+    <string name="group_theme_hint">Follows the phone\'s light/dark mode to decide whether this group joins the rotation</string>
+    <!-- Finish videos / favourites / recent repeats -->
+    <string name="settings_video_play_to_end">Finish videos first</string>
+    <string name="settings_video_play_to_end_hint">Timed switches wait for the video to finish; manual taps are not affected</string>
+    <string name="settings_favorite_boost">Favour favourites</string>
+    <string name="settings_favorite_boost_hint">Favourited media appears more often in random / shuffle</string>
+    <string name="settings_recent_no_repeat">Avoid recent repeats</string>
+    <string name="settings_recent_no_repeat_hint">Random mode will not immediately repeat the last few pictures</string>
+    <string name="recent_no_repeat_off">Off</string>
+    <string name="media_favorite_add">Add to favourites</string>
+    <string name="media_favorite_remove">Remove from favourites</string>
+    <string name="media_favorite_badge">Favourite</string>
+    <!-- Group filter / order -->
+    <string name="group_filter_label">Filter</string>
+    <string name="group_filter_all">All</string>
+    <string name="group_filter_image">Images only</string>
+    <string name="group_filter_motion">Videos / GIFs only</string>
+    <string name="group_filter_favorite">Favourites only</string>
+    <string name="group_sort_label">Order</string>
+    <string name="group_sort_added">Order added</string>
+    <string name="group_sort_newest">Newest first</string>
+    <!-- Widget -->
+    <string name="widget_next_in">Next switch</string>
+    <string name="widget_current_unknown">Unknown</string>
+    <!-- Runtime status -->
+    <!-- Online wallpaper sources (Bing daily / direct URL / WebDAV) -->
+    <string name="online_auto_group_name">Online wallpapers</string>
+    <string name="settings_section_online">Online sources</string>
+    <string name="settings_online_sources">Online sources</string>
+    <string name="settings_online_sources_desc">Bing daily / URL / WebDAV, fetched into a group on a schedule</string>
+    <string name="title_online_sources">Online sources</string>
+    <string name="online_add">Add source</string>
+    <string name="online_empty">No online source yet. Tap the button below to add one.</string>
+    <string name="online_type_bing">Bing daily image</string>
+    <string name="online_type_url">Direct URL</string>
+    <string name="online_type_meirentu">Meirentu (meirentu.club)</string>
+    <string name="online_type_webdav">WebDAV folder</string>
+    <string name="online_dialog_add_title">Add online source</string>
+    <string name="online_dialog_edit_title">Edit online source</string>
+    <string name="online_label_name">Name (optional)</string>
+    <string name="online_label_target_group">Fetch into group</string>
+    <string name="online_group_auto">Auto-create \"Online wallpapers\"</string>
+    <string name="online_label_interval">Update interval</string>
+    <string name="online_label_url">Image URL</string>
+    <string name="online_label_webdav_url">WebDAV URL</string>
+    <string name="online_label_webdav_path">Subfolder (optional)</string>
+    <string name="online_label_username">Username (optional)</string>
+    <string name="online_label_password">Password (optional)</string>
+    <string name="online_password_keep">Leave empty to keep the current one</string>
+    <string name="online_label_keep_count">Keep at most</string>
+    <string name="online_keep_count_desc">Older images are deleted automatically; 0 = unlimited</string>
+    <string name="online_keep_unlimited">Unlimited</string>
+    <string name="online_wifi_only">Only on Wi-Fi</string>
+    <string name="online_charging_only">Only while charging</string>
+    <string name="online_privacy_note">Only the addresses you enter are contacted; credentials are encrypted on this device; public addresses must use HTTPS.</string>
+    <string name="online_action_refresh">Update now</string>
+    <string name="online_never_updated">Never updated</string>
+    <string name="online_last_update">Last update</string>
+    <string name="online_status_ok">Updated: %1$d new</string>
+    <string name="online_status_ok_none">Updated: nothing new</string>
+    <string name="online_status_error">Update failed: %1$s</string>
+    <string name="online_delete_title">Delete online source</string>
+    <string name="online_delete_message">This also deletes the downloaded images and files. Delete \"%1$s\"?</string>
+    <string name="online_saved">Saved</string>
+    <string name="online_refresh_started">Update started</string>
+    <string name="online_url_hint">https://example.com/latest.jpg</string>
+    <string name="online_webdav_hint">https://nas.example.com/dav/photos</string>
+    <string name="online_meirentu_hint">https://meirentu.club/</string>
+    <string name="online_meirentu_note">Scrapes the first 2 pages of the newest albums (up to 8 images per run)</string>
+    <string name="online_meirentu_select">Select images</string>
+    <string name="online_meirentu_selected">%1$d selected</string>
+    <string name="online_meirentu_auto_mode">Auto-scrape the newest albums</string>
+    <string name="online_meirentu_manual_mode">Only the %1$d selected images</string>
+    <string name="online_meirentu_clear">Clear selection</string>
+    <string name="online_meirentu_pages">Pages per album</string>
+    <string name="online_max_per_run">Max per run</string>
+    <string name="online_picker_title">Pick Meirentu images</string>
+    <string name="online_picker_albums">Album</string>
+    <string name="online_picker_load_more">Load more</string>
+    <string name="online_picker_no_more">No more</string>
+    <string name="online_picker_select_page">Select page</string>
+    <string name="online_picker_loading">Loading…</string>
+    <string name="online_picker_failed">Load failed: %1$s</string>
+    <string name="online_picker_done">Done</string>
+    <!-- Reading subscriptions (Legado-compatible) -->
+    <string name="title_subscriptions">Subscriptions</string>
+    <string name="nav_subscriptions">Subscriptions</string>
+    <string name="rss_empty">No subscription yet. Tap the button below, or import your 阅读 (Legado) sources.</string>
+    <string name="rss_add">Add subscription</string>
+    <string name="rss_import_legado">Import 阅读 (Legado) sources</string>
+    <string name="rss_delete_title">Delete subscription</string>
+    <string name="rss_delete_message">Delete \"%1$s\" and its downloaded articles?</string>
+    <string name="rss_last_update">Last update</string>
+    <string name="rss_open">Read</string>
+    <string name="rss_name">Name (optional)</string>
+    <string name="rss_url">Feed URL (RSS/Atom)</string>
+    <string name="rss_url_hint">https://example.com/feed.xml</string>
+    <string name="rss_import_title">Import 阅读 sources</string>
+    <string name="rss_import_hint">Paste a source JSON, a legado:// link or a subscription URL, or pick a .json file.</string>
+    <string name="rss_import_paste">Source content</string>
+    <string name="rss_import_file">Pick a JSON file</string>
+    <string name="rss_import_action">Import</string>
+    <string name="rss_no_articles">Nothing in this category yet. Tap a category above to reload.</string>
+    <string name="rss_loading_category">Loading \"%1$s\"…</string>
+    <string name="rss_edit_all_fields">Other fields (source JSON)</string>
+    <string name="rss_edit_all_fields_hint">Mirrors the 阅读 source JSON: clearing a value removes the field, tap Save to apply.</string>
+    <string name="rss_edit_field_key">Field name</string>
+    <string name="rss_edit_add_field">Add field</string>
+    <string name="settings_rss_download_dir">Subscription download folder</string>
+    <string name="settings_rss_download_dir_default">App-private folder (default, hidden from gallery)</string>
+    <string name="settings_rss_download_dir_reset">Use default</string>
+    <string name="settings_rss_download_dir_saved">Folder updated: new imports go there</string>
+    <string name="settings_rss_download_dir_reset_done">Back to the app-private folder</string>
+    <string name="rss_article">Article</string>
+    <string name="rss_open_original">Open original</string>
+    <string name="rss_open_in_browser">Open in browser</string>
+    <string name="rss_status_ok">Updated: %1$d new</string>
+    <string name="rss_browse_source">Web page source · tap to open in the browser</string>
+    <string name="rss_saved">Saved</string>
+    <string name="rss_refresh_done">Refreshed: %1$d new</string>
+    <string name="rss_refresh_failed">Refresh failed: %1$s</string>
+    <string name="rss_refresh_started">Refreshing all subscriptions</string>
+    <string name="rss_import_failed">Import failed, please check the content format</string>
+    <string name="rss_import_done">Imported %1$d sources (%2$d skipped)</string>
+    <string name="rss_refresh_all">Refresh all</string>
+    <string name="rss_article_images">Article images (%1$d)</string>
+    <string name="rss_select_all">Select all</string>
+    <string name="rss_clear_selection">Clear</string>
+    <string name="rss_add_to_group_count">Add to group (%1$d)</string>
+    <string name="rss_add_to_group_done">Added %1$d images to the group</string>
+    <string name="rss_add_to_group_partial">Added %1$d, %2$d failed</string>
+    <string name="rss_content_loading">Loading article…</string>
+    <string name="rss_content_empty">No article text available</string>
+    <string name="rss_pick_group">Pick a group</string>
+    <string name="rss_login">Sign in</string>
+    <string name="rss_login_title">Sign in to the source</string>
+    <string name="rss_login_hint">Sign in on the page below, then tap “Done”. The session is stored on this device and used for later fetches.</string>
+    <string name="rss_login_finish">Done</string>
+    <string name="rss_login_form_hint">Fill in the account details below and tap “Sign in”. This source signs in with a script; the session is stored on this device.</string>
+    <string name="rss_login_submit">Sign in</string>
+    <string name="rss_login_done">Signed in, refreshing…</string>
+    <string name="online_error_unknown">Unknown error</string>
+    <string name="online_error_network">Network unavailable</string>
+    <string name="online_error_timeout">Connection timed out</string>
+    <string name="online_error_ssl">Certificate check failed</string>
+    <string name="online_error_auth">Wrong username or password</string>
+    <string name="online_error_forbidden">Access denied</string>
+    <string name="online_error_not_found">Address not found</string>
+    <string name="online_error_rate_limited">Too many requests</string>
+    <string name="online_error_server">Server error</string>
+    <string name="online_error_https_required">Public addresses must use HTTPS</string>
+    <string name="online_error_bad_url">Invalid address</string>
+    <string name="online_error_parse">Could not parse the response</string>
+    <string name="online_error_unsupported_js">Could not obtain this source&#8217;s JS rules (jsLib download or script failed)</string>
+    <string name="online_error_not_image">The response is not an image</string>
+    <string name="online_error_too_large">File is larger than 40MB</string>
+    <string name="online_error_empty">File is empty</string>
+    <string name="online_error_storage">Could not save</string>
+    <string name="online_error_missing">Source not found</string>
+    <string name="online_error_disabled">Disabled</string>
+    <string name="online_error_http">Server returned an error</string>
+    <string name="rss_edit">Edit</string>
+    <string name="rss_edit_title">Edit subscription</string>
+    <string name="rss_edit_basic">Basics</string>
+    <string name="rss_edit_name">Name</string>
+    <string name="rss_edit_url">URL</string>
+    <string name="rss_edit_url_invalid">The URL must start with http:// or https://</string>
+    <string name="rss_edit_group">Group</string>
+    <string name="rss_edit_type">Type</string>
+    <string name="rss_edit_type_web">Web page</string>
+    <string name="rss_edit_type_image">Images</string>
+    <string name="rss_edit_type_video">Video</string>
+    <string name="rss_edit_enabled">Enabled</string>
+    <string name="rss_edit_cookie_jar">Keep a cookie session (CookieJar)</string>
+    <string name="rss_edit_rules">List &amp; content rules</string>
+    <string name="rss_edit_sort_url">Category list (sortUrl)</string>
+    <string name="rss_edit_rule_articles">List rule (ruleArticles)</string>
+    <string name="rss_edit_rule_next">Next-page rule (ruleNextPage)</string>
+    <string name="rss_edit_rule_title">Title rule (ruleTitle)</string>
+    <string name="rss_edit_rule_link">Link rule (ruleLink)</string>
+    <string name="rss_edit_rule_image">Image rule (ruleImage)</string>
+    <string name="rss_edit_rule_description">Description rule (ruleDescription)</string>
+    <string name="rss_edit_rule_pubdate">Date rule (rulePubDate)</string>
+    <string name="rss_edit_rule_content">Content rule (ruleContent)</string>
+    <string name="rss_edit_login">Sign-in</string>
+    <string name="rss_edit_login_url">Sign-in URL or script (loginUrl)</string>
+    <string name="rss_edit_login_ui">Sign-in form (loginUi)</string>
+    <string name="rss_edit_login_check">Sign-in check script (loginCheckJs)</string>
+    <string name="rss_edit_other">Other</string>
+    <string name="rss_edit_js_lib">JS library (jsLib)</string>
+    <string name="rss_edit_variable">Custom variables (variable)</string>
+    <string name="rss_edit_header">Request headers (header, JSON)</string>
+    <string name="rss_edit_raw_mode">Edit raw JSON</string>
+    <string name="rss_edit_raw">Raw JSON</string>
+    <string name="rss_edit_raw_invalid">Invalid JSON</string>
+    <string name="rss_edit_save">Save</string>
+    <string name="rss_edit_saved">Saved</string>
+    <string name="rss_edit_save_failed">Save failed</string>
+    <string name="rss_proxy">Proxy</string>
+    <string name="rss_proxy_hint">Some sites need a proxy. Leave it empty for a direct connection (e.g. 127.0.0.1:7890, socks5:// works too).</string>
+    <string name="rss_proxy_value">Proxy address (host:port)</string>
+    <string name="rss_proxy_clear">Clear</string>
+    <string name="rss_proxy_saved">Proxy saved</string>
+    <string name="rss_proxy_cleared">Direct connection restored</string>
+    <string name="rss_load_more">Load more</string>
+    <string name="rss_no_more">No more items</string>
+    <string name="rss_images_loading">Loading images…</string>
+    <string name="rss_categories">Categories</string>
+    <string name="rss_web_mode">Browser</string>
+    <string name="rss_web_collected">%1$d images collected</string>
+    <string name="rss_web_use">Use these images</string>
+    <string name="rss_add_video_group">Add video to group</string>
+    <string name="rss_reload">Reload</string>
+    <string name="rss_play_external">System player</string>
+    <string name="rss_video_title">Video</string>
+    <string name="rss_video_loading">Loading video…</string>
+    <string name="rss_video_failed">Video is not playable right now (the link may have expired)</string>
+    <string name="rss_video_save">Add to group</string>
+    <string name="browse_title">Browse</string>
+    <string name="browse_hint">Swipe up for next · double-tap to favourite · long-press to delete · swipe sideways for the next group</string>
+    <string name="browse_no_media">This group has no media yet</string>
+    <string name="browse_favorited">Added to favourites</string>
+    <string name="browse_unfavorited">Removed from favourites</string>
+    <string name="browse_deleted">Deleted</string>
+    <string name="browse_delete_title">Delete this from the group?</string>
+    <string name="browse_set_home">Set as home</string>
+    <string name="browse_set_lock">Set as lock screen</string>
+    <string name="favorites_title">Favourites</string>
+    <string name="favorites_empty">No favourites yet — double-tap one in Browse</string>
+    <string name="recent_title">Recently shown</string>
+    <string name="recent_empty">Nothing yet — switch a few wallpapers and they show up here</string>
+    <string name="recent_slot_home">Home</string>
+    <string name="recent_slot_lock">Lock screen</string>
+    <string name="recent_push">Show again now</string>
+    <string name="recent_pushed">Shown again</string>
+    <string name="preview_nothing">Nothing to preview</string>
+    <string name="browse_entry">Browse</string>
+    <string name="storage_title">Storage &amp; data</string>
+    <string name="storage_total">%1$s used by the app</string>
+    <string name="storage_rss">Subscription downloads</string>
+    <string name="storage_files">%1$d files</string>
+    <string name="storage_orphan_hint">%1$s of it is no longer referenced (left over after deleting media or switching sources) and can be cleaned</string>
+    <string name="storage_nothing_orphan">Nothing to clean</string>
+    <string name="storage_clean">Clean leftovers</string>
+    <string name="storage_cleaned">Cleaned %1$d files, freed %2$s</string>
+    <string name="storage_refresh">Recalculate</string>
+    <string name="storage_scanning">Calculating…</string>
+    <string name="browse_set_live">Set as live wallpaper</string>
+    <string name="settings_page_wallpaper">Wallpaper</string>
+    <string name="settings_page_switch">Switching</string>
+    <string name="settings_page_scan">Folder scan</string>
+    <string name="settings_page_button">Floating button</string>
+    <string name="settings_page_appearance">Appearance</string>
+    <string name="settings_page_wallpaper_desc">Mode, scale, clarity, rotation fit</string>
+    <string name="settings_page_switch_desc">Timer, unlock, double-tap, transition, video</string>
+    <string name="settings_page_scan_desc">Add new media from imported folders automatically</string>
+    <string name="settings_page_button_desc">Toggle, look, colour, text and image</string>
+    <string name="settings_page_appearance_desc">Language, theme mode and colour</string>
+    <string name="option_panel_title">Choose</string>
+    <string name="option_default">Default</string>
+    <string name="color_picker_title">Pick a colour</string>
+    <string name="color_hex">Hex</string>
+</resources>
+
+
+
+
+
+
+
+
+
+

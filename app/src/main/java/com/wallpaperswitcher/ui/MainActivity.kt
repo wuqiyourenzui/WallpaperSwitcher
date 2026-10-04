@@ -19,6 +19,16 @@ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 
 class MainActivity : ComponentActivity() {
 
+    /**
+     * Apply the chosen UI language to this Activity's resources (see [AppLocale]).
+     * A language change recreates the Activity, so this runs again with the new
+     * tag - no CompositionLocal overrides, which is what broke
+     * `rememberLauncherForActivityResult` (see AppLocale's doc).
+     */
+    override fun attachBaseContext(newBase: android.content.Context) {
+        super.attachBaseContext(AppLocale.wrap(newBase))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -52,6 +62,8 @@ class MainActivity : ComponentActivity() {
             // right on top of it.
             // "system" follows the phone, "light"/"dark" force one mode (see
             // ThemeMode). Anything else falls back to following the system.
+            // Language first: everything inside (including the theme's own
+            // string lookups) resolves against the chosen locale.
             WallpaperSwitcherTheme(
                 darkTheme = ThemeMode.from(themeMode).isDark(),
                 themeColorHex = themeColor

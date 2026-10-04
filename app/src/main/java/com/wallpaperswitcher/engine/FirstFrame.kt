@@ -38,22 +38,50 @@ object FirstFrame {
         return try {
             retriever = android.media.MediaMetadataRetriever()
             retriever.setDataSource(context, Uri.parse(uriStr))
-            val frame = if (positionUs > 0L) {
-                retriever.getFrameAtTime(
-                    positionUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                )
-            } else {
-                retriever.getFrameAtTime(
-                    0L, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                )
-                    ?: retriever.getFrameAtTime(
-                        1_000_000L, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
-                    )
-                    ?: retriever.frameAtTime
-            } ?: return null
             val metrics = BitmapUtils.getScreenMetrics(context)
             val screenMax = maxOf(metrics.widthPixels, metrics.heightPixels)
             val cap = minOf(screenMax, 3200).coerceAtLeast(1920)
+            // API 27+ can scale DURING extraction. A 4K/8K video frame is ~33MB of
+            // ARGB at full size and is then thrown away by the downscale below, so
+            // ask for the small one when the coded size is known (a low-memory
+            // device could otherwise OOM on a single 8K frame).
+            val codedW = retriever
+                .extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                ?.toIntOrNull() ?: 0
+            val codedH = retriever
+                .extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                ?.toIntOrNull() ?: 0
+            val codedMax = maxOf(codedW, codedH)
+            val scaledRequest = if (
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1 &&
+                codedMax > cap && codedW > 0 && codedH > 0
+            ) {
+                val scale = cap.toFloat() / codedMax
+                (codedW * scale).toInt().coerceAtLeast(1) to
+                    (codedH * scale).toInt().coerceAtLeast(1)
+            } else {
+                null
+            }
+            // Same landmarks as before: the requested position, else the file's
+            // first frame, else one second in (some containers have no frame at 0).
+            fun frameAt(timeUs: Long): Bitmap? = scaledRequest?.let { (w, h) ->
+                try {
+                    retriever!!.getScaledFrameAtTime(
+                        timeUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, w, h
+                    )
+                } catch (_: Throwable) {
+                    // Any retriever that dislikes the scaled call falls back to the
+                    // full-size one below.
+                    null
+                }
+            } ?: retriever!!.getFrameAtTime(
+                timeUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC
+            )
+            val frame = if (positionUs > 0L) {
+                frameAt(positionUs)
+            } else {
+                frameAt(0L) ?: frameAt(1_000_000L) ?: retriever.frameAtTime
+            } ?: return null
             val maxDim = maxOf(frame.width, frame.height)
             var result = if (maxDim > cap) {
                 val scale = cap.toFloat() / maxDim

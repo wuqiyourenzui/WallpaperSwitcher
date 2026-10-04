@@ -1,9 +1,17 @@
 package com.wallpaperswitcher.ui.screens
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -20,27 +28,43 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.delay
+import com.wallpaperswitcher.R
 import com.wallpaperswitcher.data.WallpaperGroup
 import com.wallpaperswitcher.engine.WallpaperTarget
+import com.wallpaperswitcher.engine.MediaProbe
+import com.wallpaperswitcher.util.AppLog
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 import com.wallpaperswitcher.wallpaper.LiveWallpaperService
+import com.wallpaperswitcher.ui.theme.HiEmptyState
+import com.wallpaperswitcher.ui.theme.HiLoadingHint
+import com.wallpaperswitcher.ui.theme.HiMotion
 import com.wallpaperswitcher.ui.theme.LocalAccentColor
 
 /** How often the home screen re-checks whether the live wallpaper engine is alive. */
 private const val ENGINE_STATE_POLL_MS = 5_000L
 
+/** Upper bound of the custom 暂停 duration, in minutes (7 days). */
+private const val MAX_SNOOZE_MINUTES = 7L * 24 * 60
+
 @Composable
 fun HomeScreen(
     viewModel: WallpaperViewModel,
-    onGroupClick: (Long) -> Unit
+    onGroupClick: (Long) -> Unit,
+    /** 卡片上的「浏览」小按钮：进大图预览（点卡片仍然是进分组网格）。 */
+    onGroupBrowse: (Long) -> Unit = {},
 ) {
     // Single combined state: entering the home screen subscribes to ONE flow
     // and recomposes once, instead of once per Room-backed flow (the media
@@ -51,6 +75,20 @@ fun HomeScreen(
     val mediaCounts = homeUiState.mediaCounts
     val serviceEnabled = homeUiState.serviceEnabled
     val lockTimerEnabled = homeUiState.lockTimerEnabled
+    // 一键暂停 state is read on its own: the homeUiState combine already uses
+    // its five-flow overload, and its "已暂停到 HH:mm" line recomposes on its
+    // own with this flow.
+    val pauseUntil by viewModel.pauseUntil.collectAsStateWithLifecycle()
+    val mediaStoreRowCount = homeUiState.mediaStoreRowCount
+    val context = androidx.compose.ui.platform.LocalContext.current
+    // Missing READ_MEDIA_* is invisible otherwise: the switch simply keeps the
+    // old wallpaper (or shows nothing for a lock group) and the only trace is a
+    // line in the exported log. Re-checked on resume AND by the same poll that
+    // watches the engine, so the card disappears right after the user grants the
+    // permission in system settings.
+    var mediaPermissionMissing by remember {
+        mutableStateOf(!MediaProbe.hasReadMediaPermission(context))
+    }
     var showCreateDialog by remember { mutableStateOf(false) }
     // 分组多选：批量删除 / 批量启用。The selection map is read per card (a
     // snapshot read) so ticking one group only recomposes that card.
@@ -68,8 +106,13 @@ fun HomeScreen(
         ServiceControlCard(
             serviceEnabled = serviceEnabled,
             lockTimerEnabled = lockTimerEnabled,
+            pauseUntil = pauseUntil,
             onToggle = { viewModel.toggleService(it) },
-            onSwitchNow = { viewModel.switchNow() }
+            onSwitchNow = { viewModel.switchNow() },
+            onSnooze = { viewModel.snooze(it) },
+            onSnoozeUntilMorning = { viewModel.snoozeUntilMorning() },
+            onResumeNow = { viewModel.resumeNow() },
+            onPreviewNext = { viewModel.previewNext() }
         )
 
         // The live wallpaper engine is what actually receives timer /
@@ -88,6 +131,7 @@ fun HomeScreen(
             val observer = LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
                     engineRunning = LiveWallpaperService.engineRunning
+                    mediaPermissionMissing = !MediaProbe.hasReadMediaPermission(context)
                 }
             }
             lifecycleOwner.lifecycle.addObserver(observer)
@@ -103,11 +147,16 @@ fun HomeScreen(
                 while (true) {
                     val running = LiveWallpaperService.engineRunning
                     if (running != engineRunning) engineRunning = running
+                    val missing = !MediaProbe.hasReadMediaPermission(context)
+                    if (missing != mediaPermissionMissing) mediaPermissionMissing = missing
                     delay(ENGINE_STATE_POLL_MS)
                 }
             }
         }
-        if (serviceEnabled && !engineRunning) {
+
+        // Only when there really is media that needs the permission: a library
+        // imported through SAF keeps working without it.
+        if (mediaPermissionMissing && mediaStoreRowCount > 0) {
             Spacer(modifier = Modifier.height(12.dp))
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -127,12 +176,65 @@ fun HomeScreen(
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        "动态壁纸引擎未运行：定时切换仍可用（静态壁纸模式），但双击切换不可用；" +
-                            "如需动态效果，请在系统壁纸设置中选中「壁纸切换」",
+                        stringResource(R.string.home_permission_warning),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.weight(1f)
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    TextButton(
+                        onClick = {
+                            // App details, not a runtime request: it also covers
+                            // "don't ask again" and the Android 14 partial grant,
+                            // where the user has to change the selection anyway.
+                            val intent = android.content.Intent(
+                                android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                android.net.Uri.fromParts("package", context.packageName, null)
+                            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                            try {
+                                context.startActivity(intent)
+                            } catch (t: Throwable) {
+                                AppLog.w("HomeScreen", "app details intent failed", t)
+                            }
+                        }
+                    ) {
+                        Text(stringResource(R.string.action_grant_permission))
+                    }
+                }
+            }
+        }
+        // 警告卡：条件出现/消失时展开收起，不再整块突然闪现（HyperOS 的做法）。
+        AnimatedVisibility(
+            visible = serviceEnabled && !engineRunning,
+            enter = fadeIn(HiMotion.enter()) + expandVertically(HiMotion.enter()),
+            exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
+        ) {
+            Column {
+                Spacer(modifier = Modifier.height(12.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    ),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Outlined.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            stringResource(R.string.home_engine_warning),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
         }
@@ -143,52 +245,65 @@ fun HomeScreen(
         val noHomeGroup = groups.none {
             it.isEnabled && WallpaperTarget.fromName(it.target).includesHome
         }
-        if (noHomeGroup && groups.isNotEmpty() && engineRunning) {
-            Spacer(modifier = Modifier.height(12.dp))
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer
-                ),
-                shape = RoundedCornerShape(16.dp)
-            ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically
+        AnimatedVisibility(
+            visible = noHomeGroup && groups.isNotEmpty() && engineRunning,
+            enter = fadeIn(HiMotion.enter()) + expandVertically(HiMotion.enter()),
+            exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
+        ) {
+            Column {
+                Spacer(modifier = Modifier.height(12.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer
+                    ),
+                    shape = RoundedCornerShape(16.dp)
                 ) {
-                    Icon(
-                        Icons.Outlined.Warning,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Text(
-                        "没有分组的「应用位置」包含桌面：桌面会显示占位图，" +
-                            "请把至少一个分组设为「桌面」或「桌面和锁屏」",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onErrorContainer,
-                        modifier = Modifier.weight(1f)
-                    )
+                    Row(
+                        modifier = Modifier.padding(14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Outlined.Warning,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            stringResource(R.string.home_no_home_group_warning),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
-        // 分组列表标题
+        // 分组列表标题：HyperOS 风格的小号强调色标题 + 计数
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = 2.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
                 Text(
-                    "壁纸分组",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    stringResource(R.string.home_groups_title),
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = LocalAccentColor.current.takeIf { it != Color.Unspecified }
+                        ?: MaterialTheme.colorScheme.primary
                 )
                 Text(
-                    "共 ${groups.size} 个分组",
+                    pluralStringResource(
+                        R.plurals.home_groups_count,
+                        groups.size,
+                        groups.size
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -202,35 +317,52 @@ fun HomeScreen(
                             groupSelectionMode = true
                         }
                     ) {
-                        Icon(Icons.Filled.Checklist, "多选分组", modifier = Modifier.size(22.dp))
+                        Icon(
+                            Icons.Filled.Checklist,
+                            stringResource(R.string.cd_select_groups),
+                            modifier = Modifier.size(22.dp)
+                        )
                     }
                     Spacer(modifier = Modifier.width(4.dp))
                 }
                 FilledTonalButton(onClick = { showCreateDialog = true }) {
-                    Icon(Icons.Filled.Add, "新建", modifier = Modifier.size(18.dp))
+                    Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("新建分组")
+                    Text(stringResource(R.string.action_new_group))
                 }
             }
         }
 
         // 多选工具栏：与分组详情里的选择栏同一套交互（退出 / 全选 / 已选 / 动作）
-        if (groupSelectionMode) {
-            Spacer(modifier = Modifier.height(4.dp))
-            GroupSelectionToolbar(
-                selectedMap = selectedGroupIds,
-                allIds = groups.map { it.id },
-                onExit = {
-                    selectedGroupIds.clear()
-                    groupSelectionMode = false
-                },
-                onEnable = {
-                    viewModel.setGroupsEnabled(selectedGroupIds.keys.toSet(), true)
-                    selectedGroupIds.clear()
-                    groupSelectionMode = false
-                },
-                onDelete = { confirmDeleteGroups = true }
-            )
+        AnimatedVisibility(
+            visible = groupSelectionMode,
+            enter = fadeIn(HiMotion.enter()) + expandVertically(HiMotion.enter()),
+            exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
+        ) {
+            Column {
+                Spacer(modifier = Modifier.height(4.dp))
+                MultiSelectActionsBar(
+                    selectedMap = selectedGroupIds,
+                    allIds = groups.map { it.id },
+                    onExit = {
+                        selectedGroupIds.clear()
+                        groupSelectionMode = false
+                    },
+                    onEnable = {
+                        viewModel.setGroupsEnabled(selectedGroupIds.keys.toSet(), true)
+                        selectedGroupIds.clear()
+                        groupSelectionMode = false
+                    },
+                    // 不启用 (batch disable): the counterpart of 启用. Media stays in
+                    // the group, it just leaves the rotation.
+                    onDisable = {
+                        viewModel.setGroupsEnabled(selectedGroupIds.keys.toSet(), false)
+                        selectedGroupIds.clear()
+                        groupSelectionMode = false
+                    },
+                    onDelete = { confirmDeleteGroups = true }
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
@@ -268,7 +400,8 @@ fun HomeScreen(
                                 groupSelectionMode = true
                             }
                         },
-                        onToggle = { viewModel.toggleGroupEnabled(group.id, it) }
+                        onToggle = { viewModel.toggleGroupEnabled(group.id, it) },
+                        onBrowse = { onGroupBrowse(group.id) },
                     )
                 }
             }
@@ -293,11 +426,10 @@ fun HomeScreen(
         val count = selectedGroupIds.size
         AlertDialog(
             onDismissRequest = { confirmDeleteGroups = false },
-            title = { Text("删除分组") },
+            title = { Text(stringResource(R.string.dialog_delete_groups_title)) },
             text = {
                 Text(
-                    "确定删除选中的 $count 个分组吗？分组里的媒体记录会一起移除" +
-                        "（手机里的照片/视频文件不会被删除）。"
+                    stringResource(R.string.dialog_delete_groups_message, count)
                 )
             },
             confirmButton = {
@@ -309,11 +441,87 @@ fun HomeScreen(
                         confirmDeleteGroups = false
                     }
                 ) {
-                    Text("删除", color = MaterialTheme.colorScheme.error)
+                    Text(
+                        stringResource(R.string.action_delete),
+                        color = MaterialTheme.colorScheme.error
+                    )
                 }
             },
             dismissButton = {
-                TextButton(onClick = { confirmDeleteGroups = false }) { Text("取消") }
+                TextButton(onClick = { confirmDeleteGroups = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
+
+    // 下一张预览: shows the media the next automatic switch would display and
+    // offers to apply it right away. Read-only until "设为壁纸" is tapped.
+    val previewVisible by viewModel.previewVisible.collectAsStateWithLifecycle()
+    val previewImage by viewModel.previewImage.collectAsStateWithLifecycle()
+    val previewLoading by viewModel.previewLoading.collectAsStateWithLifecycle()
+    if (previewVisible) {
+        val image = previewImage
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissPreview() },
+            title = { Text(stringResource(R.string.preview_title)) },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    when {
+                        previewLoading && image == null -> {
+                            // Unified loading hint (static icon + text; see
+                            // HiLoadingHint for why no spinner is used).
+                            HiLoadingHint(
+                                text = stringResource(R.string.preview_loading),
+                                iconSize = 20.dp,
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                        image == null -> Text(stringResource(R.string.preview_empty))
+                        else -> {
+                            // Coil renders images, GIFs and (through the video
+                            // decoder) a video's first frame - the same request
+                            // the group grid uses, at a larger size.
+                            val request = coil.request.ImageRequest.Builder(context)
+                                .data(android.net.Uri.parse(image.uri))
+                                .size(640, 640)
+                                .crossfade(120)
+                                .apply {
+                                    if (image.mediaType == com.wallpaperswitcher.engine.MediaTypes.VIDEO) {
+                                        decoderFactory(coil.decode.VideoFrameDecoder.Factory())
+                                    }
+                                }
+                                .build()
+                            coil.compose.AsyncImage(
+                                model = request,
+                                contentDescription = image.displayName,
+                                contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 320.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                image.displayName,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 2,
+                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = image != null,
+                    onClick = { viewModel.applyPreview() }
+                ) { Text(stringResource(R.string.preview_apply)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissPreview() }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
             }
         )
     }
@@ -323,36 +531,71 @@ fun HomeScreen(
 private fun ServiceControlCard(
     serviceEnabled: Boolean,
     lockTimerEnabled: Boolean,
+    pauseUntil: Long,
     onToggle: (Boolean) -> Unit,
-    onSwitchNow: () -> Unit
+    onSwitchNow: () -> Unit,
+    onSnooze: (Long) -> Unit,
+    onSnoozeUntilMorning: () -> Unit,
+    onResumeNow: () -> Unit,
+    onPreviewNext: () -> Unit
 ) {
-    // Running: colorful primary→secondary tonal gradient. Stopped: a flat,
-    // even neutral surface with a thin border - clearly defined but quiet,
-    // so the "off" card never looks faded or unfinished.
-    val background = if (serviceEnabled) {
-        Brush.linearGradient(
-            listOf(
-                MaterialTheme.colorScheme.primaryContainer,
-                MaterialTheme.colorScheme.secondaryContainer
-            )
-        )
-    } else {
-        Brush.linearGradient(
-            listOf(
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-            )
-        )
+    // Recompose once a minute so the "已暂停到 14:30" line stays honest without
+    // a permanent ticker (a paused timer changes nothing in between).
+    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(pauseUntil) {
+        while (pauseUntil > System.currentTimeMillis()) {
+            nowMs = System.currentTimeMillis()
+            delay(30_000L)
+        }
+        nowMs = System.currentTimeMillis()
     }
+    val paused = pauseUntil > nowMs
+    var showSnoozeDialog by remember { mutableStateOf(false) }
+    // 自定义暂停时长（分钟），空串 = 未输入；上限 7 天（与 ViewModel 的钳制一致）。
+    var customMinutes by remember { mutableStateOf("") }
+    // 运行 / 停止的底色不再硬切：用一个 0→1 的进度在两组颜色之间插值，
+    // 开关时卡片和状态点一起平滑过渡（Miuix 的状态迁移）。
+    //
+    // 运行底色改为跟随主题色：从容器色（= 卡内 tonal 按钮的颜色，左上）
+    // 渐变到一个更深的强调色调（右下）。之前浅色主题下用固定的薄荷绿，
+    // 与蓝/紫色系的按钮和标题撞色（绿底 + 蓝字 + 蓝按钮），观感很"脏"；
+    // 绿色状态语义现在只由左侧的实心状态点承担。
+    //
+    // 渐变终点必须偏离容器色：起点用容器色是为了和文字同色系，但如果整张卡
+    // 都是容器色，同色的 tonal 按钮就会"消失"在底色里（自绘卡片没有 M3 的
+    // elevation 色调差）。往 primary 方向压 25% 后，按钮在卡片中下部仍然是
+    // 一枚可辨认的浅色药丸。
+    val active by animateFloatAsState(
+        targetValue = if (serviceEnabled) 1f else 0f,
+        animationSpec = HiMotion.enter(),
+        label = "serviceActive",
+    )
+    val runningStart = MaterialTheme.colorScheme.secondaryContainer
+    val runningEnd = lerp(
+        MaterialTheme.colorScheme.secondaryContainer,
+        MaterialTheme.colorScheme.primary,
+        0.25f,
+    )
+    val background = Brush.linearGradient(
+        listOf(
+            lerp(
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f),
+                runningStart,
+                active,
+            ),
+            lerp(
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
+                runningEnd,
+                active,
+            ),
+        )
+    )
     Card(
         modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(24.dp),
+        shape = RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent),
-        elevation = CardDefaults.cardElevation(defaultElevation = if (serviceEnabled) 3.dp else 0.dp),
-        border = if (!serviceEnabled)
-            BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
-        else
-            null
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        border = null
     ) {
         Box(
             modifier = Modifier
@@ -368,34 +611,36 @@ private fun ServiceControlCard(
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            // Status dot: filled green when running, hollow
-                            // grey when stopped (standby look).
-                            if (serviceEnabled) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(10.dp)
-                                        .clip(CircleShape)
-                                        .background(Color(0xFF34A853))
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(10.dp)
-                                        .clip(CircleShape)
-                                        .border(
-                                            2.dp,
-                                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                            CircleShape
-                                        )
-                                )
-                            }
+                            // 状态点：运行时实心绿点，停止时空心灰环 —— 两者之间
+                            // 用颜色过渡代替硬切。
+                            val dotFill by animateColorAsState(
+                                targetValue = if (serviceEnabled)
+                                    com.wallpaperswitcher.ui.theme.HiStatusColors.Active
+                                else Color.Transparent,
+                                animationSpec = HiMotion.standard(),
+                                label = "serviceDotFill",
+                            )
+                            val dotRing by animateColorAsState(
+                                targetValue = if (serviceEnabled) Color.Transparent
+                                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                animationSpec = HiMotion.standard(),
+                                label = "serviceDotRing",
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(dotFill)
+                                    .border(2.dp, dotRing, CircleShape)
+                            )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
                                 when {
-                                    serviceEnabled && lockTimerEnabled -> "桌面 + 锁屏运行中"
-                                    serviceEnabled -> "桌面运行中"
-                                    lockTimerEnabled -> "锁屏运行中"
-                                    else -> "已停止"
+                                    serviceEnabled && lockTimerEnabled ->
+                                        stringResource(R.string.home_status_home_lock)
+                                    serviceEnabled -> stringResource(R.string.home_status_home)
+                                    lockTimerEnabled -> stringResource(R.string.home_status_lock)
+                                    else -> stringResource(R.string.home_status_stopped)
                                 },
                                 style = MaterialTheme.typography.titleLarge,
                                 fontWeight = FontWeight.Bold,
@@ -407,9 +652,15 @@ private fun ServiceControlCard(
                         }
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            if (serviceEnabled) "壁纸自动切换中，点击下方按钮立即换一张"
-                            else if (lockTimerEnabled) "锁屏定时切换中（桌面定时未开启）"
-                            else "点击开关，壁纸将自动轮换",
+                            if (paused) stringResource(
+                                R.string.pause_active_until,
+                                java.text.SimpleDateFormat(
+                                    "HH:mm", java.util.Locale.getDefault()
+                                ).format(java.util.Date(pauseUntil))
+                            )
+                            else if (serviceEnabled) stringResource(R.string.home_hint_running)
+                            else if (lockTimerEnabled) stringResource(R.string.home_hint_lock_only)
+                            else stringResource(R.string.home_hint_stopped),
                             style = MaterialTheme.typography.bodyMedium,
                             color = if (serviceEnabled)
                                 MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f)
@@ -432,21 +683,158 @@ private fun ServiceControlCard(
 
                 // The manual button also works in static mode, and it is useful
                 // whenever either timer runs.
-                if (serviceEnabled || lockTimerEnabled) {
-                    Spacer(modifier = Modifier.height(14.dp))
-                    FilledTonalButton(
-                        onClick = onSwitchNow,
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(16.dp)
-                    ) {
-                        Icon(Icons.Filled.Refresh, "切换", modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("立即切换壁纸")
+                AnimatedVisibility(
+                    visible = serviceEnabled || lockTimerEnabled,
+                    enter = fadeIn(HiMotion.enter()) + expandVertically(HiMotion.enter()),
+                    exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
+                ) {
+                    Column {
+                        Spacer(modifier = Modifier.height(14.dp))
+                        FilledTonalButton(
+                            onClick = onSwitchNow,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(16.dp)
+                        ) {
+                            Icon(
+                                Icons.Filled.Refresh,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(stringResource(R.string.action_switch_now))
+                        }
+                        Spacer(modifier = Modifier.height(8.dp))
+                        // 一键暂停 / 下一张预览: both are one tap away from the
+                        // home screen because they are the two things users do
+                        // while looking at the wallpaper right now.
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilledTonalButton(
+                                onClick = {
+                                    if (paused) onResumeNow() else showSnoozeDialog = true
+                                },
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    if (paused) stringResource(R.string.pause_resume_now)
+                                    else stringResource(R.string.home_pause_button)
+                                )
+                            }
+                            FilledTonalButton(
+                                onClick = onPreviewNext,
+                                shape = RoundedCornerShape(14.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(
+                                    Icons.Filled.Visibility,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(stringResource(R.string.home_preview_button))
+                            }
+                        }
                     }
                 }
             }
         }
     }
+
+    if (showSnoozeDialog) {
+        AlertDialog(
+            onDismissRequest = { showSnoozeDialog = false },
+            title = { Text(stringResource(R.string.pause_dialog_title)) },
+            text = {
+                Column {
+                    listOf(
+                        15 * 60_000L to stringResource(R.string.pause_15m),
+                        30 * 60_000L to stringResource(R.string.pause_30m),
+                        60 * 60_000L to stringResource(R.string.pause_1h),
+                        2 * 60 * 60_000L to stringResource(R.string.pause_2h)
+                    ).forEach { (duration, label) ->
+                        Text(
+                            label,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showSnoozeDialog = false
+                                    onSnooze(duration)
+                                }
+                                .padding(vertical = 12.dp)
+                        )
+                    }
+                    Text(
+                        stringResource(R.string.pause_until_morning),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                showSnoozeDialog = false
+                                onSnoozeUntilMorning()
+                            }
+                            .padding(vertical = 12.dp)
+                    )
+                    Divider(modifier = Modifier.padding(vertical = 8.dp))
+                    // 自定义时长：和「切换间隔」对话框里的自定义秒数同一套做法
+                    // （只收 ASCII 数字，越界由按钮的 enabled 拦住）。
+                    Text(
+                        stringResource(R.string.pause_custom_title),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = LocalAccentColor.current
+                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = customMinutes,
+                            onValueChange = { input ->
+                                // ASCII digits only: isDigit() also accepts
+                                // non-ASCII digits, which toIntOrNull() rejects.
+                                customMinutes = input.filter { c -> c in '0'..'9' }
+                                    .take(5)
+                            },
+                            label = { Text(stringResource(R.string.pause_custom_minutes)) },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        FilledTonalButton(
+                            enabled = (customMinutes.toLongOrNull() ?: 0L) in 1..MAX_SNOOZE_MINUTES,
+                            onClick = {
+                                val minutes = customMinutes.toLongOrNull() ?: return@FilledTonalButton
+                                showSnoozeDialog = false
+                                customMinutes = ""
+                                onSnooze(minutes * 60_000L)
+                            }
+                        ) { Text(stringResource(R.string.action_ok)) }
+                    }
+                    Text(
+                        stringResource(R.string.pause_custom_hint, MAX_SNOOZE_MINUTES),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSnoozeDialog = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            }
+        )
+    }
+
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -458,7 +846,8 @@ private fun GroupCard(
     isSelected: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
-    onToggle: (Boolean) -> Unit
+    onToggle: (Boolean) -> Unit,
+    onBrowse: () -> Unit = {},
 ) {
     Card(
         modifier = Modifier
@@ -466,46 +855,35 @@ private fun GroupCard(
             // Long-press is the usual way into a multi-select list; a plain tap
             // still opens the group (or ticks it while selecting).
             .combinedClickable(onClick = onClick, onLongClick = onLongClick),
-        shape = RoundedCornerShape(20.dp),
+        // HyperOS/Miuix：16dp 圆角、纯色卡片、无描边无阴影，状态靠底色区分。
+        shape = RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner),
         colors = CardDefaults.cardColors(
             containerColor = when {
-                isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+                isSelected -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
                 group.isEnabled -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
                 else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.22f)
             }
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        border = when {
-            isSelected -> BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary)
-            group.isEnabled ->
-                BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
-            else -> null
-        }
+        border = null
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(
+                    horizontal = com.wallpaperswitcher.ui.theme.HiDims.RowHorizontal,
+                    vertical = com.wallpaperswitcher.ui.theme.HiDims.RowVertical,
+                ),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 图标：品牌渐变圆底
+            // 图标：HyperOS 风格的圆角方块（不再是渐变圆底）。
             Box(
                 modifier = Modifier
-                    .size(48.dp)
-                    .clip(CircleShape)
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(14.dp))
                     .background(
-                        Brush.linearGradient(
-                            listOf(
-                                if (group.isEnabled)
-                                    MaterialTheme.colorScheme.primaryContainer
-                                else
-                                    MaterialTheme.colorScheme.surfaceVariant,
-                                if (group.isEnabled)
-                                    MaterialTheme.colorScheme.secondaryContainer
-                                else
-                                    MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
-                            )
-                        )
+                        if (group.isEnabled) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f)
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
                     ),
                 contentAlignment = Alignment.Center
             ) {
@@ -516,14 +894,15 @@ private fun GroupCard(
                     Icons.Outlined.Image,
                     contentDescription = null,
                     tint = if (group.isEnabled)
-                        MaterialTheme.colorScheme.primary
+                        LocalAccentColor.current.takeIf { it != Color.Unspecified }
+                            ?: MaterialTheme.colorScheme.primary
                     else
                         MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(24.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.width(16.dp))
+            Spacer(modifier = Modifier.width(com.wallpaperswitcher.ui.theme.HiDims.IconGap))
 
             Column(modifier = Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -558,9 +937,18 @@ private fun GroupCard(
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     if (mediaCount > 0) {
-                        "共 $mediaCount 个媒体 · ${WallpaperTarget.fromName(group.target).shortLabel}"
+                        stringResource(
+                            WallpaperTarget.fromName(group.target).shortLabelRes
+                        ).let { targetLabel ->
+                            pluralStringResource(
+                                R.plurals.group_media_count,
+                                mediaCount,
+                                mediaCount,
+                                targetLabel
+                            )
+                        }
                     } else {
-                        "暂无媒体，点击添加"
+                        stringResource(R.string.group_no_media)
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -573,6 +961,16 @@ private fun GroupCard(
                 // card's selection toggle.
                 Checkbox(checked = isSelected, onCheckedChange = null)
             } else {
+                // 「浏览」：点卡片进九宫格（整理），点这个小按钮进大图预览
+                // （一张一张挑）。放在开关左边，避免和"启用"这个开关抢注意力。
+                if (mediaCount > 0) {
+                    IconButton(onClick = onBrowse) {
+                        Icon(
+                            Icons.Outlined.PlayCircleOutline,
+                            contentDescription = stringResource(R.string.browse_entry),
+                        )
+                    }
+                }
                 Switch(
                     checked = group.isEnabled,
                     onCheckedChange = onToggle
@@ -582,116 +980,16 @@ private fun GroupCard(
     }
 }
 
-/**
- * Multi-select bar for the GROUP list: exit / select-all / count / 批量启用 /
- * 批量删除.
- *
- * Mirrors the media grid's SelectionToolbar (GroupDetailScreen) so both
- * selection modes look and behave the same, and reads the selection INSIDE this
- * composable (a snapshot read) so ticking one group does not recompose the whole
- * screen.
- */
-@Composable
-private fun GroupSelectionToolbar(
-    selectedMap: androidx.compose.runtime.snapshots.SnapshotStateMap<Long, Boolean>,
-    allIds: List<Long>,
-    onExit: () -> Unit,
-    onEnable: () -> Unit,
-    onDelete: () -> Unit
-) {
-    val selectedCount = selectedMap.size
-    val isAllSelected = allIds.isNotEmpty() && selectedCount == allIds.size
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 2.dp, bottom = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        IconButton(modifier = Modifier.size(40.dp), onClick = onExit) {
-            Icon(Icons.Filled.Close, "退出多选", modifier = Modifier.size(20.dp))
-        }
-        TextButton(
-            modifier = Modifier.heightIn(min = 40.dp),
-            contentPadding = PaddingValues(horizontal = 10.dp),
-            onClick = {
-                if (isAllSelected) {
-                    selectedMap.clear()
-                } else {
-                    selectedMap.clear()
-                    allIds.forEach { selectedMap[it] = true }
-                }
-            }
-        ) {
-            Icon(
-                if (isAllSelected) Icons.Filled.CheckBox else Icons.Filled.CheckBoxOutlineBlank,
-                null,
-                modifier = Modifier.size(18.dp)
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Text(if (isAllSelected) "取消全选" else "全选", maxLines = 1)
-        }
-        Text(
-            "已选 $selectedCount/${allIds.size}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = LocalAccentColor.current,
-            maxLines = 1,
-            modifier = Modifier.weight(1f)
-        )
-        if (selectedCount > 0) {
-            Button(
-                onClick = onEnable,
-                modifier = Modifier.heightIn(min = 40.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp)
-            ) {
-                Icon(Icons.Filled.CheckCircle, "启用", modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("启用", maxLines = 1)
-            }
-            Button(
-                onClick = onDelete,
-                modifier = Modifier.heightIn(min = 40.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer
-                )
-            ) {
-                Icon(Icons.Filled.Delete, "删除", modifier = Modifier.size(18.dp))
-                Spacer(modifier = Modifier.width(4.dp))
-                Text("删除", maxLines = 1)
-            }
-        }
-    }
-}
 
 @Composable
 private fun EmptyGroupsHint() {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 60.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
-        Icon(
-            Icons.Outlined.Image,
-            contentDescription = null,
-            modifier = Modifier.size(80.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(
-            "还没有壁纸分组",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
-        )
-        Spacer(modifier = Modifier.height(8.dp))
-        Text(
-            "点击「新建分组」开始添加壁纸",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-        )
-    }
+    // HyperOS/Miuix 容器式空态，与订阅、分组详情共用（见 HiUi.HiEmptyState）。
+    HiEmptyState(
+        title = stringResource(R.string.empty_groups_title),
+        hint = stringResource(R.string.empty_groups_hint),
+        icon = Icons.Outlined.Image,
+        modifier = Modifier.padding(vertical = 60.dp),
+    )
 }
 
 @Composable
@@ -704,18 +1002,18 @@ fun CreateGroupDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("新建壁纸分组") },
+        title = { Text(stringResource(R.string.dialog_new_group_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
-                    label = { Text("分组名称") },
+                    label = { Text(stringResource(R.string.label_group_name)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text(
-                    "分组内可混合添加图片和视频",
+                    stringResource(R.string.new_group_note),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -726,11 +1024,11 @@ fun CreateGroupDialog(
                 onClick = { if (name.isNotBlank()) onCreate(name) },
                 enabled = name.isNotBlank()
             ) {
-                Text("创建")
+                Text(stringResource(R.string.action_create))
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
         }
     )
 }
