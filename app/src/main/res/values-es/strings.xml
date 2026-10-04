@@ -76,7 +76,7 @@
     <string name="settings_auto_scan">Escanear carpetas automáticamente</string>
     <string name="settings_auto_scan_hint">Añade periódicamente archivos nuevos de las carpetas importadas</string>
     <string name="settings_scan_interval">Intervalo de escaneo</string>
-    <string name="settings_section_button">Aspecto del botón flotante</string>
+    <string name="settings_section_button">Interruptor del botón flotante</string>
     <string name="settings_button_alpha">Transparencia</string>
     <string name="settings_button_alpha_hint" formatted="false">Cuanto menor sea el valor, más transparente (predeterminado 10%)</string>
     <string name="settings_button_color">Color del botón</string>
@@ -270,7 +270,6 @@
     <string name="toast_log_share_failed">Error al compartir; archivo de registro: %1$s</string>
     <string name="toast_media_all_present">Ese contenido ya está en el grupo</string>
     <string name="toast_no_addable_media">No hay fotos ni vídeos que añadir</string>
-    <string name="hint_unlock_static_mode">El cambio al desbloquear está activo: en modo estático cambia a otra imagen fija (sin animación)</string>
     <string name="hint_motion_needs_engine">Vídeo/GIF necesitan un fondo animado: elige esta app en los ajustes del sistema</string>
     <string name="home_permission_warning">Sin el permiso «Fotos y vídeos» no se pueden leer los archivos importados. Concédelo e inténtalo de nuevo</string>
     <string name="action_grant_permission">Conceder</string>

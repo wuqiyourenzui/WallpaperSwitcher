@@ -54,6 +54,8 @@ import com.wallpaperswitcher.ui.AppLocale
 import com.wallpaperswitcher.ui.theme.HiColorRow
 import com.wallpaperswitcher.ui.theme.HiMotion
 import com.wallpaperswitcher.ui.theme.HiOptionPickerRow
+import com.wallpaperswitcher.ui.theme.HiOptionPickerRowOf
+import com.wallpaperswitcher.ui.theme.HiOption
 import com.wallpaperswitcher.ui.theme.HiOptionSpec
 import com.wallpaperswitcher.ui.theme.parseHexColor
 import com.wallpaperswitcher.ui.theme.ThemeMode
@@ -77,7 +79,6 @@ fun AppearanceScreen(
     val state by viewModel.settingsUiState.collectAsStateWithLifecycle()
     val themeMode = state.themeMode
     val themeColor = state.themeColor
-    var showLanguageDialog by remember { mutableStateOf(false) }
     var showColorDialog by remember { mutableStateOf(false) }
     val localeTag = com.wallpaperswitcher.ui.currentLocaleTag(LocalContext.current)
     // 语言切换要立刻重建 Activity，所以需要 Activity 上下文。
@@ -87,31 +88,24 @@ fun AppearanceScreen(
         SettingsSection(title = stringResource(R.string.settings_page_appearance)) {
                 // 语言：跟随系统 / 简体中文 / English … (only locales with a
                 // translation are listed - see SettingsKeys.TRANSLATED_LOCALES).
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showLanguageDialog = true }
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Outlined.Language,
-                        null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Text(
-                        stringResource(R.string.settings_language),
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Text(
-                        localeDisplayName(localeTag),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+                // 与「主题模式」同一种形态：右侧当前值 + 下拉，选项在行下面展开。
+                val languageSpecs = languageOptions()
+                HiOptionPickerRowOf(
+                    title = stringResource(R.string.settings_language),
+                    icon = Icons.Outlined.Language,
+                    options = languageSpecs,
+                    // 存的 tag 不在表里（老版本/手改过的库）时按「跟随系统」显示，
+                    // 面板里总能选中它，用户不会看不到自己当前的档位。
+                    selectedKey = languageSpecs.firstOrNull { it.key == localeTag }?.key
+                        ?: SettingsKeys.LOCALE_SYSTEM,
+                    onSelect = { tag ->
+                        // 先同步镜像：Activity 马上要重建，它的 attachBaseContext 必须
+                        // 已经看到新的 tag（数据库写入是异步的）。
+                        AppLocale.store(localContext, tag)
+                        viewModel.setLocale(tag)
+                        (localContext as? android.app.Activity)?.recreate()
+                    },
+                )
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
@@ -144,20 +138,6 @@ fun AppearanceScreen(
         }
     }
 
-    if (showLanguageDialog) {
-        LanguagePickerDialog(
-            currentTag = localeTag,
-            onDismiss = { showLanguageDialog = false },
-            onSelect = { tag ->
-                // 先同步镜像：Activity 马上要重建，它的 attachBaseContext 必须已经
-                // 看到新的 tag（数据库写入是异步的）。
-                AppLocale.store(localContext, tag)
-                viewModel.setLocale(tag)
-                showLanguageDialog = false
-                (localContext as? android.app.Activity)?.recreate()
-            }
-        )
-    }
     if (showColorDialog) {
         ThemeColorPickerDialog(
             currentHex = themeColor,
@@ -180,3 +160,15 @@ internal fun themeModeOptions(): List<HiOptionSpec> =
  * 和主题实际生效的方式一致 —— 面板里必须能选中它，否则用户看不到自己现在是哪一档。
  */
 internal fun themeModeKeyOf(stored: String): String = ThemeMode.from(stored).value
+
+/**
+ * 语言面板：跟随系统 + 每个真的带翻译的 locale（[SettingsKeys.TRANSLATED_LOCALES]）。
+ * 语言名来自系统 Locale，不是 string 资源，所以这里直接给 [HiOption]。
+ */
+@Composable
+internal fun languageOptions(): List<HiOption> = buildList {
+    add(HiOption(SettingsKeys.LOCALE_SYSTEM, stringResource(R.string.language_system)))
+    SettingsKeys.TRANSLATED_LOCALES.forEach { tag ->
+        add(HiOption(tag, localeDisplayName(tag)))
+    }
+}

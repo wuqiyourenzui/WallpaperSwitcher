@@ -144,8 +144,6 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                                 stringResource(R.string.settings_page_switch)
                             is Screen.FolderScan ->
                                 stringResource(R.string.settings_page_scan)
-                            is Screen.ButtonAppearance ->
-                                stringResource(R.string.settings_page_button)
                             is Screen.Appearance ->
                                 stringResource(R.string.settings_page_appearance)
                         }
@@ -176,7 +174,6 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                         currentScreen is Screen.WallpaperSettings ||
                         currentScreen is Screen.SwitchMethods ||
                         currentScreen is Screen.FolderScan ||
-                        currentScreen is Screen.ButtonAppearance ||
                         currentScreen is Screen.Appearance
                     // 返回箭头随子页面淡入 + 轻微放大（Miuix 的出现方式）。
                     AnimatedVisibility(
@@ -316,7 +313,7 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                     is Screen.RssLogin, is Screen.RssSourceEdit -> leaveSourceEditor()
                     is Screen.Recent, is Screen.Storage,
                     is Screen.WallpaperSettings, is Screen.SwitchMethods,
-                    is Screen.FolderScan, is Screen.ButtonAppearance,
+                    is Screen.FolderScan,
                     is Screen.Appearance -> currentScreen = Screen.Settings
                     is Screen.Favorites -> currentScreen = Screen.Settings
                     is Screen.Browse -> currentScreen = Screen.Home
@@ -407,13 +404,8 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                 is Screen.SwitchMethods -> SwitchMethodsScreen(
                     viewModel = viewModel,
                     onBack = { currentScreen = Screen.Settings },
-                    onOpenButtonAppearance = { currentScreen = Screen.ButtonAppearance },
                 )
                 is Screen.FolderScan -> FolderScanScreen(
-                    viewModel = viewModel,
-                    onBack = { currentScreen = Screen.Settings },
-                )
-                is Screen.ButtonAppearance -> ButtonAppearanceScreen(
                     viewModel = viewModel,
                     onBack = { currentScreen = Screen.Settings },
                 )
@@ -561,7 +553,6 @@ sealed class Screen {
     /** 文件夹自动扫描。 */
     data object FolderScan : Screen()
     /** 悬浮按钮：开关与外观（颜色 / 透明度 / 文字 / 图片）。 */
-    data object ButtonAppearance : Screen()
     /** 外观：语言 / 主题模式 / 主题颜色。 */
     data object Appearance : Screen()
 }
@@ -580,7 +571,6 @@ private fun screenDepth(screen: Screen): Int = when (screen) {
     is Screen.WallpaperSettings,
     is Screen.SwitchMethods,
     is Screen.FolderScan,
-    is Screen.ButtonAppearance,
     is Screen.Appearance -> 1
 }
 
@@ -601,7 +591,6 @@ private val ScreenSaver = Saver<Screen, String>(
             is Screen.WallpaperSettings -> "set-wallpaper"
             is Screen.SwitchMethods -> "set-switch"
             is Screen.FolderScan -> "set-scan"
-            is Screen.ButtonAppearance -> "set-button"
             is Screen.Appearance -> "set-appearance"
         }
     },
@@ -616,7 +605,6 @@ private val ScreenSaver = Saver<Screen, String>(
             value == "set-wallpaper" -> Screen.WallpaperSettings
             value == "set-switch" -> Screen.SwitchMethods
             value == "set-scan" -> Screen.FolderScan
-            value == "set-button" -> Screen.ButtonAppearance
             value == "set-appearance" -> Screen.Appearance
             value.startsWith("browse:") ->
                 value.removePrefix("browse:").toLongOrNull()?.let { Screen.Browse(it) }
@@ -640,4 +628,3 @@ private val ScreenSaver = Saver<Screen, String>(
         }
     }
 )
-

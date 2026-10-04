@@ -63,8 +63,6 @@ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 fun SwitchMethodsScreen(
     viewModel: WallpaperViewModel,
     onBack: () -> Unit,
-    /** 打开「悬浮按钮」子页（颜色 / 透明度 / 文字 / 图片）。 */
-    onOpenButtonAppearance: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.settingsUiState.collectAsStateWithLifecycle()
@@ -157,12 +155,6 @@ fun SwitchMethodsScreen(
                     onCheckedChange = { viewModel.toggleFloatingButton(it) }
                 )
 
-                SettingsClickableItem(
-                    icon = Icons.Outlined.Palette,
-                    title = stringResource(R.string.settings_page_button),
-                    subtitle = stringResource(R.string.settings_page_button_desc),
-                    onClick = onOpenButtonAppearance,
-                )
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
@@ -182,24 +174,20 @@ fun SwitchMethodsScreen(
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
-                SettingsSwitchItem(
-                    icon = Icons.Outlined.MusicNote,
-                    title = stringResource(R.string.settings_video_sound),
-                    subtitle = stringResource(R.string.settings_video_sound_hint),
-                    checked = videoSoundEnabled,
-                    onCheckedChange = { viewModel.setVideoSoundEnabled(it) }
-                )
+    SettingsSwitchItem(
+                        icon = Icons.Outlined.Movie,
+                        title = stringResource(R.string.settings_video_play_to_end),
+                        subtitle = stringResource(R.string.settings_video_play_to_end_hint),
+                        checked = videoPlayToEnd,
+                        onCheckedChange = { viewModel.setVideoPlayToEnd(it) }
+                    )
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
                 // 视频播完再切：定时切换不再打断长视频。
-                SettingsSwitchItem(
-                    icon = Icons.Outlined.Movie,
-                    title = stringResource(R.string.settings_video_play_to_end),
-                    subtitle = stringResource(R.string.settings_video_play_to_end_hint),
-                    checked = videoPlayToEnd,
-                    onCheckedChange = { viewModel.setVideoPlayToEnd(it) }
-                )
 
         Spacer(modifier = Modifier.height(8.dp))
 

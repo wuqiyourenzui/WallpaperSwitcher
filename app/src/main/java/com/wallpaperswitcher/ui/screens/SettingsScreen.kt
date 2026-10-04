@@ -182,20 +182,6 @@ fun SettingsScreen(
             )
             Divider(modifier = Modifier.padding(horizontal = 16.dp))
             SettingsPageEntry(
-                icon = Icons.Outlined.SwapVert,
-                title = stringResource(R.string.settings_page_switch),
-                subtitle = stringResource(R.string.settings_page_switch_desc),
-                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.SwitchMethods) },
-            )
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-            SettingsPageEntry(
-                icon = Icons.Outlined.AdsClick,
-                title = stringResource(R.string.settings_page_button),
-                subtitle = stringResource(R.string.settings_page_button_desc),
-                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.ButtonAppearance) },
-            )
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-            SettingsPageEntry(
                 icon = Icons.Outlined.FolderOpen,
                 title = stringResource(R.string.settings_page_scan),
                 subtitle = stringResource(R.string.settings_page_scan_desc),
@@ -211,7 +197,8 @@ fun SettingsScreen(
         }
         Spacer(modifier = Modifier.height(8.dp))
 
-        // 悬浮按钮总开关留在主界面（最常用），点进去才是它的外观。
+        // 悬浮切换按钮：开关 + 外观（颜色/透明度/文字/图片）都在这里 —— 用户要的是
+        // 「外观就在开关下面」，不再单独分一个子页。
         SettingsSection(title = stringResource(R.string.settings_section_button)) {
             SettingsSwitchItem(
                 icon = Icons.Outlined.AdsClick,
@@ -220,6 +207,258 @@ fun SettingsScreen(
                 checked = floatingButtonEnabled,
                 onCheckedChange = { viewModel.toggleFloatingButton(it) }
             )
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Outlined.Opacity,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(stringResource(R.string.settings_button_alpha), style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            stringResource(R.string.settings_button_alpha_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Text(
+                        "$floatingButtonAlpha%",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = LocalAccentColor.current
+                    )
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                // While the finger is on the slider, the local value tracks the
+                // drag and the persisted value must NOT snap the thumb back
+                // mid-drag: the debounced DB write re-emits through the flow,
+                // and syncing during a drag used to yank the thumb to the last
+                // committed value.
+                var sliderAlpha by remember { mutableFloatStateOf(floatingButtonAlpha.toFloat()) }
+                var alphaDragging by remember { mutableStateOf(false) }
+                LaunchedEffect(floatingButtonAlpha) {
+                    if (!alphaDragging) sliderAlpha = floatingButtonAlpha.toFloat()
+                }
+                Slider(
+                    value = sliderAlpha,
+                    onValueChange = {
+                        alphaDragging = true
+                        sliderAlpha = it
+                        viewModel.setFloatingButtonAlpha(it.toInt())
+                    },
+                    onValueChangeFinished = { alphaDragging = false },
+                    valueRange = SettingsKeys.FLOATING_BUTTON_ALPHA_MIN.toFloat()..100f,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Outlined.Palette,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Text(stringResource(R.string.settings_button_color), style = MaterialTheme.typography.bodyLarge)
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    floatingButtonColors.forEach { (hex, nameRes) ->
+                        val isSelected = floatingButtonColor.equals(hex, ignoreCase = true)
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.clickable { viewModel.setFloatingButtonColor(hex) }
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(parseHexColor(hex) ?: Color.Gray)
+                                .then(
+                                    if (isSelected) Modifier.border(
+                                        3.dp,
+                                        MaterialTheme.colorScheme.onSurface,
+                                        CircleShape
+                                    ) else Modifier
+                                ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                if (isSelected) {
+                                    Icon(
+                                        Icons.Filled.Check,
+                                        contentDescription = null,
+                                        // The white swatch needs a dark check mark.
+                                        tint = if (hex.equals("#FFFFFF", ignoreCase = true))
+                                        MaterialTheme.colorScheme.onSurface
+                                        else
+                                        Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                stringResource(nameRes),
+                                style = MaterialTheme.typography.labelSmall,
+                                maxLines = 1
+                            )
+                        }
+                    }
+                    // Free choice from the hue x tone grid (see ColorGridPicker),
+                    // for colours the fixed palette above does not cover.
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.clickable { showButtonColorDialog = true }
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    Brush.sweepGradient(
+                                        listOf(
+                                            Color(0xFFF44336), Color(0xFFFFEB3B),
+                                            Color(0xFF4CAF50), Color(0xFF00BCD4),
+                                            Color(0xFF2196F3), Color(0xFF9C27B0),
+                                            Color(0xFFF44336)
+                                        )
+                                    )
+                                )
+                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Outlined.Colorize,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(stringResource(R.string.button_color_custom), style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                    }
+                }
+            }
+
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            // Custom label / custom picture. A picture REPLACES the label
+            // (FloatingButtonContentPolicy), which is what the user asked for.
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Outlined.Edit,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(stringResource(R.string.settings_button_text), style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            stringResource(
+                                R.string.settings_button_text_hint,
+                                SettingsKeys.FLOATING_BUTTON_TEXT_DEFAULT
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                // Local draft so typing does not fight the DB round-trip; the
+                // value is capped to the button's capacity by code points, so an
+                // emoji is never cut in half.
+                var textDraft by remember { mutableStateOf(floatingButtonText) }
+                LaunchedEffect(floatingButtonText) { textDraft = floatingButtonText }
+                OutlinedTextField(
+                    value = textDraft,
+                    onValueChange = { raw ->
+                        val capped = FloatingButtonContentPolicy.capText(raw)
+                        textDraft = capped
+                        viewModel.setFloatingButtonText(capped)
+                    },
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.settings_button_text_custom)) },
+                    supportingText = {
+                        Text(
+                            if (floatingButtonImageUri.isNotEmpty()) {
+                                stringResource(R.string.settings_button_image_only)
+                            } else {
+                                stringResource(R.string.settings_button_text_slot)
+                            }
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+            }
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Outlined.Image,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(stringResource(R.string.settings_button_image), style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            if (floatingButtonImageUri.isEmpty()) {
+                                stringResource(R.string.settings_button_image_hint)
+                            } else {
+                                stringResource(R.string.settings_button_image_set)
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    if (floatingButtonImageUri.isNotEmpty()) {
+                        AsyncImage(
+                            model = floatingButtonImageUri,
+                            contentDescription = null,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .border(
+                                1.dp,
+                                MaterialTheme.colorScheme.outlineVariant,
+                                CircleShape
+                            )
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = { floatingImagePicker.launch(arrayOf("image/*")) }
+                    ) {
+                        Text(if (floatingButtonImageUri.isEmpty()) stringResource(R.string.action_choose_image) else stringResource(R.string.action_replace_image))
+                    }
+                    if (floatingButtonImageUri.isNotEmpty()) {
+                        Spacer(modifier = Modifier.width(8.dp))
+                        TextButton(onClick = { viewModel.setFloatingButtonImageUri(null) }) {
+                            Text(stringResource(R.string.action_clear_image))
+                        }
+                    }
+                }
+            }
         }
         Spacer(modifier = Modifier.height(8.dp))
 
