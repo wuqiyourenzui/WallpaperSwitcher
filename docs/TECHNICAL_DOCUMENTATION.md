@@ -6218,6 +6218,40 @@ UID，这个开关跟着掉回默认拒绝 —— 用户上一次「另一个 AI
 有「悬浮切换按钮」开关且没有外观入口，分组详情页操作栏只剩
 「添加壁纸 / 批量操作 / 清理失效」。
 
+#### 4.9.147 设置多选项改成 HyperIsland（Miuix）的浮层下拉样式
+
+用户要求：「参考 hyperisland 设置的多选样式，重构设置多选样式」——即设置里
+「当前值 + 箭头 → 选一个」的那些行（[HiOptionPickerRow]，壁纸设置 4 行、切换方式
+的过渡动画、外观的语言 / 主题模式）。参考对象是 **GitHub 最新的 HyperIsland**
+（`1812z/HyperIsland` main），它用的是 Miuix 的 `WindowDropdownPreference`
+（`compose-miuix-ui/miuix`）：
+
+- 下拉列表是**贴着行的窗口浮层**（`WindowListPopup`）：16dp 圆角、
+  `surfaceContainer` 底色、8dp 阴影、从行的角落轻微放大淡入；
+- 每个选项是 `DropdownImpl`：`selectable(role = RadioButton)`，正文 Medium
+  字重，选中项文字用主题色（primary）+ 行尾 20dp 对勾；横向内边距 20dp，
+  **首/末行纵向 20dp、中间行 12dp**（`DropdownDefaults`），所以列表两端
+  看起来是"包住"内容的；
+- 浮层与行**右对齐**（`PopupPositionProvider.Align.End`），下方放不下时翻到上方；
+  点选项立即生效并关闭，点外部 / 返回只关闭不改值。
+
+改动（`ui/theme/HiOptionControls.kt`）：
+
+1. `HiOptionPickerRow` 不再在行下方展开行内面板（`HiInlineOptionPanel`），而是
+   在行下缘弹出 `HiOptionDropdown`（`Popup` + 自定义 `PopupPositionProvider`）；
+   行的标题 / 当前值 / 箭头布局保持不变，打开时箭头旋转。
+2. 选项行按 Miuix 的度量重画（见上）。颜色预览圆点仍保留（`HiOption` 的
+   `preview`）。
+3. 行内面板时代的死代码（`HiOptionSheet` / `HiOptionSheetEntry` /
+   `HiOptionSheetEmpty` / `HiOptionPanelCard` / `HiOptionSpacer` / `HiOptionGap` /
+   `HiInlineOptionPanel` / `HiOptionRowPadding`）一并删除 —— 它们已经没有任何
+   调用方。
+
+调用方（各设置子页）零改动：它们只依赖 `HiOptionPickerRow` 的签名。
+
+**验证**：`:app:assembleDebug` ✓、单元测试 **454 条全绿**（`HiOptionLogicTest`
+覆盖的选项表 / 当前值归一化逻辑不变，只是外壳换了）。
+
 ---
 
 ## 七、权限声明

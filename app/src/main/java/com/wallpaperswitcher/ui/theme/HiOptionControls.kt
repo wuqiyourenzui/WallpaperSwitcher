@@ -1,12 +1,15 @@
 package com.wallpaperswitcher.ui.theme
 
 import androidx.annotation.StringRes
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.scaleIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -17,25 +20,21 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
 import com.wallpaperswitcher.ui.theme.HiMotion
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -43,25 +42,35 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupPositionProvider
+import androidx.compose.ui.window.PopupProperties
 import com.wallpaperswitcher.R
 import androidx.compose.ui.res.stringResource
-import kotlinx.coroutines.launch
 
 /**
- * 设置里一个「点开选一个」的选项行（对应界面参考的图 1）。
+ * 设置里一个「点开选一个」的选项行。
  *
  * 交互约定（整个设置区统一）：
  *  - 行右侧显示**当前值** + 上下箭头；
- *  - 点一下从下方弹出选项面板（[HiOptionSheet]），选完即关闭并保存；
+ *  - 点一下在行的下缘弹出浮层列表（[HiOptionPickerRow]），选完即关闭并保存；
  *  - 选项超过 3 个时面板可滚动，所以行本身的高度恒定 —— 列表不会因为某个
  *    设置选项多而被撑开。
  *
- * 为什么不用 Material 的 DropdownMenu：它在长列表里会盖住当前行、失去"这个值
- * 属于哪一行"的视觉联系，而且没有"当前值"这一列（参考图里那一列是主要信息）。
+ * 浮层列表的形态对齐 HyperIsland（Miuix `WindowDropdownPreference`）：列表紧贴
+ * 当前行（不会像 Material 的 DropdownMenu 那样盖住标题），行里的"当前值"始终可见。
  */
 @Composable
 fun HiOptionRow(
@@ -120,7 +129,7 @@ fun HiOptionRow(
     }
 }
 
-/** [HiOptionRow] 弹出面板里的一个选项。 */
+/** [HiOptionRow] 浮层列表里的一个选项。 */
 data class HiOption(val key: String, val label: String, val preview: Color? = null)
 
 /**
@@ -161,61 +170,34 @@ internal fun hasHiOption(specs: List<HiOptionSpec>, key: String): Boolean =
     specs.any { it.key == key }
 
 /**
- * 选项面板的内容（图 1 的弹出层）：每行「选项名 + 预览色块（可选）+ 勾选」。
+ * 浮层选项列表里的一行（HyperIsland 用的 Miuix `DropdownImpl` 形态）。
  *
- * 自己画而不是用 Material 的 DropdownMenu：需要在选项里带颜色预览（信息架构里的
- * 主题色/按钮色就是这个形态），并且要能容纳 6~8 个选项而不滚动。
+ * 选中项：正文用主题强调色 + 行尾 20dp 对勾；未选中项是普通正文色。
+ * 首/末行 20dp 纵向留白、中间行 12dp，与 Miuix 的 `DropdownDefaults` 一致 ——
+ * 这样列表上下两端看起来是"包住"内容的，而不是被裁掉。
  */
 @Composable
-fun HiOptionSheet(
-    options: List<HiOption>,
-    selectedKey: String,
-    onSelect: (String) -> Unit,
-    modifier: Modifier = Modifier,
-    defaultLabel: String? = null,
-    onDefault: (() -> Unit)? = null,
-) {
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .heightIn(max = 420.dp)
-            // heightIn 先把面板夹到 420dp，verticalScroll 再把超出的部分变成可滚动
-            // 的内容：否则选项多（或系统字体调到最大）时，最后几项会被裁在屏幕外，
-            // 用户永远点不到 —— 而"面板可滚动"正是这个控件文档里承诺的行为。
-            .verticalScroll(rememberScrollState()),
-    ) {
-        defaultLabel?.let { label ->
-            HiOptionSheetEntry(
-                label = label,
-                selected = false,
-                preview = null,
-                onClick = { onDefault?.invoke() },
-            )
-        }
-        options.forEach { option ->
-            HiOptionSheetEntry(
-                label = option.label,
-                selected = option.key == selectedKey,
-                preview = option.preview,
-                onClick = { onSelect(option.key) },
-            )
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-    }
-}
-
-@Composable
-private fun HiOptionSheetEntry(
+private fun HiOptionPopupEntry(
     label: String,
     selected: Boolean,
     preview: Color?,
+    isFirst: Boolean,
+    isLast: Boolean,
     onClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 24.dp, vertical = 16.dp),
+            .selectable(
+                selected = selected,
+                role = Role.RadioButton,
+                onClick = onClick,
+            )
+            .padding(
+                start = 20.dp,
+                end = 20.dp,
+                top = if (isFirst) 20.dp else 12.dp,
+                bottom = if (isLast) 20.dp else 12.dp,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (preview != null) {
@@ -226,20 +208,21 @@ private fun HiOptionSheetEntry(
                     .background(preview)
                     .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape),
             )
-            Spacer(modifier = Modifier.width(14.dp))
+            Spacer(modifier = Modifier.width(12.dp))
         }
         Text(
             label,
             style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.Medium,
             color = if (selected) LocalAccentColor.current else MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f),
         )
         if (selected) {
+            Spacer(modifier = Modifier.width(12.dp))
             Icon(
                 Icons.Filled.Check,
                 contentDescription = null,
                 tint = LocalAccentColor.current,
-                modifier = Modifier.size(22.dp),
+                modifier = Modifier.size(20.dp),
             )
         }
     }
@@ -321,69 +304,15 @@ fun HiColorRow(
     }
 }
 
-/** 面板里"没有选项可选"时的占位（避免空面板看起来像卡住）。 */
-@Composable
-fun HiOptionSheetEmpty(text: String) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 28.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text,
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
-    }
-}
-
-/** 供 [HiOptionSheet] 的调用方在同一个 FlowRow 里摆放：保持间距一致。 */
-@Composable
-fun HiOptionSpacer() = Spacer(modifier = Modifier.height(4.dp))
-
-/** 一组选项面板的容器（BottomSheet 的替代：这版用一个带圆角的卡片）。 */
-@Composable
-fun HiOptionPanelCard(
-    title: String,
-    modifier: Modifier = Modifier,
-    content: @Composable () -> Unit,
-) {
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
-    ) {
-        Text(
-            title,
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = 20.dp, bottom = 8.dp),
-        )
-        content()
-    }
-}
-
-/** 面板里各选项之间的分隔间距（统一，防止每个页面自己写一套）。 */
-@Composable
-fun HiOptionGap() = Spacer(modifier = Modifier.height(2.dp))
-
 /**
- * 「当前值 + 下拉 → 弹出选项面板」的**整套**实现：把 [HiOptionRow]、[HiOptionSheet]、
- * [HiOptionPanelCard] 和弹出状态焊在一起，设置页只需要给一张选项表和当前值。
+ * 「当前值 + 箭头 → 浮层选项列表」的整套实现：设置页只需要给一张选项表和当前值。
  *
- * 为什么不用 Material 的 `DropdownMenu`（和 [HiOptionRow] 的注释同一个理由）：
- * 下拉菜单会盖住当前行、没有"当前值"这一列，而且它挂在行上，滚动列表时位置会飘。
+ * 形态对齐 HyperIsland（Miuix `WindowDropdownPreference`）：点一下行，弹出一条
+ * **贴着这一行**的浮层列表（不是行内展开的面板），选中项用强调色 + 行尾对勾标出，
+ * 点任意一项立即生效并关闭；点外部 / 返回键只关闭不改值。
  *
- * 面板**就在这一行下面原地展开**（不是弹出窗口）：用户要的形态就是这个 ——
- * 弹出层会盖住当前值、也切断「这个面板属于哪一行」的联系。
+ * 行本身仍然显示当前值，所以打开了哪一行的列表、现在选的是什么，始终都在屏幕上。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun HiOptionPickerRow(
     title: String,
@@ -394,69 +323,109 @@ internal fun HiOptionPickerRow(
     subtitle: String? = null,
     icon: ImageVector? = null,
 ) {
-    // 展开状态：每个选项行各自持有（同一个页面里的面板互不影响）。
-    // rememberSaveable：转屏/进程重建之后展开状态还在，用户不会丢上下文。
+    // 开关状态每行各自持有；rememberSaveable 让转屏/进程重建后仍停在原来的行上。
     var open by rememberSaveable { mutableStateOf(false) }
-    HiOptionRow(
-        title = title,
-        value = hiOptionLabelRes(options, selectedKey)?.let { stringResource(it) }.orEmpty(),
-        modifier = modifier,
-        subtitle = subtitle,
-        icon = icon,
-        expanded = open,
-        onClick = { open = !open },
-    )
-    // 面板**就在这一行下面展开**，不再用 ModalBottomSheet：弹出窗口会盖住
-    // 原来的值、也切断"这个面板属于哪一行"的视觉联系（用户明确要求这个形态，
-    // 参考截图里的下拉就是这个样子）。
-    AnimatedVisibility(
-        visible = open,
-        enter = fadeIn(HiMotion.enter()) + expandVertically(HiMotion.enter()),
-        exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
-    ) {
-        HiInlineOptionPanel(
-            options = hiOptions(options),
-            selectedKey = selectedKey,
-            onSelect = { key ->
-                onSelect(key)
-                open = false
-            },
+    Box(modifier = modifier) {
+        HiOptionRow(
+            title = title,
+            value = hiOptionLabelRes(options, selectedKey)?.let { stringResource(it) }.orEmpty(),
+            subtitle = subtitle,
+            icon = icon,
+            expanded = open,
+            onClick = { open = !open },
         )
-    }
-}
-
-/**
- * 行下方展开的选项面板：每行「选项名 +（可选）颜色预览 + 勾选」。
- *
- * 与 [HiOptionSheet] 的区别只是**外壳**：这里不再套底部圆角卡片（它属于弹出层），
- * 而是缩进一块、用卡片色当背景，看起来像这一行的展开区。
- */
-@Composable
-internal fun HiInlineOptionPanel(
-    options: List<HiOption>,
-    selectedKey: String,
-    onSelect: (String) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, end = 16.dp, bottom = 12.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
-            .heightIn(max = 320.dp)
-            .verticalScroll(rememberScrollState()),
-    ) {
-        options.forEach { option ->
-            HiOptionSheetEntry(
-                label = option.label,
-                selected = option.key == selectedKey,
-                preview = option.preview,
-                onClick = { onSelect(option.key) },
+        if (open) {
+            HiOptionDropdown(
+                options = hiOptions(options),
+                selectedKey = selectedKey,
+                onSelect = { key ->
+                    onSelect(key)
+                    open = false
+                },
+                onDismiss = { open = false },
             )
         }
     }
 }
 
-/** 选项行的通用内边距常数（供子页面对齐使用）。 */
-val HiOptionRowPadding = Arrangement.spacedBy(0.dp)
+/**
+ * 浮层列表本体：16dp 圆角、卡片底色（surfaceVariant）、带阴影，内容超高时可滚动
+ * （Miuix `WindowListPopup` 的观感）。出现时从行的右上角轻微放大淡入。
+ */
+@Composable
+private fun HiOptionDropdown(
+    options: List<HiOption>,
+    selectedKey: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val gapPx = with(LocalDensity.current) { 6.dp.roundToPx() }
+    val positionProvider = remember(gapPx) { HiOptionPopupPositionProvider(gapPx) }
+    Popup(
+        popupPositionProvider = positionProvider,
+        onDismissRequest = onDismiss,
+        properties = PopupProperties(
+            focusable = true,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+        ),
+    ) {
+        AnimatedVisibility(
+            visible = true,
+            enter = fadeIn(HiMotion.enter()) +
+                scaleIn(
+                    animationSpec = HiMotion.enter(),
+                    initialScale = 0.92f,
+                    transformOrigin = TransformOrigin(1f, 0f),
+                ),
+        ) {
+            Surface(
+                shape = RoundedCornerShape(16.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shadowElevation = 8.dp,
+                modifier = Modifier.widthIn(min = 196.dp),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    options.forEachIndexed { index, option ->
+                        HiOptionPopupEntry(
+                            label = option.label,
+                            selected = option.key == selectedKey,
+                            preview = option.preview,
+                            isFirst = index == 0,
+                            isLast = index == options.lastIndex,
+                            onClick = { onSelect(option.key) },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 浮层紧贴行的下缘、与行右对齐（Miuix `PopupPositionProvider.Align.End`）；
+ * 下方空间不够时翻到行上方，并始终夹在当前窗口内。
+ */
+private class HiOptionPopupPositionProvider(private val gapPx: Int) : PopupPositionProvider {
+    override fun calculatePosition(
+        anchorBounds: IntRect,
+        windowSize: IntSize,
+        layoutDirection: LayoutDirection,
+        popupContentSize: IntSize,
+    ): IntOffset {
+        val maxX = (windowSize.width - popupContentSize.width).coerceAtLeast(0)
+        val maxY = (windowSize.height - popupContentSize.height).coerceAtLeast(0)
+        val x = (anchorBounds.right - popupContentSize.width).coerceIn(0, maxX)
+        val below = anchorBounds.bottom + gapPx
+        val y = if (below <= maxY) {
+            below
+        } else {
+            (anchorBounds.top - popupContentSize.height - gapPx).coerceIn(0, maxY)
+        }
+        return IntOffset(x, y)
+    }
+}
