@@ -624,6 +624,9 @@
     <string name="settings_page_scan_desc">取り込んだフォルダの新規メディアを自動追加</string>
     <string name="settings_page_button_desc">オンオフ・見た目・色・文字と画像</string>
     <string name="settings_page_appearance_desc">言語・テーマモード・テーマカラー</string>
+    <string name="settings_page_favorites_desc">各グループのお気に入りの画像と動画</string>
+    <string name="settings_page_recent_desc">各画面で最近表示した壁紙</string>
+    <string name="settings_page_storage_desc">アプリの使用容量と購読のダウンロード</string>
     <string name="option_panel_title">選択</string>
     <string name="option_default">デフォルト</string>
     <string name="color_picker_title">色を選択</string>

@@ -228,6 +228,14 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                                     // 从文章列表打开的登录/编辑：回到那个源。
                                     is Screen.RssLogin, is Screen.RssSourceEdit ->
                                         leaveSourceEditor()
+                                    // 设置子页：顶栏箭头和系统返回键走同一条路
+                                    // （都回设置页）。之前这里一律回首页，和页面
+                                    // 自己注册的 BackHandler 行为不一致。
+                                    is Screen.WallpaperSettings, is Screen.SwitchMethods,
+                                    is Screen.FolderScan, is Screen.ButtonAppearance,
+                                    is Screen.Appearance, is Screen.Favorites,
+                                    is Screen.Recent, is Screen.Storage ->
+                                        currentScreen = Screen.Settings
                                     else -> currentScreen = Screen.Home
                                 }
                             }
@@ -414,7 +422,9 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                 )
                 is Screen.Favorites -> FavoritesScreen(
                     viewModel = viewModel,
-                    onBack = { currentScreen = Screen.Home },
+                    // 收藏页现在只从设置主界面进（§4.9.148），退出的父级就是设置；
+                    // 之前回首页和顶栏箭头 / 外层 BackHandler 的分支都不一致。
+                    onBack = { currentScreen = Screen.Settings },
                 )
                 is Screen.Recent -> RecentScreen(
                     viewModel = viewModel,

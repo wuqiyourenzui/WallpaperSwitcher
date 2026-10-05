@@ -15,7 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RssFeed
@@ -293,9 +292,9 @@ private fun StorageHeader(
 }
 
 /**
- * 三张数字卡 + 一张清理卡。
+ * 总览卡 + 订阅源下载分项卡 + 清理卡。
  *
- * 用可滚动 `Column` 而不是 LazyColumn：这里固定就四项，没有长列表的回收问题，
+ * 用可滚动 `Column` 而不是 LazyColumn：这里固定就三项，没有长列表的回收问题，
  * 而且整页高度很小（滚动只为"大字体 + 横屏"留余地）。
  */
 @Composable
@@ -319,9 +318,14 @@ private fun StorageContent(
         verticalArrangement = Arrangement.spacedBy(HiDims.CardSpacing),
     ) {
         StorageTotalCard(usage = usage)
-            // 「在线壁纸下载」那一栏已去掉：在线壁纸功能已经删除，这一页只统计
-            // 应用自己的下载（订阅源）。（早期下载残留的文件仍会被下面的
-            // 「清理残留文件」当成孤儿一起清掉。）
+        // 「在线壁纸下载」那一栏不回来：在线壁纸功能已经删除，这一页只统计应用
+        // 自己的下载（订阅源）。早期在线下载残留仍在总量里，会被下面的「清理
+        // 残留文件」当成孤儿清掉，所以总量可能大于这一栏 —— 这正是要分项的原因。
+        StorageDirCard(
+            name = stringResource(R.string.storage_rss),
+            icon = Icons.Outlined.RssFeed,
+            dir = usage.rss,
+        )
         StorageCleanCard(
             orphans = orphans,
             cleaned = cleaned,
@@ -371,10 +375,10 @@ private fun StorageTotalCard(usage: StorageUsage) {
 }
 
 /**
- * 一张分项卡（订阅源下载 / 在线壁纸下载）：名称 + 文件数，右侧是大小。
+ * 一张分项卡（订阅源下载）：名称 + 文件数，右侧是大小。
  *
- * 两张分开而不是塞进一张卡的两行：这两个目录的清理方式确实不同（订阅源还有"用户自选
- * 下载目录"那条路径），分开显示才对得上"钱花在哪"。
+ * 单独立卡而不是并进总览：总量里还可能有 `files/online` 的历史残留，分开显示才对得上
+ * "钱花在哪"，也让订阅源这一栏的数字就是 `files/rss` 本身。
  */
 @Composable
 private fun StorageDirCard(

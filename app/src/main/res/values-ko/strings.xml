@@ -624,6 +624,9 @@
     <string name="settings_page_scan_desc">가져온 폴더의 새 미디어 자동 추가</string>
     <string name="settings_page_button_desc">켜기/끄기, 모양, 색상, 텍스트와 이미지</string>
     <string name="settings_page_appearance_desc">언어, 테마 모드, 테마 색상</string>
+    <string name="settings_page_favorites_desc">모든 그룹에서 즐겨찾기한 사진과 동영상</string>
+    <string name="settings_page_recent_desc">각 화면에 최근 표시된 배경 화면</string>
+    <string name="settings_page_storage_desc">앱 사용 공간과 구독 다운로드</string>
     <string name="option_panel_title">선택</string>
     <string name="option_default">기본</string>
     <string name="color_picker_title">색상 선택</string>

@@ -631,6 +631,9 @@
     <string name="settings_page_scan_desc">自动把文件夹里的新增媒体加入分组</string>
     <string name="settings_page_button_desc">开关、外观、颜色、文字与图片</string>
     <string name="settings_page_appearance_desc">语言、主题模式与主题颜色</string>
+    <string name="settings_page_favorites_desc">各个分组里收藏的图片与视频</string>
+    <string name="settings_page_recent_desc">每块屏幕最近显示过的壁纸</string>
+    <string name="settings_page_storage_desc">应用占用空间与订阅下载文件</string>
     <string name="option_panel_title">选择</string>
     <string name="option_default">默认</string>
     <string name="color_picker_title">选择颜色</string>

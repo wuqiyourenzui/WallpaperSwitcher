@@ -658,6 +658,9 @@
     <string name="settings_page_scan_desc">Add new media from imported folders automatically</string>
     <string name="settings_page_button_desc">Toggle, look, colour, text and image</string>
     <string name="settings_page_appearance_desc">Language, theme mode and colour</string>
+    <string name="settings_page_favorites_desc">Favourited photos and videos from every group</string>
+    <string name="settings_page_recent_desc">Wallpapers recently shown on each screen</string>
+    <string name="settings_page_storage_desc">App footprint and subscription downloads</string>
     <string name="option_panel_title">Choose</string>
     <string name="option_default">Default</string>
     <string name="color_picker_title">Pick a colour</string>

@@ -6252,6 +6252,34 @@ UID，这个开关跟着掉回默认拒绝 —— 用户上一次「另一个 AI
 **验证**：`:app:assembleDebug` ✓、单元测试 **454 条全绿**（`HiOptionLogicTest`
 覆盖的选项表 / 当前值归一化逻辑不变，只是外壳换了）。
 
+#### 4.9.148 设置页导航收口：收藏 / 最近显示 / 存储与流量挂到「外观」下面，存储页恢复订阅源分项
+
+用户要求：①「存储与流量、最近显示、收藏聚合页在设置没有入口，把它们放到外观
+下面」；②「收藏退出后返回设置」；③「存储与流量增加，订阅源下载占用」。
+
+三个页面（`FavoritesScreen` / `RecentScreen` / `StorageScreen`）在 `d8459f9` 的
+设置改版后都只剩页面：收藏只在返回分支里出现过，最近 / 存储连入口都没有，只能
+从别的流程绕进去。改动：
+
+1. `SettingsScreen` 的「设置」一节在「外观」行后追加三行入口：收藏
+   （`FavoriteBorder`）、最近显示（`History`）、存储与流量（`Storage`），都用
+   `SettingsPageEntry` + 分隔线，点行进对应页面；新增
+   `settings_page_favorites_desc` / `settings_page_recent_desc` /
+   `settings_page_storage_desc` 三条描述字符串（7 个语言，`LocaleResourcesTest`
+   管键对齐）。
+2. 返回路径统一回设置：`WallpaperSwitcherApp` 顶栏返回箭头原先对设置子页一律
+   `currentScreen = Screen.Home`，和页面自己注册的 `BackHandler`（回设置）不一致，
+   现在两者都回 `Screen.Settings`；`FavoritesScreen` 的 `onBack` 也从 `Home` 改成
+   `Settings`。
+3. 「存储与流量」页把 `d8459f9` 写好却从未接上的订阅源分项卡接上：总览卡下面用
+   `StorageDirCard` 显示 `usage.rss`（`storage_rss` = 订阅源下载 + 文件数 + 大小，
+   右侧主题色数字），顺手删掉只为已删除的「在线壁纸下载」留的 `CloudDownload`
+   import。总量仍含 `files/online` 的历史残留（由孤儿清理负责），所以分项数字
+   可能小于总量 —— 这正是分项的目的。
+
+**验证**：单元测试 **454 条全绿**、`:app:assembleDebug` ✓、已装机（启动无崩溃）；
+本轮按用户要求不做截图分析，页面效果由用户直接核对。
+
 ---
 
 ## 七、权限声明

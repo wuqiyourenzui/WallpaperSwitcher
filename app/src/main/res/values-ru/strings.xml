@@ -636,6 +636,9 @@
     <string name="settings_page_scan_desc">Автоматически добавлять новые файлы из папок</string>
     <string name="settings_page_button_desc">Включение, вид, цвет, текст и картинка</string>
     <string name="settings_page_appearance_desc">Язык, тема и цвет</string>
+    <string name="settings_page_favorites_desc">Избранные фото и видео из всех групп</string>
+    <string name="settings_page_recent_desc">Обои, недавно показанные на каждом экране</string>
+    <string name="settings_page_storage_desc">Занятое приложением место и загрузки подписок</string>
     <string name="option_panel_title">Выбор</string>
     <string name="option_default">По умолчанию</string>
     <string name="color_picker_title">Выбор цвета</string>

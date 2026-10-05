@@ -628,6 +628,9 @@
     <string name="settings_page_scan_desc">Añadir automáticamente medios nuevos de las carpetas</string>
     <string name="settings_page_button_desc">Interruptor, aspecto, color, texto e imagen</string>
     <string name="settings_page_appearance_desc">Idioma, tema y color</string>
+    <string name="settings_page_favorites_desc">Fotos y vídeos favoritos de todos los grupos</string>
+    <string name="settings_page_recent_desc">Fondos mostrados recientemente en cada pantalla</string>
+    <string name="settings_page_storage_desc">Espacio de la app y descargas de suscripciones</string>
     <string name="option_panel_title">Elegir</string>
     <string name="option_default">Predeterminado</string>
     <string name="color_picker_title">Elegir color</string>

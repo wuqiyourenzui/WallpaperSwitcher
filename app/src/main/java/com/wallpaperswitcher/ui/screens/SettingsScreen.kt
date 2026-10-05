@@ -207,6 +207,29 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_page_appearance_desc),
                 onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.Appearance) },
             )
+            // 收藏 / 最近显示 / 存储与流量原先只有页面、没有入口（只能从大图浏览等
+            // 路径绕进去），统一挂到「外观」下面，设置页就是全部页面的索引。
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsPageEntry(
+                icon = Icons.Outlined.FavoriteBorder,
+                title = stringResource(R.string.favorites_title),
+                subtitle = stringResource(R.string.settings_page_favorites_desc),
+                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.Favorites) },
+            )
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsPageEntry(
+                icon = Icons.Outlined.History,
+                title = stringResource(R.string.recent_title),
+                subtitle = stringResource(R.string.settings_page_recent_desc),
+                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.Recent) },
+            )
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsPageEntry(
+                icon = Icons.Outlined.Storage,
+                title = stringResource(R.string.storage_title),
+                subtitle = stringResource(R.string.settings_page_storage_desc),
+                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.Storage) },
+            )
         }
         Spacer(modifier = Modifier.height(8.dp))
 
