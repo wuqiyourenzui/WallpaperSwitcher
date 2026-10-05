@@ -79,6 +79,17 @@ class FakeWallpaperImageDao(
     override suspend fun getImagesByGroupSync(groupId: Long): List<WallpaperImage> =
         images.filter { it.groupId == groupId }
 
+    /** Mirrors the paginated query of the group grid (see engine.MediaWindow). */
+    override suspend fun getImagesByGroupPage(
+        groupId: Long,
+        limit: Int,
+        offset: Int,
+    ): List<WallpaperImage> = images
+        .filter { it.groupId == groupId }
+        .sortedWith(compareByDescending<WallpaperImage> { it.addedAt }.thenByDescending { it.id })
+        .drop(offset.coerceAtLeast(0))
+        .take(limit.coerceAtLeast(0))
+
     override suspend fun getAllImagesSync(): List<WallpaperImage> = images.toList()
 
     override suspend fun getImageById(id: Long): WallpaperImage? =

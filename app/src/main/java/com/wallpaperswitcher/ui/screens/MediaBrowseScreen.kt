@@ -259,6 +259,8 @@ fun MediaBrowseScreen(
     val context = LocalContext.current
     val groups by viewModel.groups.collectAsStateWithLifecycle()
     val images by viewModel.loadedImages.collectAsStateWithLifecycle()
+    val windowStart by viewModel.windowStart.collectAsStateWithLifecycle()
+    val totalCount by viewModel.totalImageCount.collectAsStateWithLifecycle()
     val mediaCounts by viewModel.mediaCounts.collectAsStateWithLifecycle()
     val favorites by viewModel.favorites.collectAsStateWithLifecycle()
     val isLoadingImages by viewModel.isLoadingImages.collectAsStateWithLifecycle()
@@ -289,9 +291,15 @@ fun MediaBrowseScreen(
         }
     }
 
-    val count = images.size
+    // 分页窗口：images 只是已加载的一段，位置用整组里的绝对下标表示
+    // （见 engine.MediaWindow）；总数还没到时退回已加载张数，避免空指针式白屏。
+    val count = if (totalCount > 0) totalCount else images.size
     val index = clampBrowseIndex(position, count)
-    val current = images.getOrNull(index)
+    val current = images.getOrNull(index - windowStart)
+    // 翻到窗口边缘就补下一页；快速连翻也只排一个补页任务。
+    LaunchedEffect(index, windowStart, count) {
+        if (count > 0) viewModel.ensureMediaRange(index - 1, index + 1)
+    }
     val groupName = groups.firstOrNull { it.id == groupId }?.name
         ?: stringResource(R.string.browse_title)
     val isFavorite = current != null && current.uri in favoriteUris
@@ -329,7 +337,7 @@ fun MediaBrowseScreen(
     // 而手势层的 Modifier 只构造一次（重建 pointerInput 会掐断进行中的手势）。
     val onAction: (BrowseAction) -> Unit = { action ->
         // 每次都从当前状态重新取：同一帧里连点两下也要各自前进一张。
-        val shown = images.getOrNull(clampBrowseIndex(position, images.size))
+        val shown = images.getOrNull(clampBrowseIndex(position, count) - windowStart)
         when (action) {
             BrowseAction.Previous -> if (count > 0) {
                 position = previousBrowseIndex(position, count)
@@ -397,7 +405,9 @@ fun MediaBrowseScreen(
                         targetHeight = targetH,
                         modifier = Modifier.fillMaxSize(),
                     )
-                    isLoadingImages -> HiLoadingState(
+                    // 窗口还没盖到这一张（分页补页中）与首屏加载一样显示加载态，
+                    // 而不是"没有素材"——否则快速翻页时会闪一下空状态。
+                    isLoadingImages || count > 0 -> HiLoadingState(
                         text = stringResource(R.string.state_loading),
                         modifier = Modifier.fillMaxSize(),
                     )

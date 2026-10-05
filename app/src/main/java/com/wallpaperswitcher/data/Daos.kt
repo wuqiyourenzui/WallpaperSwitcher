@@ -100,6 +100,24 @@ interface WallpaperImageDao {
     @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC, id DESC")
     suspend fun getImagesByGroupSync(groupId: Long): List<WallpaperImage>
 
+    /**
+     * One page of a group's grid (see engine.MediaWindow): the detail screen keeps
+     * only a window of rows in memory instead of the whole group.
+     *
+     * The ORDER BY must stay identical to [getImagesByGroupSync] - OFFSET paging
+     * is only stable when the ordering is total and deterministic (addedAt alone
+     * is not: a folder import stamps the same millisecond on every row).
+     */
+    @Query(
+        "SELECT * FROM wallpaper_images WHERE groupId = :groupId " +
+            "ORDER BY addedAt DESC, id DESC LIMIT :limit OFFSET :offset"
+    )
+    suspend fun getImagesByGroupPage(
+        groupId: Long,
+        limit: Int,
+        offset: Int,
+    ): List<WallpaperImage>
+
     /** Every media row; the duplicate sweep filters it down itself. */
     @Query("SELECT * FROM wallpaper_images")
     suspend fun getAllImagesSync(): List<WallpaperImage>

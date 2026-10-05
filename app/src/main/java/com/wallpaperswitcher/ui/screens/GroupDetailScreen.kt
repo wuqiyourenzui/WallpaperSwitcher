@@ -28,7 +28,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -70,6 +70,7 @@ import com.wallpaperswitcher.engine.WallpaperTarget
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.wallpaperswitcher.ui.theme.HiEmptyState
@@ -114,6 +115,7 @@ fun GroupDetailScreen(
     val context = LocalContext.current
     val group by viewModel.selectedGroup.collectAsStateWithLifecycle()
     val images by viewModel.loadedImages.collectAsStateWithLifecycle()
+    val windowStart by viewModel.windowStart.collectAsStateWithLifecycle()
     val totalCount by viewModel.totalImageCount.collectAsStateWithLifecycle()
     val isLoadingImages by viewModel.isLoadingImages.collectAsStateWithLifecycle()
     // NOTE: scanProgress is deliberately NOT collected here any more. It changes
@@ -134,9 +136,28 @@ fun GroupDetailScreen(
     var brokenMedia by remember { mutableStateOf<List<WallpaperImage>?>(null) }
     var cleaningBroken by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
-    // Grid scroll state: used by the right-edge fast scroller. All images are
-    // loaded on open (no paging), so no load-more trigger is needed.
+    // Grid scroll state: used by the right-edge fast scroller and by the
+    // window prefetch below.
     val gridState = rememberLazyGridState()
+
+    // 分页窗口预取：网格按下标渲染整组（没加载的格子先画占位），这里盯着可见
+    // 范围，让 ViewModel 把边缘那一页补上。拖快速滚动条跳到远处时，layoutInfo
+    // 报出的就是目标下标，于是直接换成以目标为中心的一页（见 engine.MediaWindow）。
+    LaunchedEffect(gridState) {
+        snapshotFlow {
+            val visible = gridState.layoutInfo.visibleItemsInfo
+            (visible.firstOrNull()?.index ?: -1) to (visible.lastOrNull()?.index ?: -1)
+        }
+            .distinctUntilChanged()
+            .collect { (first, last) ->
+                if (first >= 0 && last >= first) {
+                    viewModel.ensureMediaRange(
+                        first - com.wallpaperswitcher.engine.MediaWindow.PREFETCH,
+                        last + com.wallpaperswitcher.engine.MediaWindow.PREFETCH,
+                    )
+                }
+            }
+    }
 
     // Refresh images when the screen becomes visible. After an activity or
     // process recreation (e.g. returning from the system live-wallpaper
@@ -234,7 +255,10 @@ fun GroupDetailScreen(
             GroupInfoHeader(
                 group = currentGroup,
                 imageCount = totalCount,
-                loadedCount = images.size,
+                // 窗口化分页之后 images 只是"已加载的一段"，比总数小是常态；
+                // 头部的"（已加载 N）"提示只对"后台还在补数据"有意义，这里传
+                // 总数即可（真正的加载中状态由下面的 loading/占位格子表达）。
+                loadedCount = totalCount,
                 onTargetChange = { target -> viewModel.setGroupTarget(currentGroup.id, target) },
                 onIntervalChange = { ms -> viewModel.setGroupInterval(currentGroup.id, ms) },
                 onWindowChange = { from, to ->
@@ -411,11 +435,22 @@ fun GroupDetailScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    itemsIndexed(
-                        images,
-                        key = { _, image -> image.id },
-                        contentType = { _, _ -> "media" }
-                    ) { _, image ->
+                    items(
+                        // 按整组数量渲染：没加载到的下标先画占位格子，滚动/跳转时
+                        // 由上面的预取把对应的一页取回来（大分组不再一次性入内存）。
+                        count = totalCount,
+                        // 已加载的格子用媒体 id（id 恒为正）；占位格子用负数下标，
+                        // 保证 key 唯一且稳定，加载完成后换成真实 id 不会撞车。
+                        key = { index ->
+                            images.getOrNull(index - windowStart)?.id ?: -(index.toLong() + 1L)
+                        },
+                        contentType = { "media" }
+                    ) { index ->
+                        val image = images.getOrNull(index - windowStart)
+                        if (image == null) {
+                            MediaPlaceholderItem()
+                            return@items
+                        }
                         // Per-key snapshot read: only THIS item recomposes when its
                         // own selection changes. The callbacks are remembered per
                         // image id so unchanged items skip recomposition when the
@@ -458,7 +493,9 @@ fun GroupDetailScreen(
                 // through the images of this group.
                 GridFastScroller(
                     gridState = gridState,
-                    itemCount = images.size,
+                    // 整组数量：跳转目标就是整组里的绝对下标（远跳由窗口机制
+                    // 换成目标附近的一页，不会把中间的都读进来）。
+                    itemCount = totalCount,
                     modifier = Modifier.align(Alignment.CenterEnd)
                 )
             }
@@ -982,6 +1019,22 @@ private fun ScanProgressCard(viewModel: WallpaperViewModel) {
         }
     }
     }
+}
+
+/**
+ * 还没加载到的格子（窗口化分页，见 engine.MediaWindow）。
+ *
+ * 尺寸与 [ImageGridItem] 一致（正方形 + 12dp 圆角），所以列表的布局与滚动条
+ * 位置在整个滚动过程中都稳定——数据到了以后只是把这张换掉，不会跳。
+ */
+@Composable
+private fun MediaPlaceholderItem() {
+    Box(
+        modifier = Modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+    )
 }
 
 @Composable
