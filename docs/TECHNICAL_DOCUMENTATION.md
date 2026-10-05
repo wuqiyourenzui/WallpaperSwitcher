@@ -6815,6 +6815,36 @@ uiautomator 把清晰度切到「关闭」拍一张、再切到「画质增强�
 **验证**：530 条单测全绿、`:app:assembleDebug` ✓、已装机（崩溃扫描干净）。
 设备仍是安全锁屏，未做界面人工走查。
 
+#### 4.9.163 修复：配置导出/导入互相锁死（取消一次后另一个点不开）
+
+用户反馈："配置导入和导出有问题，点击其中一个，另一个无法打开文件管理器"。
+
+**根因**：「配置导出 / 导入」两行共用同一个 `busy` 标志，它在**点击时**置 true，
+而回调里只在成功路径的 `finally` 复位。用户取消文件选择器时（或选择器被系统收回，
+`uri == null`）代码在开头就 `return@rememberLauncherForActivityResult`，`finally`
+根本不会执行 —— `busy` 永远停在 true，两行都是
+`clickable(enabled = !busy)`，于是**两个入口一起变灰**（没有涟漪、不再弹选择器），
+只有重启应用才能恢复。这也解释了为什么"点一个之后另一个打不开"：其实两个都点不
+开了，只是用户先点了其中一个。
+
+**修复**（`SettingsScreen` 配置导出 / 导入两处）：
+
+1. `uri == null`（取消）时立刻复位 `busy`；
+2. `launcher.launch()` 本身抛异常（设备没有可用的文件管理器 / `ActivityNotFoundException`）
+   时也复位并提示 —— 新增 7 语言字符串 `toast_picker_unavailable_generic`
+   （"无法打开文件管理器：%1$s"），不再让一处失败把两个入口一起拖死。
+
+**真机验证**（平板 25053RP5CC，本次设备已解锁，用 UI 层级 dump 定位坐标，
+按用户要求**不截图**）：
+
+| 步骤 | 结果 |
+|---|---|
+| 设置 → 点「导出配置」 | `com.google.android.documentsui/...PickActivity` 获得焦点 ✓ |
+| 返回取消 → 点「导入配置」 | `com.android.fileexplorer/...PickMainNavigatorActivity` 获得焦点 ✓（修复前此步无效） |
+| 取消导入 → 再点「导出配置」 | 文档选择器再次打开 ✓（双向都通） |
+
+530 条单测全绿、`:app:assembleDebug` ✓、崩溃扫描干净。
+
 ---
 
 ## 七、权限声明

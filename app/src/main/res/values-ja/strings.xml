@@ -354,6 +354,7 @@
     <string name="toast_config_export_failed">エクスポートに失敗: %1$s</string>
     <string name="toast_config_imported">グループ %1$d 件、購読 %2$d 件をインポートしました</string>
     <string name="toast_config_import_failed">インポートに失敗: %1$s</string>
+    <string name="toast_picker_unavailable_generic">ファイル選択画面を開けません: %1$s</string>
     <!-- 一括無効化 / カスタム一時停止 -->
     <string name="action_disable">無効化</string>
     <string name="pause_custom_title">カスタム</string>

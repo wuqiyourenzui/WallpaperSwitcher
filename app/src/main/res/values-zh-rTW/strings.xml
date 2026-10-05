@@ -357,6 +357,7 @@
     <string name="toast_config_export_failed">匯出失敗：%1$s</string>
     <string name="toast_config_imported">已匯入 %1$d 個分組、%2$d 個訂閱源</string>
     <string name="toast_config_import_failed">匯入失敗：%1$s</string>
+    <string name="toast_picker_unavailable_generic">無法開啟檔案管理員：%1$s</string>
     <!-- 批次不啟用 / 自訂暫停 -->
     <string name="action_disable">不啟用</string>
     <string name="pause_custom_title">自訂</string>

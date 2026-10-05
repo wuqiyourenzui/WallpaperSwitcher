@@ -388,6 +388,7 @@
     <string name="toast_config_export_failed">Export failed: %1$s</string>
     <string name="toast_config_imported">Imported %1$d groups and %2$d subscriptions</string>
     <string name="toast_config_import_failed">Import failed: %1$s</string>
+    <string name="toast_picker_unavailable_generic">Cannot open the file picker: %1$s</string>
     <!-- Batch disable / custom snooze -->
     <string name="action_disable">Disable</string>
     <string name="pause_custom_title">Custom</string>

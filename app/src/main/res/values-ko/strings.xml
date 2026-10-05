@@ -354,6 +354,7 @@
     <string name="toast_config_export_failed">내보내기 실패: %1$s</string>
     <string name="toast_config_imported">그룹 %1$d개, 구독 %2$d개를 가져왔습니다</string>
     <string name="toast_config_import_failed">가져오기 실패: %1$s</string>
+    <string name="toast_picker_unavailable_generic">파일 선택기를 열 수 없습니다: %1$s</string>
     <!-- 일괄 비활성화 / 사용자 지정 일시중지 -->
     <string name="action_disable">비활성화</string>
     <string name="pause_custom_title">사용자 지정</string>

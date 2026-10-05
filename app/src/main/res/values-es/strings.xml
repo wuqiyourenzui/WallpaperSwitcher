@@ -358,6 +358,7 @@
     <string name="toast_config_export_failed">Error al exportar: %1$s</string>
     <string name="toast_config_imported">Se importaron %1$d grupos y %2$d suscripciones</string>
     <string name="toast_config_import_failed">Error al importar: %1$s</string>
+    <string name="toast_picker_unavailable_generic">No se puede abrir el explorador de archivos: %1$s</string>
     <!-- Desactivación en lote / pausa personalizada -->
     <string name="action_disable">Desactivar</string>
     <string name="pause_custom_title">Personalizado</string>

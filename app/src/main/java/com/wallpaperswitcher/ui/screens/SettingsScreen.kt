@@ -289,7 +289,13 @@ fun SettingsScreen(
             val exportLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.CreateDocument("application/json")
             ) { uri: Uri? ->
-                if (uri == null) return@rememberLauncherForActivityResult
+                // 取消（或系统收回选择器）也要复位：busy 是在点击时置位的，
+                // 只在这里的成功分支里复位会让两行一起变灰 —— 于是"点了一个，
+                // 另一个再也打不开文件管理器"（用户反馈的正是这个）。
+                if (uri == null) {
+                    busy = false
+                    return@rememberLauncherForActivityResult
+                }
                 scope.launch {
                     try {
                         val text = viewModel.exportConfigText()
@@ -316,7 +322,11 @@ fun SettingsScreen(
             val importLauncher = rememberLauncherForActivityResult(
                 contract = ActivityResultContracts.OpenDocument()
             ) { uri: Uri? ->
-                if (uri == null) return@rememberLauncherForActivityResult
+                // 同导出：取消选择器必须复位 busy，否则两个入口一起卡死。
+                if (uri == null) {
+                    busy = false
+                    return@rememberLauncherForActivityResult
+                }
                 scope.launch {
                     try {
                         val text = context.contentResolver.openInputStream(uri)?.use { input ->
@@ -349,7 +359,20 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .clickable(enabled = !busy) {
                         busy = true
-                        exportLauncher.launch("wallpaper-switcher-config.json")
+                        // launch() 本身也可能抛（设备没有可用的文件管理器）：
+                        // 那样 busy 会永远停在 true，两个入口一起点不开。
+                        try {
+                            exportLauncher.launch("wallpaper-switcher-config.json")
+                        } catch (t: Throwable) {
+                            busy = false
+                            Toast.makeText(
+                                context,
+                                context.getString(
+                                    R.string.toast_picker_unavailable_generic, t.message.orEmpty()
+                                ),
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                     }
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -374,7 +397,18 @@ fun SettingsScreen(
                     .fillMaxWidth()
                     .clickable(enabled = !busy) {
                         busy = true
-                        importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        try {
+                            importLauncher.launch(arrayOf("application/json", "text/plain", "*/*"))
+                        } catch (t: Throwable) {
+                            busy = false
+                            Toast.makeText(
+                                context,
+                                context.getString(
+                                    R.string.toast_picker_unavailable_generic, t.message.orEmpty()
+                                ),
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
                     }
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically

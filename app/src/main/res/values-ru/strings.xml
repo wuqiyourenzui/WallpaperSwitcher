@@ -366,6 +366,7 @@
     <string name="toast_config_export_failed">Ошибка экспорта: %1$s</string>
     <string name="toast_config_imported">Импортировано групп: %1$d, подписок: %2$d</string>
     <string name="toast_config_import_failed">Ошибка импорта: %1$s</string>
+    <string name="toast_picker_unavailable_generic">Не удалось открыть выбор файлов: %1$s</string>
     <!-- Массовое отключение / своя пауза -->
     <string name="action_disable">Отключить</string>
     <string name="pause_custom_title">Своё время</string>
