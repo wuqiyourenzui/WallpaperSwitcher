@@ -278,6 +278,59 @@ class WallpaperRenderer(
                 gl_FragColor = clamp(s, 0.0, 1.0);
             }
         """
+
+        /**
+         * Pre-enhancement shader sources, kept as the automatic fallback.
+         *
+         * A wallpaper that fails to compile its shader is a black wallpaper, and
+         * the enhancement path is opt-in: if a driver rejects the bicubic
+         * version (old GPU, mediump quirk), the engine silently falls back to
+         * these and keeps working - the uEnhance / uSrcTexel uniform locations
+         * are simply -1 then and the extra uniforms are ignored.
+         */
+        private const val IMAGE_FRAGMENT_SHADER_FALLBACK = """
+            precision mediump float;
+            uniform sampler2D uTexture;
+            uniform vec2 uTexelSize;
+            uniform float uSharp;
+            uniform float uAlpha;
+            varying vec2 vTexCoord;
+            void main() {
+                vec4 c = texture2D(uTexture, vTexCoord);
+                if (uSharp <= 0.001) {
+                    gl_FragColor = vec4(c.rgb, uAlpha);
+                    return;
+                }
+                vec4 s = c * (1.0 + 4.0 * uSharp)
+                       - (texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0))
+                        + texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0))
+                        + texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y))
+                        + texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y))) * uSharp;
+                gl_FragColor = clamp(vec4(s.rgb, uAlpha), 0.0, 1.0);
+            }
+        """
+
+        private const val VIDEO_FRAGMENT_SHADER_FALLBACK = """
+            #extension GL_OES_EGL_image_external : require
+            precision mediump float;
+            uniform samplerExternalOES uTexture;
+            uniform vec2 uTexelSize;
+            uniform float uSharp;
+            varying vec2 vTexCoord;
+            void main() {
+                vec4 c = texture2D(uTexture, vTexCoord);
+                if (uSharp <= 0.001) {
+                    gl_FragColor = c;
+                    return;
+                }
+                vec4 s = c * (1.0 + 4.0 * uSharp)
+                       - (texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0))
+                        + texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0))
+                        + texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y))
+                        + texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y))) * uSharp;
+                gl_FragColor = clamp(s, 0.0, 1.0);
+            }
+        """
     }
 
     // EGL — all access on render thread only
@@ -3617,6 +3670,17 @@ class WallpaperRenderer(
     private fun setupGlResources() {
         imageProgram = createProgram(VERTEX_SHADER, IMAGE_FRAGMENT_SHADER)
         videoProgram = createProgram(VERTEX_SHADER, VIDEO_FRAGMENT_SHADER)
+        // A driver that rejects the enhancement shader must not leave a black
+        // wallpaper behind: fall back to the pre-enhancement source (the extra
+        // uniform locations stay -1 and their glUniform calls are ignored).
+        if (imageProgram == 0) {
+            AppLog.w(TAG, "Enhanced image shader failed; using the classic source")
+            imageProgram = createProgram(VERTEX_SHADER, IMAGE_FRAGMENT_SHADER_FALLBACK)
+        }
+        if (videoProgram == 0) {
+            AppLog.w(TAG, "Enhanced video shader failed; using the classic source")
+            videoProgram = createProgram(VERTEX_SHADER, VIDEO_FRAGMENT_SHADER_FALLBACK)
+        }
         imageTexMatLoc = GLES20.glGetUniformLocation(imageProgram, "uTexMatrix")
         imageTexLoc = GLES20.glGetUniformLocation(imageProgram, "uTexture")
         imagePosLoc = GLES20.glGetAttribLocation(imageProgram, "aPosition")

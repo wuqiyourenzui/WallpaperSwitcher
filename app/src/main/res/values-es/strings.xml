@@ -63,8 +63,8 @@
     <string name="settings_auto_rotate_hint">Gira 90° si la orientación no coincide (Ajustar muestra más)</string>
     <string name="settings_ken_burns">Zoom suave en imágenes fijas</string>
     <string name="settings_ken_burns_hint">Los fondos fijos se acercan y alejan lentamente; consume algo más de batería</string>
-    <string name="settings_quality_enhance">Mejora de calidad con IA</string>
-    <string name="settings_quality_enhance_hint">Escalado más nítido para fotos y vídeos de baja resolución (experimental; algo más de batería)</string>
+    <string name="settings_quality_enhance">Mejora de calidad (superresolución)</string>
+    <string name="settings_quality_enhance_hint">Escalado con superresolución para fotos y vídeos de baja resolución (experimental; algo más de batería)</string>
     <string name="settings_rotate_direction">Sentido de giro</string>
     <string name="rotate_clockwise">Horario</string>
     <string name="rotate_counter_clockwise">Antihorario</string>

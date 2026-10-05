@@ -63,8 +63,8 @@
     <string name="settings_auto_rotate_hint">向きが合わないとき 90° 回転（フィット時は表示が広がります）</string>
     <string name="settings_ken_burns">静止画のゆっくりズーム</string>
     <string name="settings_ken_burns_hint">静止画の壁紙がゆっくり拡大縮小します。消費電力が少し増えます</string>
-    <string name="settings_quality_enhance">AI 画質強化</string>
-    <string name="settings_quality_enhance_hint">低解像度の画像・動画を拡大表示するときに超解像でくっきり（実験的、消費電力は少し増）</string>
+    <string name="settings_quality_enhance">画質強化（超解像）</string>
+    <string name="settings_quality_enhance_hint">低解像度の画像・動画を拡大表示するときに超解像処理（実験的、消費電力は少し増）</string>
     <string name="settings_rotate_direction">回転方向</string>
     <string name="rotate_clockwise">時計回り</string>
     <string name="rotate_counter_clockwise">反時計回り</string>
