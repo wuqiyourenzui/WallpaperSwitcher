@@ -636,6 +636,12 @@
     <string name="storage_policy_mb">%1$d MB</string>
     <string name="rss_blocked_wifi">\'Wi-Fi에서만\'이 켜져 있고 현재 모바일 네트워크입니다</string>
     <string name="rss_blocked_limit">오늘의 구독 다운로드 한도에 도달했습니다</string>
+    <string name="storage_dedupe_title">중복 이미지 정리</string>
+    <string name="storage_dedupe_hint">같은 이미지의 여러 크기(구독 썸네일과 원본 등)는 가장 큰 것만 남깁니다. 앱이 다운로드한 이미지만 대상</string>
+    <string name="storage_dedupe_action">중복 찾아 정리</string>
+    <string name="storage_dedupe_scanning">중복 찾는 중…</string>
+    <string name="storage_dedupe_none">중복 이미지가 없습니다</string>
+    <string name="storage_dedupe_done">중복 이미지 %1$d장을 삭제하고 %2$s를 확보했습니다</string>
     <string name="browse_set_live">라이브 배경화면으로 설정</string>
     <string name="settings_page_wallpaper">배경화면 설정</string>
     <string name="settings_page_switch">전환 방식</string>

@@ -648,6 +648,12 @@
     <string name="storage_policy_mb">%1$d МБ</string>
     <string name="rss_blocked_wifi">Включено «Только по Wi-Fi», а сейчас мобильная сеть</string>
     <string name="rss_blocked_limit">Дневной лимит загрузок подписок достигнут</string>
+    <string name="storage_dedupe_title">Очистка дубликатов</string>
+    <string name="storage_dedupe_hint">Одно и то же изображение в разных размерах (миниатюра подписки и оригинал) — остаётся только самое большое; только скачанные приложением файлы</string>
+    <string name="storage_dedupe_action">Найти и удалить дубликаты</string>
+    <string name="storage_dedupe_scanning">Поиск дубликатов…</string>
+    <string name="storage_dedupe_none">Дубликаты не найдены</string>
+    <string name="storage_dedupe_done">Удалено дубликатов: %1$d, освобождено %2$s</string>
     <string name="browse_set_live">Как живые обои</string>
     <string name="settings_page_wallpaper">Обои</string>
     <string name="settings_page_switch">Переключение</string>

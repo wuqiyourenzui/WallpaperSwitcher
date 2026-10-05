@@ -79,6 +79,8 @@ class FakeWallpaperImageDao(
     override suspend fun getImagesByGroupSync(groupId: Long): List<WallpaperImage> =
         images.filter { it.groupId == groupId }
 
+    override suspend fun getAllImagesSync(): List<WallpaperImage> = images.toList()
+
     override suspend fun getImageById(id: Long): WallpaperImage? =
         images.firstOrNull { it.id == id }
 

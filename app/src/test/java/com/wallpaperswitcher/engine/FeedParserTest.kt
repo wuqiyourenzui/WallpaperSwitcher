@@ -109,6 +109,37 @@ class FeedParserTest {
     }
 
     @Test
+    fun imageUrlPrefersLazyDataAttributesOverAPlaceholderSrc() {
+        // 懒加载画廊：src 是占位图（data: URI 会被跳过），真实地址在 data-src。
+        assertEquals(
+            "https://x/big.jpg",
+            FeedParser.firstImageUrl("""<img src="data:image/gif;base64,R0lGOD" data-src="https://x/big.jpg">""")
+        )
+        // 占位 src 是普通小图、data-* 在后面出现时也必须由 data-* 赢。
+        assertEquals(
+            "https://x/orig.jpg",
+            FeedParser.firstImageUrl("""<img src="https://x/thumb.jpg" data-original="https://x/orig.jpg">""")
+        )
+    }
+
+    @Test
+    fun imageUrlFallsBackToSrcsetBeforePlainSrc() {
+        // srcset 取站点自己标的第一个（列表/选择器都用它做展示尺寸）。
+        assertEquals(
+            "https://x/small.jpg",
+            FeedParser.firstImageUrl(
+                """<img src="https://x/thumb.jpg" srcset="https://x/small.jpg 300w, https://x/large.jpg 1200w">"""
+            )
+        )
+        assertEquals(
+            "https://x/a.jpg",
+            FeedParser.firstImageUrl(
+                """<img src="https://x/thumb.jpg" data-srcset="https://x/a.jpg 480w, https://x/b.jpg 960w">"""
+            )
+        )
+    }
+
+    @Test
     fun malformedFeedYieldsNothing() {
         assertTrue(FeedParser.parse("<rss").isEmpty())
         assertTrue(FeedParser.parse("{oops").isEmpty())

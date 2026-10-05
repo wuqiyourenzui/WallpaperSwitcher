@@ -636,6 +636,12 @@
     <string name="storage_policy_mb">%1$d MB</string>
     <string name="rss_blocked_wifi">「Wi-Fi のみ」が有効で、現在はモバイル通信です</string>
     <string name="rss_blocked_limit">本日の購読ダウンロード上限に達しました</string>
+    <string name="storage_dedupe_title">重複画像の整理</string>
+    <string name="storage_dedupe_hint">同じ画像の異なるサイズ（購読のサムネイルと原図など）は最大のものだけ残します。アプリがダウンロードした画像のみ対象</string>
+    <string name="storage_dedupe_action">重複を検索して整理</string>
+    <string name="storage_dedupe_scanning">重複を検索中…</string>
+    <string name="storage_dedupe_none">重複は見つかりませんでした</string>
+    <string name="storage_dedupe_done">重複画像を %1$d 枚削除し、%2$s を解放</string>
     <string name="browse_set_live">ライブ壁紙に設定</string>
     <string name="settings_page_wallpaper">壁紙設定</string>
     <string name="settings_page_switch">切り替え</string>

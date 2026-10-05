@@ -136,23 +136,33 @@ object RssMediaImporter {
 
         // 1) Download in parallel (bounded), remembering which URL produced
         //    which file so failures can be reported per URL.
-        val targets = urls.distinct().filter { url ->
-            OnlineSourceRules.endpointPolicy(url, allowCleartext = true) !=
-                OnlineSourceRules.EndpointPolicy.INVALID
-        }
+        //
+        // 原图优先: the page's URL is often a resized variant (`-300x200.jpg`,
+        // `?w=300`). Download the upgraded original instead, falling back to
+        // the page URL when the guess does not exist. Two URLs of the same
+        // image collapse into one download after the upgrade.
+        val distinctUrls = urls.distinct()
+        val candidates = ArrayList<Pair<String, String>>(distinctUrls.size)
         var failed = 0
-        if (targets.size != urls.distinct().size) {
-            AppLog.w(
-                TAG,
-                "invalid endpoint(s): " + urls.distinct().filterNot { it in targets }
-                    .joinToString(" | ") { it.take(80) },
-            )
+        for (original in distinctUrls) {
+            val request = OriginalImageUrl.upgrade(original)
+            if (OnlineSourceRules.endpointPolicy(request, allowCleartext = true) ==
+                OnlineSourceRules.EndpointPolicy.INVALID
+            ) {
+                AppLog.w(TAG, "invalid endpoint: ${original.take(80)}")
+                failed++
+                continue
+            }
+            candidates.add(original to request)
         }
-        failed += urls.size - targets.size
+        val targets = candidates.distinctBy { it.second }
+        if (targets.size != candidates.size) {
+            AppLog.d(TAG, "原图优先: ${candidates.size - targets.size} duplicate URL(s) collapsed")
+        }
         val downloaded = ArrayList<Pair<String, File>>(targets.size)
         coroutineScope {
             val gate = Semaphore(DOWNLOAD_PARALLELISM)
-            val jobs = targets.map { url ->
+            val jobs = targets.map { (original, request) ->
                 async(Dispatchers.IO) {
                     gate.withPermit {
                         // CDNs sometimes drop a connection mid-body; a fresh
@@ -162,11 +172,25 @@ object RssMediaImporter {
                         var lastError: Throwable? = null
                         for (attempt in 1..3) {
                             try {
-                                file = download(url, headers, referer, dir)
+                                file = download(request, headers, referer, dir)
                                 lastError = null
                                 break
                             } catch (t: Throwable) {
                                 lastError = t
+                            }
+                        }
+                        // 升级猜测失败（404/403/不是图片）时回退到页面给的
+                        // URL —— 猜错不能把这张图丢掉。
+                        if (file == null && request != original) {
+                            AppLog.d(TAG, "original url failed, falling back to the page url")
+                            for (attempt in 1..2) {
+                                try {
+                                    file = download(original, headers, referer, dir)
+                                    lastError = null
+                                    break
+                                } catch (t: Throwable) {
+                                    lastError = t
+                                }
                             }
                         }
                         if (file == null && lastError != null) {
@@ -176,9 +200,9 @@ object RssMediaImporter {
                                     lastError.message?.take(160).orEmpty()
                             )
                         } else if (file == null) {
-                            AppLog.w(TAG, "download produced nothing: ${url.takeLast(70)}")
+                            AppLog.w(TAG, "download produced nothing: ${request.takeLast(70)}")
                         }
-                        url to file
+                        original to file
                     }
                 }
             }

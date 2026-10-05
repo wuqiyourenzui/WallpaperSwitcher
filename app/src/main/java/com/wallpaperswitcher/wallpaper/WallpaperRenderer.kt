@@ -138,6 +138,7 @@ class WallpaperRenderer(
             uniform vec2 uSrcTexel;
             uniform float uSharp;
             uniform float uEnhance;
+            uniform float uDenoise;
             uniform float uAlpha;
 
             vec4 cubicWeights(float t) {
@@ -179,6 +180,9 @@ class WallpaperRenderer(
                 return acc;
             }
 
+            float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+            float dist2(vec3 a, vec3 b) { vec3 d = a - b; return dot(d, d); }
+
             void main() {
                 if (uEnhance > 0.001) {
                     vec4 e = bicubic4(vTexCoord, uSrcTexel);
@@ -194,11 +198,40 @@ class WallpaperRenderer(
                     vec4 s2 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, -uSrcTexel.y), slo, shi));
                     vec4 s3 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, uSrcTexel.y), slo, shi));
                     vec4 blur = (s0 + s1 + s2 + s3) * 0.25;
-                    e = mix(e, (e + blur) * 0.5, 0.35 * uEnhance);
                     vec4 t0 = texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0));
                     vec4 t1 = texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0));
                     vec4 t2 = texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y));
                     vec4 t3 = texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y));
+                    // 降噪分支: colour-distance weighted neighbour average. The
+                    // strength comes from the CPU-side quality probe (images)
+                    // or a magnification-scaled fixed value (video); near an
+                    // edge the far side's weight collapses, so edges stay put.
+                    float w0 = 1.0 / (1.0 + 60.0 * dist2(s0.rgb, e.rgb));
+                    float w1 = 1.0 / (1.0 + 60.0 * dist2(s1.rgb, e.rgb));
+                    float w2 = 1.0 / (1.0 + 60.0 * dist2(s2.rgb, e.rgb));
+                    float w3 = 1.0 / (1.0 + 60.0 * dist2(s3.rgb, e.rgb));
+                    vec4 den = (e + s0 * w0 + s1 * w1 + s2 * w2 + s3 * w3) /
+                               (1.0 + w0 + w1 + w2 + w3);
+                    e = mix(e, den, uDenoise);
+                    // A light source-space smoothing, then FXAA-lite: find the
+                    // edge direction from the screen-pixel luma neighbours and
+                    // blend ALONG the edge - this is what removes magnified
+                    // stair-steps without blurring the edge itself.
+                    e = mix(e, (e + blur) * 0.5, 0.15 * uEnhance);
+                    float lM = luma(e.rgb);
+                    float lW = luma(t0.rgb);
+                    float lE = luma(t1.rgb);
+                    float lN = luma(t2.rgb);
+                    float lS = luma(t3.rgb);
+                    float lMin = min(min(lN, lS), min(min(lW, lE), lM));
+                    float lMax = max(max(lN, lS), max(max(lW, lE), lM));
+                    float lContrast = lMax - lMin;
+                    if (lContrast > 0.05) {
+                        vec4 along = (abs(lE - lW) > abs(lS - lN))
+                            ? (t2 + t3) * 0.5
+                            : (t0 + t1) * 0.5;
+                        e = mix(e, along, min(0.5, 0.25 + 0.5 * lContrast) * uEnhance);
+                    }
                     if (uSharp <= 0.001) {
                         gl_FragColor = clamp(vec4(e.rgb, uAlpha), 0.0, 1.0);
                         return;
@@ -260,6 +293,7 @@ class WallpaperRenderer(
             uniform float uSharp;
             uniform float uEnhance;
 
+            uniform float uDenoise;
             vec4 cubicWeights(float t) {
                 float t2 = t * t;
                 float t3 = t2 * t;
@@ -295,6 +329,9 @@ class WallpaperRenderer(
                 return acc;
             }
 
+            float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+            float dist2(vec3 a, vec3 b) { vec3 d = a - b; return dot(d, d); }
+
             void main() {
                 if (uEnhance > 0.001) {
                     vec4 e = bicubic4(vTexCoord, uSrcTexel);
@@ -305,11 +342,40 @@ class WallpaperRenderer(
                     vec4 s2 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, -uSrcTexel.y), slo, shi));
                     vec4 s3 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, uSrcTexel.y), slo, shi));
                     vec4 blur = (s0 + s1 + s2 + s3) * 0.25;
-                    e = mix(e, (e + blur) * 0.5, 0.35 * uEnhance);
                     vec4 t0 = texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0));
                     vec4 t1 = texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0));
                     vec4 t2 = texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y));
                     vec4 t3 = texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y));
+                    // 降噪分支: colour-distance weighted neighbour average. The
+                    // strength comes from the CPU-side quality probe (images)
+                    // or a magnification-scaled fixed value (video); near an
+                    // edge the far side's weight collapses, so edges stay put.
+                    float w0 = 1.0 / (1.0 + 60.0 * dist2(s0.rgb, e.rgb));
+                    float w1 = 1.0 / (1.0 + 60.0 * dist2(s1.rgb, e.rgb));
+                    float w2 = 1.0 / (1.0 + 60.0 * dist2(s2.rgb, e.rgb));
+                    float w3 = 1.0 / (1.0 + 60.0 * dist2(s3.rgb, e.rgb));
+                    vec4 den = (e + s0 * w0 + s1 * w1 + s2 * w2 + s3 * w3) /
+                               (1.0 + w0 + w1 + w2 + w3);
+                    e = mix(e, den, uDenoise);
+                    // A light source-space smoothing, then FXAA-lite: find the
+                    // edge direction from the screen-pixel luma neighbours and
+                    // blend ALONG the edge - this is what removes magnified
+                    // stair-steps without blurring the edge itself.
+                    e = mix(e, (e + blur) * 0.5, 0.15 * uEnhance);
+                    float lM = luma(e.rgb);
+                    float lW = luma(t0.rgb);
+                    float lE = luma(t1.rgb);
+                    float lN = luma(t2.rgb);
+                    float lS = luma(t3.rgb);
+                    float lMin = min(min(lN, lS), min(min(lW, lE), lM));
+                    float lMax = max(max(lN, lS), max(max(lW, lE), lM));
+                    float lContrast = lMax - lMin;
+                    if (lContrast > 0.05) {
+                        vec4 along = (abs(lE - lW) > abs(lS - lN))
+                            ? (t2 + t3) * 0.5
+                            : (t0 + t1) * 0.5;
+                        e = mix(e, along, min(0.5, 0.25 + 0.5 * lContrast) * uEnhance);
+                    }
                     if (uSharp <= 0.001) {
                         gl_FragColor = clamp(e, 0.0, 1.0);
                         return;
@@ -445,12 +511,17 @@ class WallpaperRenderer(
     private var imageSrcTexelLoc = -1
     private var videoEnhanceLoc = -1
     private var videoSrcTexelLoc = -1
+    private var imageDenoiseLoc = -1
+    private var videoDenoiseLoc = -1
     /**
      * 画质增强 (AI/超分): when on, a source that is being magnified is sampled
      * with a 4-tap Catmull-Rom bicubic and sharper unsharp masking (images and
      * video frames share the path). Written from the engine thread.
      */
     @Volatile private var qualityEnhance: Boolean = false
+    /** 静态图的降噪强度（CPU 小样检测，随新图重算）。 */
+    private var lastImageDenoise = 0f
+    private var lastDenoiseBitmap: Bitmap? = null
     // Engine-controlled clarity strength multiplier: 0 = off, 1.25 = default
     // curve, >1 = stronger. Written from the engine thread on each switch,
     // read on the render thread. Default matches the "auto" clarity mode so
@@ -1307,6 +1378,7 @@ class WallpaperRenderer(
             GLES20.glUniform2f(imageTexelLoc, 1f, 1f)
             GLES20.glUniform1f(imageSharpLoc, 0f)
             GLES20.glUniform1f(imageEnhanceLoc, 0f)
+            GLES20.glUniform1f(imageDenoiseLoc, 0f)
             GLES20.glUniform1f(imageAlphaLoc, alpha)
             bg.position(0)
             GLES20.glEnableVertexAttribArray(imagePosLoc)
@@ -1337,6 +1409,13 @@ class WallpaperRenderer(
             // A concurrent switch may recycle the bitmap before this queued
             // render runs; uploading a recycled bitmap would throw.
             if (bitmap.isRecycled) return
+            // 降噪分支: analyse a still once per new bitmap (4x 16x16 sample
+            // patches); GIF frames pass useMipmap=false and keep the last value.
+            if (useMipmap && bitmap !== lastDenoiseBitmap) {
+                lastDenoiseBitmap = bitmap
+                lastImageDenoise = com.wallpaperswitcher.engine.ImageQuality
+                    .denoiseStrength(bitmap)
+            }
 
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
@@ -1434,6 +1513,7 @@ class WallpaperRenderer(
                 1f / bitmap.width.coerceAtLeast(1),
                 1f / bitmap.height.coerceAtLeast(1),
             )
+            GLES20.glUniform1f(imageDenoiseLoc, lastImageDenoise)
             GLES20.glUniform1f(imageAlphaLoc, 1f)
 
             vertexBuffer?.position(0)
@@ -1516,6 +1596,7 @@ class WallpaperRenderer(
                 1f / bmp.width.coerceAtLeast(1),
                 1f / bmp.height.coerceAtLeast(1),
             )
+            GLES20.glUniform1f(imageDenoiseLoc, lastImageDenoise)
             GLES20.glUniform1f(imageAlphaLoc, 1f)
 
             vertexBuffer?.position(0)
@@ -3415,6 +3496,7 @@ class WallpaperRenderer(
             // Flat black must never be sharpened (uSharp=0 is identity).
             GLES20.glUniform1f(imageSharpLoc, 0f)
             GLES20.glUniform1f(imageEnhanceLoc, 0f)
+            GLES20.glUniform1f(imageDenoiseLoc, 0f)
             GLES20.glUniform1f(imageAlphaLoc, 1f)
 
             bg.position(0)
@@ -3514,13 +3596,13 @@ class WallpaperRenderer(
             updateVideoScreenTexelDelta()
             GLES20.glUniform2f(videoTexelLoc, videoTexelX, videoTexelY)
             GLES20.glUniform1f(videoSharpLoc, sharpnessFor(videoDisplayW, videoDisplayH, videoScaleMode))
-            GLES20.glUniform1f(
-                videoEnhanceLoc,
-                WallpaperGeometry.enhancementStrength(
-                    videoDisplayW, videoDisplayH, screenW, screenH,
-                    videoScaleMode, qualityEnhance,
-                ),
+            val videoEnhance = WallpaperGeometry.enhancementStrength(
+                videoDisplayW, videoDisplayH, screenW, screenH,
+                videoScaleMode, qualityEnhance,
             )
+            GLES20.glUniform1f(videoEnhanceLoc, videoEnhance)
+            // 视频不做逐帧检测：按放大倍数给一个固定的小降噪强度。
+            GLES20.glUniform1f(videoDenoiseLoc, 0.30f * videoEnhance)
             GLES20.glUniform2f(
                 videoSrcTexelLoc,
                 if (videoSrcW > 0f) 1f / videoSrcW else 0f,
@@ -3755,6 +3837,7 @@ class WallpaperRenderer(
         imageAlphaLoc = GLES20.glGetUniformLocation(imageProgram, "uAlpha")
         imageEnhanceLoc = GLES20.glGetUniformLocation(imageProgram, "uEnhance")
         imageSrcTexelLoc = GLES20.glGetUniformLocation(imageProgram, "uSrcTexel")
+        imageDenoiseLoc = GLES20.glGetUniformLocation(imageProgram, "uDenoise")
         videoTexMatLoc = GLES20.glGetUniformLocation(videoProgram, "uTexMatrix")
         videoTexLoc = GLES20.glGetUniformLocation(videoProgram, "uTexture")
         videoPosLoc = GLES20.glGetAttribLocation(videoProgram, "aPosition")
@@ -3763,6 +3846,7 @@ class WallpaperRenderer(
         videoSharpLoc = GLES20.glGetUniformLocation(videoProgram, "uSharp")
         videoEnhanceLoc = GLES20.glGetUniformLocation(videoProgram, "uEnhance")
         videoSrcTexelLoc = GLES20.glGetUniformLocation(videoProgram, "uSrcTexel")
+        videoDenoiseLoc = GLES20.glGetUniformLocation(videoProgram, "uDenoise")
         vertexBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
         backgroundBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
             put(floatArrayOf(-1f,-1f,0f,1f, 1f,-1f,1f,1f, -1f,1f,0f,0f, 1f,1f,1f,0f))

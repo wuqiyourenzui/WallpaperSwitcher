@@ -230,21 +230,46 @@ object FeedParser {
         return out.toList()
     }
 
-    /** src/srcset/data-* of one `<img>` tag, both quote styles, srcset-aware. */
+    /**
+     * src/srcset/data-* of one `<img>` tag, both quote styles.
+     *
+     * 原图优先: a lazy-loading gallery keeps a tiny placeholder in `src` and the
+     * real (often much larger) URL in `data-src` / `data-original` /
+     * `data-lazy-src` / `data-echo` / `data-url`. The old scanner took whichever
+     * attribute came FIRST in the tag, so a placeholder `src` won and the
+     * library ended up with blurry thumbnails. The scan now collects every
+     * candidate and ranks them: data-* attributes first (in the order above),
+     * then a srcset's first entry (the site's preferred size), then plain src.
+     */
     private fun imageUrlOfTag(tag: String): String? {
-        var value = ""
+        var dataUrl: String? = null
+        var dataRank = Int.MAX_VALUE
+        var srcsetUrl: String? = null
+        var plainSrc: String? = null
         for (match in IMG_ATTR.findAll(tag)) {
-            val raw = (match.groupValues.getOrNull(1).orEmpty().ifBlank {
-                match.groupValues.getOrNull(2).orEmpty()
+            val name = match.groupValues.getOrNull(1).orEmpty().lowercase()
+            val raw = (match.groupValues.getOrNull(2).orEmpty().ifBlank {
+                match.groupValues.getOrNull(3).orEmpty()
             }).trim()
             if (raw.isEmpty() || raw.startsWith("data:", ignoreCase = true)) continue
-            value = raw
-            // A plain src wins over a srcset list; inside a srcset take the
-            // first URL (the site's own preferred size).
-            if (!value.contains(",")) break
+            when (name) {
+                "src" -> if (plainSrc == null) {
+                    plainSrc = raw.substringBefore(',').substringBefore(' ').trim()
+                }
+                "srcset", "data-srcset" -> if (srcsetUrl == null) {
+                    srcsetUrl = raw.split(',').firstOrNull()
+                        ?.trim()?.substringBefore(' ')?.takeIf { it.isNotEmpty() }
+                }
+                else -> {
+                    val rank = DATA_ATTR_RANK[name] ?: DATA_ATTR_RANK.size
+                    if (rank < dataRank) {
+                        dataRank = rank
+                        dataUrl = raw.substringBefore(' ').trim()
+                    }
+                }
+            }
         }
-        if (value.isEmpty()) return null
-        return value.substringBefore(' ').trim().takeIf { it.isNotEmpty() }
+        return (dataUrl ?: srcsetUrl ?: plainSrc)?.takeIf { it.isNotEmpty() }
     }
 
     private fun looksLikeImage(url: String): Boolean =
@@ -311,8 +336,17 @@ object FeedParser {
     private val IMG_TAG = Regex("""<img[^>]*>""", RegexOption.IGNORE_CASE)
 
     private val IMG_ATTR = Regex(
-        """(?:data-src|data-original|data-lazy-src|data-echo|data-url|srcset|src)\s*=\s*(?:"([^"]+)"|'([^']+)')""",
+        """(data-original|data-src|data-lazy-src|data-echo|data-url|data-srcset|srcset|src)\s*=\s*(?:"([^"]+)"|'([^']+)')""",
         RegexOption.IGNORE_CASE
+    )
+
+    /** 懒加载真实地址的优先级（数字越小越优先）。 */
+    private val DATA_ATTR_RANK = mapOf(
+        "data-original" to 0,
+        "data-src" to 1,
+        "data-lazy-src" to 2,
+        "data-echo" to 3,
+        "data-url" to 4,
     )
 
     private val Css_BG = Regex(

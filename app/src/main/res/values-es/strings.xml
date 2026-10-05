@@ -640,6 +640,12 @@
     <string name="storage_policy_mb">%1$d MB</string>
     <string name="rss_blocked_wifi">«Solo por Wi-Fi» está activado y estás en datos móviles</string>
     <string name="rss_blocked_limit">Se alcanzó el límite diario de descargas</string>
+    <string name="storage_dedupe_title">Limpieza de duplicados</string>
+    <string name="storage_dedupe_hint">La misma imagen en varios tamaños (miniatura de suscripción vs original) conserva solo la mayor; solo imágenes descargadas por la app</string>
+    <string name="storage_dedupe_action">Buscar y quitar duplicados</string>
+    <string name="storage_dedupe_scanning">Buscando duplicados…</string>
+    <string name="storage_dedupe_none">No se encontraron duplicados</string>
+    <string name="storage_dedupe_done">Eliminadas %1$d imágenes duplicadas, liberados %2$s</string>
     <string name="browse_set_live">Establecer como fondo animado</string>
     <string name="settings_page_wallpaper">Fondo</string>
     <string name="settings_page_switch">Cambio</string>

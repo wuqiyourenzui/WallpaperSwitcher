@@ -643,6 +643,12 @@
     <string name="storage_policy_mb">%1$d MB</string>
     <string name="rss_blocked_wifi">已开启「仅 Wi-Fi 下载」，当前是移动网络</string>
     <string name="rss_blocked_limit">今天的订阅下载已达上限</string>
+    <string name="storage_dedupe_title">重复图片清理</string>
+    <string name="storage_dedupe_hint">同一张图的不同尺寸（订阅缩略图与原图等）只保留最大的那份；只处理应用自己下载的图片</string>
+    <string name="storage_dedupe_action">查找并清理重复</string>
+    <string name="storage_dedupe_scanning">正在查找重复…</string>
+    <string name="storage_dedupe_none">没有发现重复图片</string>
+    <string name="storage_dedupe_done">已删除 %1$d 张重复图片，释放 %2$s</string>
     <string name="browse_set_live">设为动态壁纸</string>
     <string name="settings_page_wallpaper">壁纸设置</string>
     <string name="settings_page_switch">切换方式</string>

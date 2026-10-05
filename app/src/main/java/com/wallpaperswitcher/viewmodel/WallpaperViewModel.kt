@@ -1148,6 +1148,20 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * 去重: delete app-owned images whose perceptual hash matches a larger copy
+     * in the same group (subscription thumbnails vs originals, repeated shares).
+     * The storage page calls this from its own coroutine and renders the result.
+     */
+    suspend fun dedupeOwnedImages(): com.wallpaperswitcher.engine.MediaDedupe.Result =
+        withContext(Dispatchers.IO) {
+            val result = com.wallpaperswitcher.engine.MediaDedupe.sweep(getApplication())
+            if (result.removed > 0) {
+                WallpaperSwitchService.poke(getApplication())
+            }
+            result
+        }
+
+    /**
      * 清晰度增强的「增强」换成「画质增强（超分）」的一次性迁移：上一版独立开关
      * （4.9.151 之前短暂存在）如果开着、且清晰度还是"自动"，就把清晰度提升为
      * "超分"，然后删掉旧键（之后任何代码都不再读它）。

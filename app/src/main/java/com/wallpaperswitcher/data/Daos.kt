@@ -100,6 +100,10 @@ interface WallpaperImageDao {
     @Query("SELECT * FROM wallpaper_images WHERE groupId = :groupId ORDER BY addedAt DESC, id DESC")
     suspend fun getImagesByGroupSync(groupId: Long): List<WallpaperImage>
 
+    /** Every media row; the duplicate sweep filters it down itself. */
+    @Query("SELECT * FROM wallpaper_images")
+    suspend fun getAllImagesSync(): List<WallpaperImage>
+
     @Query("SELECT * FROM wallpaper_images WHERE id = :id")
     suspend fun getImageById(id: Long): WallpaperImage?
 

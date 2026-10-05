@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.DataUsage
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RssFeed
 import androidx.compose.material.icons.outlined.SdStorage
@@ -59,6 +60,7 @@ import com.wallpaperswitcher.viewmodel.StorageCleanResult
 import com.wallpaperswitcher.viewmodel.StorageDirUsage
 import com.wallpaperswitcher.viewmodel.StorageUsage
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
+import com.wallpaperswitcher.engine.MediaDedupe
 import kotlinx.coroutines.launch
 
 // ---------------------------------------------------------------------------
@@ -192,6 +194,9 @@ fun StorageScreen(
     val rssOrphanTtlDays by viewModel.rssOrphanTtlDays.collectAsStateWithLifecycle()
     var showLimitPicker by remember { mutableStateOf(false) }
     var showTtlPicker by remember { mutableStateOf(false) }
+    // 去重：与"清理残留"同一套交互（跑完刷新统计 + 行内结果）。
+    var deduping by remember { mutableStateOf(false) }
+    var dedupeResult by remember { mutableStateOf<MediaDedupe.Result?>(null) }
     // 重建也走同一个纯函数，保证"files == 0 就不算清到东西"这条规则只有一处。
     val cleaned = remember(cleanedFiles, cleanedBytes) {
         cleanedStorageNote(StorageCleanResult(cleanedFiles, cleanedBytes))
@@ -229,6 +234,20 @@ fun StorageScreen(
         }
     }
 
+    // 去重：感知哈希找"同一张图的不同尺寸"，保留最大的那份（只动应用自己下载的图）。
+    val onDedupe: () -> Unit = {
+        if (!busy && !deduping) {
+            scope.launch {
+                deduping = true
+                dedupeResult = viewModel.dedupeOwnedImages()
+                // 删了行和文件：总数、分项、可清理量都要重新算。
+                usage = viewModel.storageUsage()
+                orphans = viewModel.measureOrphanMedia()
+                deduping = false
+            }
+        }
+    }
+
     Surface(
         modifier = modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
@@ -260,6 +279,9 @@ fun StorageScreen(
                     onLimitClick = { showLimitPicker = true },
                     ttlDays = rssOrphanTtlDays,
                     onTtlClick = { showTtlPicker = true },
+                    dedupeResult = dedupeResult,
+                    deduping = deduping,
+                    onDedupe = onDedupe,
                 )
             }
         }
@@ -366,6 +388,9 @@ private fun StorageContent(
     onLimitClick: () -> Unit,
     ttlDays: Int,
     onTtlClick: () -> Unit,
+    dedupeResult: MediaDedupe.Result?,
+    deduping: Boolean,
+    onDedupe: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -395,6 +420,12 @@ private fun StorageContent(
             onLimitClick = onLimitClick,
             ttlDays = ttlDays,
             onTtlClick = onTtlClick,
+        )
+        StorageDedupeCard(
+            result = dedupeResult,
+            deduping = deduping,
+            busy = busy,
+            onDedupe = onDedupe,
         )
         StorageCleanCard(
             orphans = orphans,
@@ -619,6 +650,92 @@ private fun StoragePolicySection(
             },
             onClick = onTtlClick,
         )
+    }
+}
+
+/**
+ * 重复图片清理：感知哈希把"同一张图的不同尺寸"（订阅缩略图与原图、分享两次的
+ * 副本）找出来，只保留最大的那份。只处理应用自己下载的文件，相册 / SAF 的原图
+ * 不动；跑完刷新整页统计。
+ */
+@Composable
+private fun StorageDedupeCard(
+    result: MediaDedupe.Result?,
+    deduping: Boolean,
+    busy: Boolean,
+    onDedupe: () -> Unit,
+) {
+    val accent = hiAccent()
+    HiCard {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = HiDims.RowHorizontal, vertical = HiDims.RowVertical),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Outlined.ContentCopy,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(24.dp),
+                )
+                Spacer(modifier = Modifier.width(HiDims.IconGap))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.storage_dedupe_title),
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = stringResource(R.string.storage_dedupe_hint),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (result != null) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (result.removed > 0) {
+                                stringResource(
+                                    R.string.storage_dedupe_done,
+                                    result.removed,
+                                    formatStorageBytes(result.freedBytes),
+                                )
+                            } else {
+                                stringResource(R.string.storage_dedupe_none)
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (result.removed > 0) {
+                                accent
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                        )
+                    }
+                }
+            }
+            Spacer(modifier = Modifier.height(HiDims.CardSpacing))
+            if (deduping) {
+                HiLoadingHint(
+                    text = stringResource(R.string.storage_dedupe_scanning),
+                    iconSize = 14.dp,
+                )
+            } else {
+                FilledTonalButton(
+                    onClick = onDedupe,
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.ContentCopy,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = stringResource(R.string.storage_dedupe_action))
+                }
+            }
+        }
     }
 }
 

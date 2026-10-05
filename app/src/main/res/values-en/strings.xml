@@ -670,6 +670,12 @@
     <string name="storage_policy_mb">%1$d MB</string>
     <string name="rss_blocked_wifi">Wi-Fi only is on and this is a mobile network</string>
     <string name="rss_blocked_limit">Today\'s subscription download cap is reached</string>
+    <string name="storage_dedupe_title">Duplicate cleanup</string>
+    <string name="storage_dedupe_hint">The same picture at several sizes (subscription thumbnails vs originals) keeps only the largest; app-downloaded images only</string>
+    <string name="storage_dedupe_action">Find and remove duplicates</string>
+    <string name="storage_dedupe_scanning">Looking for duplicates…</string>
+    <string name="storage_dedupe_none">No duplicates found</string>
+    <string name="storage_dedupe_done">Removed %1$d duplicate(s), freed %2$s</string>
     <string name="browse_set_live">Set as live wallpaper</string>
     <string name="settings_page_wallpaper">Wallpaper</string>
     <string name="settings_page_switch">Switching</string>
