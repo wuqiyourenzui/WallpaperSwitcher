@@ -11,6 +11,8 @@
     <string name="notification_channel_desc">Notificación del servicio en segundo plano</string>
     <string name="notification_title">Cambio de fondo en marcha</string>
     <string name="notification_text">Toca para gestionar los ajustes</string>
+    <string name="notification_action_next">Siguiente</string>
+    <string name="notification_action_pause">Pausar 1 hora</string>
     <string name="nav_home">Inicio</string>
     <string name="nav_settings">Ajustes</string>
     <string name="title_home">Cambiar fondo</string>

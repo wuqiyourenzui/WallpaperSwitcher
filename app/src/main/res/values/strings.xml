@@ -7,6 +7,8 @@
     <string name="notification_channel_desc">壁纸自动切换后台服务通知</string>
     <string name="notification_title">壁纸切换运行中</string>
     <string name="notification_text">点击管理壁纸设置</string>
+    <string name="notification_action_next">下一张</string>
+    <string name="notification_action_pause">暂停 1 小时</string>
     <!-- 语言切换（界面文案渐次抽取到资源，未抽取的仍是中文） -->
     <string name="nav_home">首页</string>
     <string name="nav_settings">设置</string>

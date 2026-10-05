@@ -14,6 +14,8 @@
     <string name="notification_channel_desc">壁紙自動切換背景服務通知</string>
     <string name="notification_title">壁紙切換執行中</string>
     <string name="notification_text">點擊管理壁紙設定</string>
+    <string name="notification_action_next">下一張</string>
+    <string name="notification_action_pause">暫停 1 小時</string>
     <string name="nav_home">首頁</string>
     <string name="nav_settings">設定</string>
     <string name="title_home">壁紙切換</string>

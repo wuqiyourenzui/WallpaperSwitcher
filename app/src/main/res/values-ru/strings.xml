@@ -11,6 +11,8 @@
     <string name="notification_channel_desc">Уведомление фоновой службы смены обоев</string>
     <string name="notification_title">Смена обоев выполняется</string>
     <string name="notification_text">Нажмите, чтобы открыть настройки</string>
+    <string name="notification_action_next">Следующая</string>
+    <string name="notification_action_pause">Пауза на 1 час</string>
     <string name="nav_home">Главная</string>
     <string name="nav_settings">Настройки</string>
     <string name="title_home">Смена обоев</string>

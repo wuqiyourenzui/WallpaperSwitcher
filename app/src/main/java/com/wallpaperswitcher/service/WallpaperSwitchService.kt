@@ -79,6 +79,12 @@ class WallpaperSwitchService : Service() {
     // Throttle the screen-off skip log to once per minute: at a 10s interval
     // the old code logged ~720 lines/hour while the screen was dark.
     private val lastScreenOffLogAt = java.util.concurrent.atomic.AtomicLong(0L)
+    /**
+     * Whether the foreground notification currently advertises the pause
+     * action (it flips to 继续 while the 一键暂停 hold is active). Both timer
+     * loops hand their freshly read state to [syncNotificationPause].
+     */
+    @Volatile private var notificationPaused = false
     // True once the "lock screen not showing" idle episode has been logged, so a
     // long unlocked session produces one line instead of one per re-check.
     // Only the lock loop coroutine touches it, but a restart coroutine may read
@@ -219,6 +225,16 @@ class WallpaperSwitchService : Service() {
         running = true
         activeInstance = this
         AppLog.d(TAG, "Service started, action=${intent?.action}")
+        when (intent?.action) {
+            ACTION_NOTIFY_SWITCH -> {
+                AppLog.d(TAG, "Notification action: switch now")
+                switchNow(applicationContext, LiveWallpaperService.SOURCE_NOTIFICATION)
+            }
+            ACTION_NOTIFY_TOGGLE_PAUSE -> {
+                AppLog.d(TAG, "Notification action: toggle pause")
+                scope.launch { togglePauseFromNotification() }
+            }
+        }
         // Any start intent (including a null one from a START_STICKY restart)
         // resumes the switch loop.
         startSwitchLoop()
@@ -383,6 +399,7 @@ class WallpaperSwitchService : Service() {
                 // the moment the pause expires the overdue switch fires - even
                 // if the app was closed the whole time.
                 val pausedLeft = pauseRemainingMs(dao)
+                syncNotificationPause(pausedLeft > 0L)
                 if (pausedLeft > 0L) {
                     if (!pauseIdleAnnounced) {
                         pauseIdleAnnounced = true
@@ -731,6 +748,45 @@ class WallpaperSwitchService : Service() {
     }
 
     /**
+     * Keep the notification's pause action in sync with the real hold state.
+     *
+     * Both timer loops already read `pauseRemainingMs` every iteration, so they
+     * hand the observed state over instead of querying the database again. The
+     * guard makes this a no-op in the common (unchanged) case.
+     */
+    private fun syncNotificationPause(paused: Boolean) {
+        if (notificationPaused == paused) return
+        notificationPaused = paused
+        try {
+            (getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager)
+                ?.notify(NOTIFICATION_ID, createNotification(paused))
+        } catch (t: Throwable) {
+            AppLog.w(TAG, "notification refresh failed: ${t.javaClass.simpleName}")
+        }
+    }
+
+    /** Notification 「暂停 1 小时 / 继续」: same 一键暂停 key as the home card. */
+    private suspend fun togglePauseFromNotification() {
+        try {
+            val dao = AppDatabase.getInstance(applicationContext).settingsDao()
+            val now = System.currentTimeMillis()
+            val paused = dao.getLong(SettingsKeys.PAUSE_UNTIL) > now
+            if (paused) {
+                dao.setLong(SettingsKeys.PAUSE_UNTIL, 0L)
+                AppLog.d(TAG, "Notification: resume")
+            } else {
+                dao.setLong(SettingsKeys.PAUSE_STARTED_AT, now)
+                dao.setLong(SettingsKeys.PAUSE_UNTIL, now + NOTIFICATION_PAUSE_MS)
+                AppLog.d(TAG, "Notification: pause for ${NOTIFICATION_PAUSE_MS}ms")
+            }
+            syncNotificationPause(!paused)
+            wakeLoopsInPlace()
+        } catch (t: Throwable) {
+            AppLog.e(TAG, "notification pause toggle failed", t)
+        }
+    }
+
+    /**
      * Independent timer for the LOCK screen.
      *
      * Own interval + anchor, paused while the screen is off like the home loop
@@ -821,6 +877,7 @@ class WallpaperSwitchService : Service() {
                 // The 一键暂停 hold applies to the lock timer too: "稍后切换"
                 // means both screens stay as they are.
                 val pausedLeft = pauseRemainingMs(dao)
+                syncNotificationPause(pausedLeft > 0L)
                 if (pausedLeft > 0L) {
                     delay(pausedLeft.coerceAtMost(PAUSE_RECHECK_MS))
                     continue
@@ -1113,9 +1170,19 @@ class WallpaperSwitchService : Service() {
         AppLog.d(TAG, "Switch broadcast sent ($source)")
     }
 
-    private fun createNotification(): Notification {
+    private fun createNotification(paused: Boolean = notificationPaused): Notification {
         val pendingIntent = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val switchIntent = PendingIntent.getForegroundService(
+            this, REQUEST_NOTIFY_SWITCH,
+            Intent(this, WallpaperSwitchService::class.java).setAction(ACTION_NOTIFY_SWITCH),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val pauseIntent = PendingIntent.getForegroundService(
+            this, REQUEST_NOTIFY_PAUSE,
+            Intent(this, WallpaperSwitchService::class.java).setAction(ACTION_NOTIFY_TOGGLE_PAUSE),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         // Localised through the chosen language, not the system one: the service
@@ -1129,12 +1196,36 @@ class WallpaperSwitchService : Service() {
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setSilent(true)
+            .setOnlyAlertOnce(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
+            .addAction(
+                R.drawable.ic_notif_next,
+                localized.getString(R.string.notification_action_next),
+                switchIntent
+            )
+            .addAction(
+                if (paused) R.drawable.ic_notif_play else R.drawable.ic_notif_pause,
+                localized.getString(
+                    if (paused) R.string.tile_resume_label
+                    else R.string.notification_action_pause
+                ),
+                pauseIntent
+            )
             .build()
     }
 
     companion object {
         private const val TAG = "WallpaperSwitchService"
+        /** Notification action: 下一张 (same entry as the home card / tile). */
+        private const val ACTION_NOTIFY_SWITCH =
+            "com.wallpaperswitcher.action.NOTIFY_SWITCH"
+        /** Notification action: 暂停 1 小时 / 立即继续. */
+        private const val ACTION_NOTIFY_TOGGLE_PAUSE =
+            "com.wallpaperswitcher.action.NOTIFY_TOGGLE_PAUSE"
+        private const val REQUEST_NOTIFY_SWITCH = 101
+        private const val REQUEST_NOTIFY_PAUSE = 102
+        /** The notification's pause action pauses for an hour (tile/widget: 24h). */
+        private const val NOTIFICATION_PAUSE_MS = 60L * 60 * 1000
         /**
          * Fire-and-forget bookkeeping (anchor moves, unlock notifications): its
          * own scope so it survives an activity/service restart, with the same

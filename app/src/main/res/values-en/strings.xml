@@ -16,6 +16,8 @@
     <string name="notification_channel_desc">Notification for the automatic wallpaper switching service</string>
     <string name="notification_title">Wallpaper switching is running</string>
     <string name="notification_text">Tap to manage your wallpaper settings</string>
+    <string name="notification_action_next">Next</string>
+    <string name="notification_action_pause">Pause for 1 hour</string>
 
     <string name="nav_home">Home</string>
     <string name="nav_settings">Settings</string>

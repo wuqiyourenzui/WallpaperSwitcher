@@ -95,6 +95,8 @@ class LiveWallpaperService : WallpaperService() {
         private const val SORT_NEWEST = "NEWEST"
         const val SOURCE_MANUAL = "manual"
         const val SOURCE_DOUBLE_TAP = "double-tap"
+        /** User tapped 下一张 on the foreground notification. */
+        const val SOURCE_NOTIFICATION = "notification"
         /** User tapped the floating switch button (see FloatingSwitchButton). */
         const val SOURCE_FLOATING = "floating-tap"
         private const val SWITCH_SETTLE_DELAY_MS = 30L
