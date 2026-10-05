@@ -639,6 +639,23 @@
     <string name="settings_page_favorites_desc">Fotos y vídeos favoritos de todos los grupos</string>
     <string name="settings_page_recent_desc">Fondos mostrados recientemente en cada pantalla</string>
     <string name="settings_page_storage_desc">Espacio de la app y descargas de suscripciones</string>
+    <!-- Guía de inicio -->
+    <string name="wizard_title">Guía de inicio</string>
+    <string name="wizard_subtitle">Tres pasos para configurarlo; puedes omitirlo cuando quieras</string>
+    <string name="wizard_perm_title">Acceso a medios</string>
+    <string name="wizard_perm_done">Concedido: se pueden leer fotos y carpetas</string>
+    <string name="wizard_perm_todo">Permite leer fotos y vídeos</string>
+    <string name="wizard_content_title">Añadir fondos</string>
+    <string name="wizard_content_done">Ya hay contenido para rotar</string>
+    <string name="wizard_content_todo">Añade desde la galería, una carpeta o una suscripción</string>
+    <string name="wizard_engine_title">Establecer como fondo dinámico</string>
+    <string name="wizard_engine_done">El fondo dinámico está en marcha</string>
+    <string name="wizard_engine_blocked">El permiso «servicio de fondos dinámicos» está desactivado; actívalo primero</string>
+    <string name="wizard_engine_todo">Los cambios por temporizador, doble toque y desbloqueo dependen de él</string>
+    <string name="wizard_engine_action">Configurar</string>
+    <string name="wizard_done">Listo</string>
+    <string name="wizard_skip">Ahora no</string>
+    <string name="settings_page_setup_desc">Tres pasos para la configuración inicial y la comprobación</string>
     <string name="option_panel_title">Elegir</string>
     <string name="option_default">Predeterminado</string>
     <string name="color_picker_title">Elegir color</string>

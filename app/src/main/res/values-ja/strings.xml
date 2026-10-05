@@ -635,6 +635,23 @@
     <string name="settings_page_favorites_desc">各グループのお気に入りの画像と動画</string>
     <string name="settings_page_recent_desc">各画面で最近表示した壁紙</string>
     <string name="settings_page_storage_desc">アプリの使用容量と購読のダウンロード</string>
+    <!-- はじめかた -->
+    <string name="wizard_title">はじめかた</string>
+    <string name="wizard_subtitle">3 ステップで初期設定。いつでもスキップできます</string>
+    <string name="wizard_perm_title">メディアへのアクセス</string>
+    <string name="wizard_perm_done">許可済み。写真とフォルダを読み取れます</string>
+    <string name="wizard_perm_todo">写真と動画の読み取りを許可してください</string>
+    <string name="wizard_content_title">壁紙を追加</string>
+    <string name="wizard_content_done">切り替えできるコンテンツがあります</string>
+    <string name="wizard_content_todo">ギャラリー・フォルダ・購読から追加</string>
+    <string name="wizard_engine_title">ライブ壁紙に設定</string>
+    <string name="wizard_engine_done">ライブ壁紙は動作中です</string>
+    <string name="wizard_engine_blocked">システムの「ライブ壁紙サービス」権限がオフです。先に有効にしてください</string>
+    <string name="wizard_engine_todo">タイマー / ダブルタップ / ロック解除の切り替えに必要です</string>
+    <string name="wizard_engine_action">設定する</string>
+    <string name="wizard_done">完了</string>
+    <string name="wizard_skip">あとで</string>
+    <string name="settings_page_setup_desc">3 ステップで初期設定とセルフチェック</string>
     <string name="option_panel_title">選択</string>
     <string name="option_default">デフォルト</string>
     <string name="color_picker_title">色を選択</string>

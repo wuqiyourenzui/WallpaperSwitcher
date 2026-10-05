@@ -65,6 +65,17 @@ fun WallpaperSwitcherApp(
     // 分享链接) jumps to 订阅 and prefills the existing import dialog.
     var sharedMedia by remember { mutableStateOf<List<Uri>>(emptyList()) }
     var sharedImportText by remember { mutableStateOf<String?>(null) }
+    // 首启自检向导: auto-open once (a missing settings row reads as "not
+    // done"), then re-openable from 设置 → 使用向导.
+    val wizardDone by viewModel.setupWizardDone.collectAsStateWithLifecycle()
+    var showWizard by rememberSaveable { mutableStateOf(false) }
+    var wizardAutoShown by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(wizardDone) {
+        if (!wizardDone && !wizardAutoShown) {
+            wizardAutoShown = true
+            showWizard = true
+        }
+    }
     LaunchedEffect(sharePayload) {
         when (val payload = sharePayload) {
             is SharePayload.Media -> {
@@ -137,6 +148,20 @@ fun WallpaperSwitcherApp(
             viewModel = viewModel,
             uris = sharedMedia,
             onDismiss = { sharedMedia = emptyList() },
+        )
+    }
+    if (showWizard) {
+        SetupWizardDialog(
+            viewModel = viewModel,
+            onOpenContent = {
+                showWizard = false
+                viewModel.markSetupWizardDone()
+                currentScreen = Screen.Home
+            },
+            onDismiss = {
+                showWizard = false
+                viewModel.markSetupWizardDone()
+            },
         )
     }
 
@@ -467,6 +492,7 @@ fun WallpaperSwitcherApp(
                 is Screen.Settings -> SettingsScreen(
                     viewModel = viewModel,
                     onOpenScreen = { currentScreen = it },
+                    onOpenWizard = { showWizard = true },
                     scrollState = settingsScrollState,
                 )
                 is Screen.Storage -> StorageScreen(

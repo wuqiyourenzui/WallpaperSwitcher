@@ -669,6 +669,23 @@
     <string name="settings_page_favorites_desc">Favourited photos and videos from every group</string>
     <string name="settings_page_recent_desc">Wallpapers recently shown on each screen</string>
     <string name="settings_page_storage_desc">App footprint and subscription downloads</string>
+    <!-- Setup wizard -->
+    <string name="wizard_title">Getting started</string>
+    <string name="wizard_subtitle">Three steps to set up; you can skip at any time</string>
+    <string name="wizard_perm_title">Media access</string>
+    <string name="wizard_perm_done">Granted - photos and folders can be read</string>
+    <string name="wizard_perm_todo">Allow access to photos and videos</string>
+    <string name="wizard_content_title">Add wallpapers</string>
+    <string name="wizard_content_done">There is already content to rotate</string>
+    <string name="wizard_content_todo">Add from the gallery, a folder or a subscription</string>
+    <string name="wizard_engine_title">Set as live wallpaper</string>
+    <string name="wizard_engine_done">The live wallpaper is running</string>
+    <string name="wizard_engine_blocked">The system\'s live-wallpaper service permission is off - turn it on first</string>
+    <string name="wizard_engine_todo">Timed / double-tap / unlock switching all need it</string>
+    <string name="wizard_engine_action">Set up</string>
+    <string name="wizard_done">Done</string>
+    <string name="wizard_skip">Skip for now</string>
+    <string name="settings_page_setup_desc">Three steps to finish the initial setup and self-check</string>
     <string name="option_panel_title">Choose</string>
     <string name="option_default">Default</string>
     <string name="color_picker_title">Pick a colour</string>

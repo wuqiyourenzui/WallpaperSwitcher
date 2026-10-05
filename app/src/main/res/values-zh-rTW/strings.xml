@@ -638,6 +638,23 @@
     <string name="settings_page_favorites_desc">各個分組裡收藏的圖片與影片</string>
     <string name="settings_page_recent_desc">每塊螢幕最近顯示過的桌布</string>
     <string name="settings_page_storage_desc">應用程式佔用空間與訂閱下載檔案</string>
+    <!-- 使用嚮導 -->
+    <string name="wizard_title">使用嚮導</string>
+    <string name="wizard_subtitle">三步完成初始設定，隨時可以跳過</string>
+    <string name="wizard_perm_title">媒體權限</string>
+    <string name="wizard_perm_done">已授權，可以讀取相簿與資料夾</string>
+    <string name="wizard_perm_todo">允許讀取相簿裡的圖片和影片</string>
+    <string name="wizard_content_title">新增桌布</string>
+    <string name="wizard_content_done">已經有可輪換的內容</string>
+    <string name="wizard_content_todo">從相簿、資料夾或訂閱來源新增</string>
+    <string name="wizard_engine_title">設為動態桌布</string>
+    <string name="wizard_engine_done">動態桌布已在執行</string>
+    <string name="wizard_engine_blocked">系統的「動態桌布服務」權限被關閉，需要先開啟</string>
+    <string name="wizard_engine_todo">定時 / 雙擊 / 解鎖切換都依賴它</string>
+    <string name="wizard_engine_action">去設定</string>
+    <string name="wizard_done">完成</string>
+    <string name="wizard_skip">稍後再說</string>
+    <string name="settings_page_setup_desc">三步完成初始設定與自我檢查</string>
     <string name="option_panel_title">選擇</string>
     <string name="option_default">預設</string>
     <string name="color_picker_title">選擇顏色</string>

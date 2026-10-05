@@ -1062,6 +1062,27 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 首启自检向导 done flag.
+     *
+     * Initial value is `true` so an install that already dismissed the wizard
+     * never flashes it while the database read is in flight; a fresh install's
+     * missing key emits false and the wizard opens (see WallpaperSwitcherApp).
+     */
+    val setupWizardDone: StateFlow<Boolean> =
+        settingsDao.getValueFlow(SettingsKeys.SETUP_WIZARD_DONE)
+            .map { it?.toBooleanStrictOrNull() ?: false }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+
+    fun markSetupWizardDone() {
+        guardedWrite("保存向导状态失败") {
+            settingsDao.setBool(SettingsKeys.SETUP_WIZARD_DONE, true)
+        }
+    }
+
+    /** 向导用：打开系统动态壁纸选择器；false = 两个入口都打不开。 */
+    fun openLiveWallpaperPicker(): Boolean = launchLiveWallpaperPicker()
+
     fun setVideoSoundEnabled(enabled: Boolean) {
         guardedWrite("保存视频声音设置失败") {
             settingsDao.setBool(SettingsKeys.VIDEO_SOUND_ENABLED, enabled)

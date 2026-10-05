@@ -642,6 +642,23 @@
     <string name="settings_page_favorites_desc">各个分组里收藏的图片与视频</string>
     <string name="settings_page_recent_desc">每块屏幕最近显示过的壁纸</string>
     <string name="settings_page_storage_desc">应用占用空间与订阅下载文件</string>
+    <!-- 首启自检向导 -->
+    <string name="wizard_title">使用向导</string>
+    <string name="wizard_subtitle">三步完成初始设置，随时可以跳过</string>
+    <string name="wizard_perm_title">媒体权限</string>
+    <string name="wizard_perm_done">已授权，可以读取相册与文件夹</string>
+    <string name="wizard_perm_todo">允许读取相册里的图片和视频</string>
+    <string name="wizard_content_title">添加壁纸</string>
+    <string name="wizard_content_done">已经有可轮换的内容</string>
+    <string name="wizard_content_todo">从相册、文件夹或订阅源添加</string>
+    <string name="wizard_engine_title">设为动态壁纸</string>
+    <string name="wizard_engine_done">动态壁纸已在运行</string>
+    <string name="wizard_engine_blocked">系统的「动态壁纸服务」权限被关闭，需要先开启</string>
+    <string name="wizard_engine_todo">定时 / 双击 / 解锁切换都依赖它</string>
+    <string name="wizard_engine_action">去设置</string>
+    <string name="wizard_done">完成</string>
+    <string name="wizard_skip">稍后再说</string>
+    <string name="settings_page_setup_desc">三步完成初始设置与自检</string>
     <string name="option_panel_title">选择</string>
     <string name="option_default">默认</string>
     <string name="color_picker_title">选择颜色</string>

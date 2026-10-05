@@ -647,6 +647,23 @@
     <string name="settings_page_favorites_desc">Избранные фото и видео из всех групп</string>
     <string name="settings_page_recent_desc">Обои, недавно показанные на каждом экране</string>
     <string name="settings_page_storage_desc">Занятое приложением место и загрузки подписок</string>
+    <!-- Первый запуск -->
+    <string name="wizard_title">Первый запуск</string>
+    <string name="wizard_subtitle">Три шага для настройки; можно пропустить в любой момент</string>
+    <string name="wizard_perm_title">Доступ к медиа</string>
+    <string name="wizard_perm_done">Разрешён — фото и папки доступны</string>
+    <string name="wizard_perm_todo">Разрешите чтение фото и видео</string>
+    <string name="wizard_content_title">Добавить обои</string>
+    <string name="wizard_content_done">Уже есть контент для ротации</string>
+    <string name="wizard_content_todo">Добавьте из галереи, папки или подписки</string>
+    <string name="wizard_engine_title">Сделать живые обои</string>
+    <string name="wizard_engine_done">Живые обои работают</string>
+    <string name="wizard_engine_blocked">Разрешение «служба живых обоев» выключено — сначала включите его</string>
+    <string name="wizard_engine_todo">Смена по таймеру, двойному нажатию и разблокировке зависит от него</string>
+    <string name="wizard_engine_action">Настроить</string>
+    <string name="wizard_done">Готово</string>
+    <string name="wizard_skip">Позже</string>
+    <string name="settings_page_setup_desc">Три шага для первичной настройки и самопроверки</string>
     <string name="option_panel_title">Выбор</string>
     <string name="option_default">По умолчанию</string>
     <string name="color_picker_title">Выбор цвета</string>

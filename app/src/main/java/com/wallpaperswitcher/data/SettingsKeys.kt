@@ -88,6 +88,12 @@ object SettingsKeys {
     const val PAUSE_UNTIL = "pause_until"
     /** Wall-clock ms of the pause start, for the "paused for X" line in the UI. */
     const val PAUSE_STARTED_AT = "pause_started_at"
+    /**
+     * 首启自检向导: set once the user finished / skipped the wizard. A missing
+     * row (fresh install, or an install that predates the wizard) reads as
+     * "not done" and shows it once.
+     */
+    const val SETUP_WIZARD_DONE = "setup_wizard_done"
     // Wall-clock (ms) the current switch interval counts from: the last timed
     // switch. Kept across a lock/unlock pause (and across service restarts) so
     // an overdue tick catches up as soon as the screen comes back instead of

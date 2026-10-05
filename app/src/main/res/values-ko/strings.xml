@@ -635,6 +635,23 @@
     <string name="settings_page_favorites_desc">모든 그룹에서 즐겨찾기한 사진과 동영상</string>
     <string name="settings_page_recent_desc">각 화면에 최근 표시된 배경 화면</string>
     <string name="settings_page_storage_desc">앱 사용 공간과 구독 다운로드</string>
+    <!-- 시작 가이드 -->
+    <string name="wizard_title">시작 가이드</string>
+    <string name="wizard_subtitle">3단계로 초기 설정을 마칩니다. 언제든 건너뛸 수 있습니다</string>
+    <string name="wizard_perm_title">미디어 접근 권한</string>
+    <string name="wizard_perm_done">허용됨: 사진과 폴더를 읽을 수 있습니다</string>
+    <string name="wizard_perm_todo">사진과 동영상 읽기를 허용해 주세요</string>
+    <string name="wizard_content_title">배경 화면 추가</string>
+    <string name="wizard_content_done">순환할 콘텐츠가 있습니다</string>
+    <string name="wizard_content_todo">갤러리, 폴더 또는 구독에서 추가</string>
+    <string name="wizard_engine_title">라이브 배경 화면으로 설정</string>
+    <string name="wizard_engine_done">라이브 배경 화면이 실행 중입니다</string>
+    <string name="wizard_engine_blocked">시스템의 \'라이브 배경 화면 서비스\' 권한이 꺼져 있습니다. 먼저 켜 주세요</string>
+    <string name="wizard_engine_todo">타이머 / 더블 탭 / 잠금 해제 전환에 필요합니다</string>
+    <string name="wizard_engine_action">설정하기</string>
+    <string name="wizard_done">완료</string>
+    <string name="wizard_skip">나중에</string>
+    <string name="settings_page_setup_desc">3단계로 초기 설정과 자체 점검</string>
     <string name="option_panel_title">선택</string>
     <string name="option_default">기본</string>
     <string name="color_picker_title">색상 선택</string>

@@ -74,6 +74,8 @@ fun SettingsScreen(
     /** 打开设置里的子页面（壁纸设置 / 切换方式 / 悬浮按钮 / 文件夹扫描 / 外观 /
      *  收藏 / 最近显示 / 存储）。 */
     onOpenScreen: (com.wallpaperswitcher.ui.Screen) -> Unit = {},
+    /** 使用向导 / 自检（三步：权限、内容、动态壁纸）。 */
+    onOpenWizard: () -> Unit = {},
     /**
      * 滚动状态由调用方持有：进子页面再返回时这一页会被重建，状态放在这里才不会
      * 每次都滚回顶部（和订阅列表的 `listState` 同一个理由）。
@@ -226,6 +228,13 @@ fun SettingsScreen(
                 title = stringResource(R.string.storage_title),
                 subtitle = stringResource(R.string.settings_page_storage_desc),
                 onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.Storage) },
+            )
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsPageEntry(
+                icon = Icons.Outlined.Checklist,
+                title = stringResource(R.string.wizard_title),
+                subtitle = stringResource(R.string.settings_page_setup_desc),
+                onClick = onOpenWizard,
             )
         }
         Spacer(modifier = Modifier.height(8.dp))
