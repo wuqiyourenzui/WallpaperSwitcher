@@ -134,12 +134,19 @@ fun SubscriptionScreen(
     /** Called after [selectionRequest] has been consumed: the caller resets the
      *  counter so re-entering the list does not re-open multi-select. */
     onSelectionRequestHandled: () -> Unit = {},
+    /** 分享入库: a URL / 阅读 share link to prefill the import dialog with. */
+    prefillImport: String? = null,
+    /** Called once [prefillImport] has been shown, so it does not re-open. */
+    onPrefillConsumed: () -> Unit = {},
     listState: androidx.compose.foundation.lazy.LazyListState =
         androidx.compose.foundation.lazy.rememberLazyListState(),
 ) {
     val sources by viewModel.rssSources.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
+    LaunchedEffect(prefillImport) {
+        if (prefillImport != null) showImport = true
+    }
     var deleteTarget by remember { mutableStateOf<RssSource?>(null) }
     // 订阅源多选：批量启用 / 停用 / 删除（与分组列表同一套交互）。
     val selectedIds = remember {
@@ -310,10 +317,15 @@ fun SubscriptionScreen(
 
     if (showImport) {
         RssImportDialog(
-            onDismiss = { showImport = false },
+            initialText = prefillImport.orEmpty(),
+            onDismiss = {
+                showImport = false
+                onPrefillConsumed()
+            },
             onImport = { text ->
                 viewModel.importLegadoSources(text)
                 showImport = false
+                onPrefillConsumed()
             }
         )
     }
@@ -469,10 +481,11 @@ private fun RssAddDialog(
 
 @Composable
 private fun RssImportDialog(
+    initialText: String = "",
     onDismiss: () -> Unit,
     onImport: (String) -> Unit,
 ) {
-    var text by remember { mutableStateOf("") }
+    var text by remember(initialText) { mutableStateOf(initialText) }
     val context = LocalContext.current
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()

@@ -13,6 +13,17 @@
     <string name="notification_text">Нажмите, чтобы открыть настройки</string>
     <string name="notification_action_next">Следующая</string>
     <string name="notification_action_pause">Пауза на 1 час</string>
+    <!-- Добавить из «Поделиться» -->
+    <string name="share_import_title">Добавить из «Поделиться»</string>
+    <string name="share_import_count">Получено файлов: %1$d</string>
+    <string name="share_import_group">Добавить в группу</string>
+    <string name="share_import_favorite">Отметить как избранное</string>
+    <string name="share_import_action">Добавить</string>
+    <string name="share_import_empty">Групп пока нет — создайте её на главном экране</string>
+    <string name="share_import_done">Добавлено файлов: %1$d</string>
+    <string name="share_import_partial">Добавлено: %1$d, ошибок: %2$d</string>
+    <string name="share_import_duplicate">Эти файлы уже есть в группе</string>
+    <string name="share_import_error">Не удалось добавить файлы</string>
     <string name="nav_home">Главная</string>
     <string name="nav_settings">Настройки</string>
     <string name="title_home">Смена обоев</string>

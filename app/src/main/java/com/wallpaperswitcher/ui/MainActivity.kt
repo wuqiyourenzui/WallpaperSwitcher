@@ -1,7 +1,10 @@
 package com.wallpaperswitcher.ui
 
 import android.os.Bundle
+import android.content.Intent
+import android.net.Uri
 import androidx.activity.ComponentActivity
+import androidx.compose.runtime.mutableStateOf
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
@@ -20,6 +23,12 @@ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 class MainActivity : ComponentActivity() {
 
     /**
+     * A pending 分享入库 payload (ACTION_SEND / ACTION_SEND_MULTIPLE). Read by
+     * the composition and cleared once [WallpaperSwitcherApp] has taken it.
+     */
+    private val sharePayload = mutableStateOf<SharePayload?>(null)
+
+    /**
      * Apply the chosen UI language to this Activity's resources (see [AppLocale]).
      * A language change recreates the Activity, so this runs again with the new
      * tag - no CompositionLocal overrides, which is what broke
@@ -31,6 +40,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Only on a cold start: a configuration change / process restore must
+        // not re-open the dialog for an intent that was already handled.
+        if (savedInstanceState == null) {
+            sharePayload.value = parseShareIntent(intent)
+        }
 
         setContent {
             val vm: WallpaperViewModel = viewModel()
@@ -72,9 +86,51 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    WallpaperSwitcherApp(vm)
+                    WallpaperSwitcherApp(
+                        viewModel = vm,
+                        sharePayload = sharePayload.value,
+                        onShareHandled = { sharePayload.value = null },
+                    )
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        parseShareIntent(intent)?.let { sharePayload.value = it }
+    }
+
+    /**
+     * Extracts the one payload kind the app understands. ACTION_SEND carries
+     * either text (subscription URL) or one stream; SEND_MULTIPLE carries a
+     * list. Unknown / empty payloads return null and are ignored.
+     */
+    private fun parseShareIntent(intent: Intent?): SharePayload? {
+        if (intent == null) return null
+        return when (intent.action) {
+            Intent.ACTION_SEND -> {
+                if (intent.type.orEmpty().startsWith("text/")) {
+                    intent.getStringExtra(Intent.EXTRA_TEXT)
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { SharePayload.Link(it) }
+                } else {
+                    val uri = androidx.core.content.IntentCompat
+                        .getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                        ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+                    uri?.let { SharePayload.Media(listOf(it)) }
+                }
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val uris = androidx.core.content.IntentCompat
+                    .getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
+                    ?: intent.clipData?.let { clip ->
+                        (0 until clip.itemCount).mapNotNull { clip.getItemAt(it).uri }
+                    }
+                uris?.takeIf { it.isNotEmpty() }?.let { SharePayload.Media(it) }
+            }
+            else -> null
         }
     }
 

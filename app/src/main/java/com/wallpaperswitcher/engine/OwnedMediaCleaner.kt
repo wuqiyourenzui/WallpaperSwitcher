@@ -9,9 +9,9 @@ import kotlinx.coroutines.withContext
 
 /**
  * 订阅源 / 在线壁纸导入的图片与视频都下载在应用私有目录
- * （`files/rss/<源 id>/`、`files/online/<源 id>/`）。删图片、删分组或换源时如果
- * 漏掉文件，这些"孤儿文件"会一直占着存储（实测一台平板上积了 959 个文件 / 280MB，
- * 其中只有 111 个还被分组引用）。
+ * （`files/rss/<源 id>/`、`files/online/<源 id>/`），分享入库的副本在
+ * `files/shared/`。删图片、删分组或换源时如果漏掉文件，这些"孤儿文件"会一直
+ * 占着存储（实测一台平板上积了 959 个文件 / 280MB，其中只有 111 个还被分组引用）。
  *
  * 这里做一次启动清理：扫这两个目录，把数据库里已经不存在的文件删掉。
  * 相册 / 文件夹来源的媒体不在这些目录里，永远不会被删。
@@ -37,7 +37,7 @@ object OwnedMediaCleaner {
         try {
             val dao = AppDatabase.getInstance(context).wallpaperImageDao()
             val now = System.currentTimeMillis()
-            for (sub in listOf("rss", "online")) {
+            for (sub in MANAGED_DIRS) {
                 val root = File(context.filesDir, sub)
                 if (!root.isDirectory) continue
                 val referenced = try {
@@ -63,7 +63,7 @@ object OwnedMediaCleaner {
     suspend fun sweep(context: Context) = withContext(Dispatchers.IO) {
         try {
             val dao = AppDatabase.getInstance(context).wallpaperImageDao()
-            for (sub in listOf("rss", "online")) {
+            for (sub in MANAGED_DIRS) {
                 val root = File(context.filesDir, sub)
                 if (!root.isDirectory) continue
                 val referenced = try {
@@ -148,4 +148,7 @@ object OwnedMediaCleaner {
 
     /** `<sha256>.<ext>` - the names this app gives its downloads. */
     private val OWNED_NAME = Regex("""[0-9a-f]{64}\.[A-Za-z0-9]{2,5}""")
+
+    /** App-private media directories this cleaner owns (never user files). */
+    private val MANAGED_DIRS = listOf("rss", "online", "shared")
 }

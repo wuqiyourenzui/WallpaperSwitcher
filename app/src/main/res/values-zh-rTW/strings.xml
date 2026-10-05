@@ -16,6 +16,17 @@
     <string name="notification_text">點擊管理壁紙設定</string>
     <string name="notification_action_next">下一張</string>
     <string name="notification_action_pause">暫停 1 小時</string>
+    <!-- 分享入庫 -->
+    <string name="share_import_title">分享入庫</string>
+    <string name="share_import_count">收到 %1$d 個檔案</string>
+    <string name="share_import_group">加入分組</string>
+    <string name="share_import_favorite">標為收藏</string>
+    <string name="share_import_action">加入</string>
+    <string name="share_import_empty">還沒有分組，請先在首頁新增一個</string>
+    <string name="share_import_done">已加入 %1$d 個檔案</string>
+    <string name="share_import_partial">已加入 %1$d 個，%2$d 個失敗</string>
+    <string name="share_import_duplicate">這些檔案已經在分組裡了</string>
+    <string name="share_import_error">分享入庫失敗</string>
     <string name="nav_home">首頁</string>
     <string name="nav_settings">設定</string>
     <string name="title_home">壁紙切換</string>

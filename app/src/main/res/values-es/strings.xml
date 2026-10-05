@@ -13,6 +13,17 @@
     <string name="notification_text">Toca para gestionar los ajustes</string>
     <string name="notification_action_next">Siguiente</string>
     <string name="notification_action_pause">Pausar 1 hora</string>
+    <!-- Añadir contenido compartido -->
+    <string name="share_import_title">Añadir contenido compartido</string>
+    <string name="share_import_count">%1$d archivo(s) recibido(s)</string>
+    <string name="share_import_group">Añadir al grupo</string>
+    <string name="share_import_favorite">Marcar como favorito</string>
+    <string name="share_import_action">Añadir</string>
+    <string name="share_import_empty">Aún no hay grupos: crea uno en la pantalla de inicio</string>
+    <string name="share_import_done">Añadidos %1$d archivo(s)</string>
+    <string name="share_import_partial">Añadidos %1$d, %2$d fallidos</string>
+    <string name="share_import_duplicate">Estos archivos ya están en el grupo</string>
+    <string name="share_import_error">No se pudieron añadir los archivos</string>
     <string name="nav_home">Inicio</string>
     <string name="nav_settings">Ajustes</string>
     <string name="title_home">Cambiar fondo</string>

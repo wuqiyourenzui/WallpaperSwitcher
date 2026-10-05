@@ -9,6 +9,17 @@
     <string name="notification_text">点击管理壁纸设置</string>
     <string name="notification_action_next">下一张</string>
     <string name="notification_action_pause">暂停 1 小时</string>
+    <!-- 分享入库 -->
+    <string name="share_import_title">分享入库</string>
+    <string name="share_import_count">收到 %1$d 个文件</string>
+    <string name="share_import_group">加入分组</string>
+    <string name="share_import_favorite">标为收藏</string>
+    <string name="share_import_action">加入</string>
+    <string name="share_import_empty">还没有分组，请先在首页新建一个</string>
+    <string name="share_import_done">已加入 %1$d 个文件</string>
+    <string name="share_import_partial">已加入 %1$d 个，%2$d 个失败</string>
+    <string name="share_import_duplicate">这些文件已经在分组里了</string>
+    <string name="share_import_error">分享入库失败</string>
     <!-- 语言切换（界面文案渐次抽取到资源，未抽取的仍是中文） -->
     <string name="nav_home">首页</string>
     <string name="nav_settings">设置</string>

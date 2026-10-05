@@ -16,9 +16,11 @@ data class StorageDirUsage(
 data class StorageUsage(
     val rss: StorageDirUsage = StorageDirUsage("rss", 0, 0L),
     val online: StorageDirUsage = StorageDirUsage("online", 0, 0L),
+    /** Copies of media another app shared into us (ACTION_SEND). */
+    val shared: StorageDirUsage = StorageDirUsage("shared", 0, 0L),
 ) {
-    val totalFiles: Int get() = rss.files + online.files
-    val totalBytes: Long get() = rss.bytes + online.bytes
+    val totalFiles: Int get() = rss.files + online.files + shared.files
+    val totalBytes: Long get() = rss.bytes + online.bytes + shared.bytes
 }
 
 /** 一次清理的结果：删掉了多少孤儿文件、释放了多少字节。 */

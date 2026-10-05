@@ -18,6 +18,17 @@
     <string name="notification_text">Tap to manage your wallpaper settings</string>
     <string name="notification_action_next">Next</string>
     <string name="notification_action_pause">Pause for 1 hour</string>
+    <!-- Add shared media -->
+    <string name="share_import_title">Add shared media</string>
+    <string name="share_import_count">%1$d file(s) received</string>
+    <string name="share_import_group">Add to group</string>
+    <string name="share_import_favorite">Mark as favourite</string>
+    <string name="share_import_action">Add</string>
+    <string name="share_import_empty">No groups yet - create one on the home screen first</string>
+    <string name="share_import_done">Added %1$d file(s)</string>
+    <string name="share_import_partial">Added %1$d, %2$d failed</string>
+    <string name="share_import_duplicate">These files are already in the group</string>
+    <string name="share_import_error">Could not add the shared files</string>
 
     <string name="nav_home">Home</string>
     <string name="nav_settings">Settings</string>

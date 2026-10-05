@@ -913,7 +913,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             return StorageDirUsage(sub, count, bytes)
         }
         try {
-            StorageUsage(rss = scan("rss"), online = scan("online"))
+            StorageUsage(
+                rss = scan("rss"),
+                online = scan("online"),
+                shared = scan("shared"),
+            )
         } catch (e: Exception) {
             AppLog.w(TAG, "storageUsage failed: ${e.javaClass.simpleName}")
             StorageUsage()
@@ -1519,6 +1523,37 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 str(R.string.rss_add_to_group_partial, report.added, report.failed)
             } else {
                 str(R.string.rss_add_to_group_done, report.added)
+            }
+            _toastMessage.emit(message)
+        }
+    }
+
+    /**
+     * 分享入库 (ACTION_SEND / ACTION_SEND_MULTIPLE): copy the shared streams
+     * into app-private storage and add them to [groupId] as normal media rows.
+     *
+     * Runs on [viewModelScope] (copying a video can take a moment) and reports
+     * the outcome as a toast; the dialog is dismissed immediately so the user
+     * can keep using the app while the copy finishes.
+     */
+    fun importSharedMedia(
+        uris: List<android.net.Uri>,
+        groupId: Long,
+        favorite: Boolean,
+    ) {
+        guardedWrite("分享入库失败") {
+            val report = com.wallpaperswitcher.engine.SharedMediaImporter
+                .importMedia(getApplication(), uris, groupId, favorite)
+            if (report.added > 0) {
+                WallpaperSwitchService.poke(getApplication())
+            }
+            val message = when {
+                report.added > 0 && report.failed > 0 ->
+                    str(R.string.share_import_partial, report.added, report.failed)
+                report.added > 0 -> str(R.string.share_import_done, report.added)
+                report.skipped > 0 && report.failed == 0 ->
+                    str(R.string.share_import_duplicate)
+                else -> str(R.string.share_import_error)
             }
             _toastMessage.emit(message)
         }

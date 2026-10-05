@@ -1,6 +1,7 @@
 package com.wallpaperswitcher.ui
 
 import android.widget.Toast
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
@@ -41,7 +42,13 @@ import kotlinx.coroutines.flow.collectLatest
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
+fun WallpaperSwitcherApp(
+    viewModel: WallpaperViewModel,
+    /** A pending ACTION_SEND payload (see MainActivity); null when there is none. */
+    sharePayload: SharePayload? = null,
+    /** Called once the payload has been taken over by the UI. */
+    onShareHandled: () -> Unit = {},
+) {
     val context = LocalContext.current
     // Save the current screen so opening the system live-wallpaper picker
     // (or any activity recreation) returns to the same page instead of
@@ -53,6 +60,26 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
     // 视频还是图片由 RssArticleScreen **按正文内容**判，打开时只管把文章交过去。
     var rssArticle by remember {
         mutableStateOf<com.wallpaperswitcher.data.RssArticle?>(null)
+    }
+    // 分享入库: media opens the group picker; text (a subscription URL / 阅读
+    // 分享链接) jumps to 订阅 and prefills the existing import dialog.
+    var sharedMedia by remember { mutableStateOf<List<Uri>>(emptyList()) }
+    var sharedImportText by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(sharePayload) {
+        when (val payload = sharePayload) {
+            is SharePayload.Media -> {
+                rssArticle = null
+                sharedMedia = payload.uris
+                onShareHandled()
+            }
+            is SharePayload.Link -> {
+                rssArticle = null
+                sharedImportText = payload.text
+                currentScreen = Screen.Subscriptions
+                onShareHandled()
+            }
+            null -> Unit
+        }
     }
 
     // Toast 消息
@@ -103,6 +130,13 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                     Text(stringResource(R.string.action_cancel))
                 }
             }
+        )
+    }
+    if (sharedMedia.isNotEmpty()) {
+        ShareImportDialog(
+            viewModel = viewModel,
+            uris = sharedMedia,
+            onDismiss = { sharedMedia = emptyList() },
         )
     }
 
@@ -464,6 +498,9 @@ fun WallpaperSwitcherApp(viewModel: WallpaperViewModel) {
                     listState = subscriptionsListState,
                     selectionRequest = sourceSelectionRequest,
                     onSelectionRequestHandled = { sourceSelectionRequest = 0 },
+                    // 分享入库（文本）：预填订阅导入对话框（见 SharePayload.Link）。
+                    prefillImport = sharedImportText,
+                    onPrefillConsumed = { sharedImportText = null },
                     onOpenArticles = { sourceId ->
                         currentScreen = Screen.SubscriptionArticles(sourceId)
                     },
