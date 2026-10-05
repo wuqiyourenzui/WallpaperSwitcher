@@ -885,9 +885,9 @@ private fun SelectionToolbar(
     // Snapshot reads: they subscribe THIS composable only.
     val selectedCount = selectedMap.size
     val isAllSelected = selectedCount == totalCount && totalCount > 0
-    // 两行布局（与首页分组多选一致）：「退出 / 全选 / 已选 n/m」在第一行，
-    // 动作按钮固定换到第二行。之前所有控件挤在一行，俄语下计数被压到 58px
-    // （显示成"…"）；两行后每个控件都有足够宽度。
+    // 两行布局（与首页分组多选一致）：第一行「已选 n/m」在左、「全选 / 退出」在右，
+    // 动作按钮固定换到第二行。计数与按钮分居两端，横滑/勾选时视线不会在左右之间跳；
+    // 之前计数在最右、退出在最左，点"退出"要横跨整屏。
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -898,16 +898,14 @@ private fun SelectionToolbar(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(
-                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
-                onClick = onExit
-            ) {
-                Icon(
-                    Icons.Filled.Close,
-                    stringResource(R.string.cd_exit_selection),
-                    modifier = Modifier.size(20.dp)
-                )
-            }
+            Text(
+                stringResource(R.string.selection_count, selectedCount, totalCount),
+                style = MaterialTheme.typography.bodyMedium,
+                color = LocalAccentColor.current,
+                maxLines = 1,
+                textAlign = TextAlign.Start,
+                modifier = Modifier.weight(1f)
+            )
             TextButton(
                 modifier = Modifier.heightIn(min = 40.dp),
                 contentPadding = PaddingValues(horizontal = 10.dp),
@@ -938,14 +936,16 @@ private fun SelectionToolbar(
                     stringResource(if (isAllSelected) R.string.selection_none else R.string.selection_all)
                 )
             }
-        Text(
-            stringResource(R.string.selection_count, selectedCount, totalCount),
-            style = MaterialTheme.typography.bodyMedium,
-            color = LocalAccentColor.current,
-            maxLines = 1,
-            textAlign = TextAlign.End,
-            modifier = Modifier.weight(1f)
-        )
+            IconButton(
+                modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp),
+                onClick = onExit
+            ) {
+                Icon(
+                    Icons.Filled.Close,
+                    stringResource(R.string.cd_exit_selection),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
         if (selectedCount > 0) {
             FlowRow(

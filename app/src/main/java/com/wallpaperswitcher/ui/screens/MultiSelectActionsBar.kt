@@ -56,9 +56,9 @@ internal fun MultiSelectActionsBar(
 ) {
     val selectedCount = selectedMap.size
     val isAllSelected = allIds.isNotEmpty() && selectedCount == allIds.size
-    // 两行布局：「退出 / 全选 / 已选 n/m」在第一行，「启用 / 停用 / 删除」第二行。
-    // 之前所有控件挤在一行，长语言下计数会被压缩（俄语实测只剩 58px、显示成"…"），
-    // 按钮文字也会被截断；两行后每个控件都拿到足够宽度，位置不随语言变化。
+    // 两行布局：第一行「已选 n/m」在左、「全选 / 退出」在右，第二行「启用 / 停用 /
+    // 删除」。计数与操作分居两端（用户要求：叉号和全选移到右边），长语言下计数
+    // 仍有整行宽度可用，不会被压缩成"…"（俄语实测过的老问题）。
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -70,13 +70,14 @@ internal fun MultiSelectActionsBar(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(modifier = Modifier.size(40.dp), onClick = onExit) {
-                Icon(
-                    Icons.Filled.Close,
-                    stringResource(R.string.selection_exit),
-                    modifier = Modifier.size(20.dp)
-                )
-            }
+            Text(
+                stringResource(R.string.selection_count, selectedCount, allIds.size),
+                style = MaterialTheme.typography.bodyMedium,
+                color = LocalAccentColor.current,
+                textAlign = TextAlign.Start,
+                maxLines = 1,
+                modifier = Modifier.weight(1f)
+            )
             TextButton(
                 modifier = Modifier.heightIn(min = 40.dp),
                 contentPadding = PaddingValues(horizontal = 10.dp),
@@ -102,14 +103,13 @@ internal fun MultiSelectActionsBar(
                     maxLines = 1
                 )
             }
-            Text(
-                stringResource(R.string.selection_count, selectedCount, allIds.size),
-                style = MaterialTheme.typography.bodyMedium,
-                color = LocalAccentColor.current,
-                textAlign = TextAlign.End,
-                maxLines = 1,
-                modifier = Modifier.weight(1f)
-            )
+            IconButton(modifier = Modifier.size(40.dp), onClick = onExit) {
+                Icon(
+                    Icons.Filled.Close,
+                    stringResource(R.string.selection_exit),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
         if (selectedCount > 0) {
             FlowRow(
