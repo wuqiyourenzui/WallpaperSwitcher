@@ -79,6 +79,7 @@ fun WallpaperSettingsScreen(
     val rotateMismatchEnabled = state.rotateMismatchEnabled
     val rotateMismatchClockwise = state.rotateMismatchClockwise
     val kenBurnsEnabled = state.kenBurnsEnabled
+    val qualityEnhanceEnabled = state.qualityEnhanceEnabled
 
     SettingsPageScaffold(onBack = onBack, modifier = modifier) {
         SettingsSection(title = stringResource(R.string.settings_page_wallpaper)) {
@@ -151,6 +152,16 @@ fun WallpaperSettingsScreen(
                     subtitle = stringResource(R.string.settings_ken_burns_hint),
                     checked = kenBurnsEnabled,
                     onCheckedChange = { viewModel.setKenBurnsEnabled(it) }
+                )
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.AutoAwesome,
+                    title = stringResource(R.string.settings_quality_enhance),
+                    subtitle = stringResource(R.string.settings_quality_enhance_hint),
+                    checked = qualityEnhanceEnabled,
+                    onCheckedChange = { viewModel.setQualityEnhanceEnabled(it) }
                 )
         }
     }

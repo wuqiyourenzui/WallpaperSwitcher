@@ -635,6 +635,14 @@ class LiveWallpaperService : WallpaperService() {
             activeEngine?.applyKenBurnsEnabled(enabled)
         }
         /**
+         * 画质增强 setting changed: adopt it in the running engine (the engine
+         * also reads the setting before every switch, so a killed/recreated
+         * engine picks it up too).
+         */
+        fun applyQualityEnhanceFromSettings(context: Context, enabled: Boolean) {
+            activeEngine?.applyQualityEnhanceEnabled(enabled)
+        }
+        /**
          * Low-memory callback forwarded from the Application: release optional
          * memory (the prefetched next image) while keeping the displayed media
          * intact. No-op when the engine is not alive.
@@ -2843,6 +2851,11 @@ class LiveWallpaperService : WallpaperService() {
             renderer?.setKenBurnsEnabled(enabled)
         }
 
+        /** 画质增强 change pushed from the settings screen (see the companion). */
+        internal fun applyQualityEnhanceEnabled(enabled: Boolean) {
+            renderer?.setQualityEnhanceEnabled(enabled)
+        }
+
         private fun applyRotateSettingsLive(enabled: Boolean, clockwise: Boolean) {
             if (autoRotateMismatch == enabled && autoRotateClockwise == clockwise) return
             autoRotateMismatch = enabled
@@ -3106,6 +3119,7 @@ class LiveWallpaperService : WallpaperService() {
             }
             applyClarityMode()
             applyKenBurnsMode()
+            applyQualityEnhanceMode()
             autoRotateMismatch = try {
                 dao.getBool(SettingsKeys.ROTATE_MISMATCH_ENABLED, true)
             } catch (_: Exception) {
@@ -4029,6 +4043,7 @@ class LiveWallpaperService : WallpaperService() {
                     val imageDao = db.wallpaperImageDao()
                     applyClarityMode()
                     applyKenBurnsMode()
+                    applyQualityEnhanceMode()
                     autoRotateMismatch = try {
                         dao.getBool(SettingsKeys.ROTATE_MISMATCH_ENABLED, true)
                     } catch (_: Exception) {
@@ -4305,6 +4320,20 @@ class LiveWallpaperService : WallpaperService() {
                 false
             }
             renderer?.setKenBurnsEnabled(enabled)
+        }
+
+        /**
+         * Sync the 画质增强 setting into the renderer (same pattern as
+         * [applyKenBurnsMode]): every switch/redraw re-reads it, so the engine
+         * never depends on a settings push having reached it.
+         */
+        private suspend fun applyQualityEnhanceMode() {
+            val enabled = try {
+                db.settingsDao().getBool(SettingsKeys.QUALITY_ENHANCE_ENABLED, false)
+            } catch (_: Exception) {
+                false
+            }
+            renderer?.setQualityEnhanceEnabled(enabled)
         }
 
         /**

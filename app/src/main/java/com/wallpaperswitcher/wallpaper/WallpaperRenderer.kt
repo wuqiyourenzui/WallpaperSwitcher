@@ -124,10 +124,67 @@ class WallpaperRenderer(
             precision mediump float;
             uniform sampler2D uTexture;
             uniform vec2 uTexelSize;
+            uniform vec2 uSrcTexel;
             uniform float uSharp;
+            uniform float uEnhance;
             uniform float uAlpha;
             varying vec2 vTexCoord;
+
+            vec4 cubicWeights(float t) {
+                float t2 = t * t;
+                float t3 = t2 * t;
+                return vec4(
+                    -0.5 * t3 + t2 - 0.5 * t,
+                     1.5 * t3 - 2.5 * t2 + 1.0,
+                    -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+                     0.5 * t3 - 0.5 * t2
+                );
+            }
+
+            // 画质增强: Catmull-Rom bicubic with 4 hardware-bilinear taps. The
+            // pair decomposition mirrors WallpaperGeometry.cubicPairs (unit
+            // tested); it only runs while a low-res source is magnified, so the
+            // default path keeps its original cost.
+            vec4 bicubic4(vec2 uv, vec2 texel) {
+                vec2 c = uv / texel;
+                vec2 i0 = floor(c);
+                vec2 t = c - i0;
+                vec4 wx = cubicWeights(t.x);
+                vec4 wy = cubicWeights(t.y);
+                float wAx = wx.x + wx.y;
+                float wBx = wx.z + wx.w;
+                float wAy = wy.x + wy.y;
+                float wBy = wy.z + wy.w;
+                float pAx = wAx > 0.0001 ? wx.y / wAx : 0.5;
+                float pBx = wBx > 0.0001 ? wx.w / wBx : 0.5;
+                float pAy = wAy > 0.0001 ? wy.y / wAy : 0.5;
+                float pBy = wBy > 0.0001 ? wy.w / wBy : 0.5;
+                vec2 lo = texel * 0.5;
+                vec2 hi = vec2(1.0) - lo;
+                vec4 acc = vec4(0.0);
+                acc += (wAx * wAy) * texture2D(uTexture, clamp(vec2(i0.x - 1.0 + pAx, i0.y - 1.0 + pAy) * texel, lo, hi));
+                acc += (wBx * wAy) * texture2D(uTexture, clamp(vec2(i0.x + 1.0 + pBx, i0.y - 1.0 + pAy) * texel, lo, hi));
+                acc += (wAx * wBy) * texture2D(uTexture, clamp(vec2(i0.x - 1.0 + pAx, i0.y + 1.0 + pBy) * texel, lo, hi));
+                acc += (wBx * wBy) * texture2D(uTexture, clamp(vec2(i0.x + 1.0 + pBx, i0.y + 1.0 + pBy) * texel, lo, hi));
+                return acc;
+            }
+
             void main() {
+                if (uEnhance > 0.001) {
+                    vec4 e = bicubic4(vTexCoord, uSrcTexel);
+                    if (uSharp <= 0.001) {
+                        gl_FragColor = clamp(vec4(e.rgb, uAlpha), 0.0, 1.0);
+                        return;
+                    }
+                    float esharp = uSharp * (1.0 + 2.0 * uEnhance);
+                    vec4 es = e * (1.0 + 4.0 * esharp)
+                           - (texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0))
+                            + texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0))
+                            + texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y))
+                            + texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y))) * esharp;
+                    gl_FragColor = clamp(vec4(es.rgb, uAlpha), 0.0, 1.0);
+                    return;
+                }
                 // Mild unsharp mask. uSharp == 0.0 keeps the original pixel
                 // exactly (used for downscaled/native media and the black
                 // background). The early return also skips the 4 neighbor
@@ -152,9 +209,62 @@ class WallpaperRenderer(
             precision mediump float;
             uniform samplerExternalOES uTexture;
             uniform vec2 uTexelSize;
+            uniform vec2 uSrcTexel;
             uniform float uSharp;
+            uniform float uEnhance;
             varying vec2 vTexCoord;
+
+            vec4 cubicWeights(float t) {
+                float t2 = t * t;
+                float t3 = t2 * t;
+                return vec4(
+                    -0.5 * t3 + t2 - 0.5 * t,
+                     1.5 * t3 - 2.5 * t2 + 1.0,
+                    -1.5 * t3 + 2.0 * t2 + 0.5 * t,
+                     0.5 * t3 - 0.5 * t2
+                );
+            }
+
+            vec4 bicubic4(vec2 uv, vec2 texel) {
+                vec2 c = uv / texel;
+                vec2 i0 = floor(c);
+                vec2 t = c - i0;
+                vec4 wx = cubicWeights(t.x);
+                vec4 wy = cubicWeights(t.y);
+                float wAx = wx.x + wx.y;
+                float wBx = wx.z + wx.w;
+                float wAy = wy.x + wy.y;
+                float wBy = wy.z + wy.w;
+                float pAx = wAx > 0.0001 ? wx.y / wAx : 0.5;
+                float pBx = wBx > 0.0001 ? wx.w / wBx : 0.5;
+                float pAy = wAy > 0.0001 ? wy.y / wAy : 0.5;
+                float pBy = wBy > 0.0001 ? wy.w / wBy : 0.5;
+                vec2 lo = texel * 0.5;
+                vec2 hi = vec2(1.0) - lo;
+                vec4 acc = vec4(0.0);
+                acc += (wAx * wAy) * texture2D(uTexture, clamp(vec2(i0.x - 1.0 + pAx, i0.y - 1.0 + pAy) * texel, lo, hi));
+                acc += (wBx * wAy) * texture2D(uTexture, clamp(vec2(i0.x + 1.0 + pBx, i0.y - 1.0 + pAy) * texel, lo, hi));
+                acc += (wAx * wBy) * texture2D(uTexture, clamp(vec2(i0.x - 1.0 + pAx, i0.y + 1.0 + pBy) * texel, lo, hi));
+                acc += (wBx * wBy) * texture2D(uTexture, clamp(vec2(i0.x + 1.0 + pBx, i0.y + 1.0 + pBy) * texel, lo, hi));
+                return acc;
+            }
+
             void main() {
+                if (uEnhance > 0.001) {
+                    vec4 e = bicubic4(vTexCoord, uSrcTexel);
+                    if (uSharp <= 0.001) {
+                        gl_FragColor = clamp(e, 0.0, 1.0);
+                        return;
+                    }
+                    float esharp = uSharp * (1.0 + 2.0 * uEnhance);
+                    vec4 es = e * (1.0 + 4.0 * esharp)
+                           - (texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0))
+                            + texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0))
+                            + texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y))
+                            + texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y))) * esharp;
+                    gl_FragColor = clamp(es, 0.0, 1.0);
+                    return;
+                }
                 vec4 c = texture2D(uTexture, vTexCoord);
                 if (uSharp <= 0.001) {
                     gl_FragColor = c;
@@ -210,6 +320,17 @@ class WallpaperRenderer(
     private var imageAlphaLoc = -1
     private var videoTexelLoc = -1
     private var videoSharpLoc = -1
+    // 画质增强 uniforms (super-resolution strength + source texel size).
+    private var imageEnhanceLoc = -1
+    private var imageSrcTexelLoc = -1
+    private var videoEnhanceLoc = -1
+    private var videoSrcTexelLoc = -1
+    /**
+     * 画质增强 (AI/超分): when on, a source that is being magnified is sampled
+     * with a 4-tap Catmull-Rom bicubic and sharper unsharp masking (images and
+     * video frames share the path). Written from the engine thread.
+     */
+    @Volatile private var qualityEnhance: Boolean = false
     // Engine-controlled clarity strength multiplier: 0 = off, 1.25 = default
     // curve, >1 = stronger. Written from the engine thread on each switch,
     // read on the render thread. Default matches the "auto" clarity mode so
@@ -328,6 +449,9 @@ class WallpaperRenderer(
     // screen-space kernel reads the quad extents from videoQuadHalfW/H.
     private var videoDisplayW = 0f
     private var videoDisplayH = 0f
+    /** Actual decoded texture size (post decode-cap) for bicubic texel steps. */
+    private var videoSrcW = 0f
+    private var videoSrcH = 0f
     private var videoScaleMode: ScaleMode = ScaleMode.FIT
     // Quad half-extents of the current video (render thread only). The texture
     // footprint on screen is (halfW*screenW, halfH*screenH) pixels, which the
@@ -878,6 +1002,18 @@ class WallpaperRenderer(
     }
 
     /**
+     * 画质增强 (AI/超分): adopt the setting. Every draw reads the flag, so a
+     * video applies it on the next frame; a still image is re-presented once so
+     * the change is visible immediately.
+     */
+    fun setQualityEnhanceEnabled(enabled: Boolean) {
+        qualityEnhance = enabled
+        postToRenderThread {
+            if (lastRenderWasImage) renderImageFromTexture()
+        }
+    }
+
+    /**
      * The zoom ticker: ~15fps is plenty for a very slow breathing zoom and
      * keeps a still wallpaper far below the video path's cost. It stops while
      * hidden ([powerSaveMode]) or while a GIF owns the screen, and restarts on
@@ -1052,6 +1188,7 @@ class WallpaperRenderer(
             GLES20.glUniform1i(imageTexLoc, 0)
             GLES20.glUniform2f(imageTexelLoc, 1f, 1f)
             GLES20.glUniform1f(imageSharpLoc, 0f)
+            GLES20.glUniform1f(imageEnhanceLoc, 0f)
             GLES20.glUniform1f(imageAlphaLoc, alpha)
             bg.position(0)
             GLES20.glEnableVertexAttribArray(imagePosLoc)
@@ -1167,6 +1304,18 @@ class WallpaperRenderer(
                 imageSharpLoc,
                 sharpnessFor(bitmap.width.toFloat(), bitmap.height.toFloat(), scaleMode)
             )
+            GLES20.glUniform1f(
+                imageEnhanceLoc,
+                WallpaperGeometry.enhancementStrength(
+                    bitmap.width.toFloat(), bitmap.height.toFloat(),
+                    screenW, screenH, scaleMode, qualityEnhance,
+                ),
+            )
+            GLES20.glUniform2f(
+                imageSrcTexelLoc,
+                1f / bitmap.width.coerceAtLeast(1),
+                1f / bitmap.height.coerceAtLeast(1),
+            )
             GLES20.glUniform1f(imageAlphaLoc, 1f)
 
             vertexBuffer?.position(0)
@@ -1236,6 +1385,18 @@ class WallpaperRenderer(
             GLES20.glUniform1f(
                 imageSharpLoc,
                 sharpnessFor(bmp.width.toFloat(), bmp.height.toFloat(), lastImageScaleMode)
+            )
+            GLES20.glUniform1f(
+                imageEnhanceLoc,
+                WallpaperGeometry.enhancementStrength(
+                    bmp.width.toFloat(), bmp.height.toFloat(),
+                    screenW, screenH, lastImageScaleMode, qualityEnhance,
+                ),
+            )
+            GLES20.glUniform2f(
+                imageSrcTexelLoc,
+                1f / bmp.width.coerceAtLeast(1),
+                1f / bmp.height.coerceAtLeast(1),
             )
             GLES20.glUniform1f(imageAlphaLoc, 1f)
 
@@ -2614,6 +2775,8 @@ class WallpaperRenderer(
                                 // to fill the screen.
                                 videoDisplayW = quadW.toFloat()
                                 videoDisplayH = quadH.toFloat()
+                                videoSrcW = videoW.toFloat()
+                                videoSrcH = videoH.toFloat()
                                 videoScaleMode = scaleMode
                                 // Do NOT clear the framebuffer here.
                                 //
@@ -3133,6 +3296,7 @@ class WallpaperRenderer(
             GLES20.glUniform1i(texLoc, 0)
             // Flat black must never be sharpened (uSharp=0 is identity).
             GLES20.glUniform1f(imageSharpLoc, 0f)
+            GLES20.glUniform1f(imageEnhanceLoc, 0f)
             GLES20.glUniform1f(imageAlphaLoc, 1f)
 
             bg.position(0)
@@ -3232,6 +3396,18 @@ class WallpaperRenderer(
             updateVideoScreenTexelDelta()
             GLES20.glUniform2f(videoTexelLoc, videoTexelX, videoTexelY)
             GLES20.glUniform1f(videoSharpLoc, sharpnessFor(videoDisplayW, videoDisplayH, videoScaleMode))
+            GLES20.glUniform1f(
+                videoEnhanceLoc,
+                WallpaperGeometry.enhancementStrength(
+                    videoDisplayW, videoDisplayH, screenW, screenH,
+                    videoScaleMode, qualityEnhance,
+                ),
+            )
+            GLES20.glUniform2f(
+                videoSrcTexelLoc,
+                if (videoSrcW > 0f) 1f / videoSrcW else 0f,
+                if (videoSrcH > 0f) 1f / videoSrcH else 0f,
+            )
 
             vertexBuffer?.position(0)
             GLES20.glEnableVertexAttribArray(posLoc)
@@ -3281,6 +3457,8 @@ class WallpaperRenderer(
     private fun cleanupVideoResourcesOnRenderThread() {
         logPassFrameRate()
         videoQuadFullscreen = false
+        videoSrcW = 0f
+        videoSrcH = 0f
         try { surfaceTexture?.release() } catch (_: Exception) {}
         surfaceTexture = null
         try { codecSurface?.release() } catch (_: Exception) {}
@@ -3446,12 +3624,16 @@ class WallpaperRenderer(
         imageTexelLoc = GLES20.glGetUniformLocation(imageProgram, "uTexelSize")
         imageSharpLoc = GLES20.glGetUniformLocation(imageProgram, "uSharp")
         imageAlphaLoc = GLES20.glGetUniformLocation(imageProgram, "uAlpha")
+        imageEnhanceLoc = GLES20.glGetUniformLocation(imageProgram, "uEnhance")
+        imageSrcTexelLoc = GLES20.glGetUniformLocation(imageProgram, "uSrcTexel")
         videoTexMatLoc = GLES20.glGetUniformLocation(videoProgram, "uTexMatrix")
         videoTexLoc = GLES20.glGetUniformLocation(videoProgram, "uTexture")
         videoPosLoc = GLES20.glGetAttribLocation(videoProgram, "aPosition")
         videoTcLoc = GLES20.glGetAttribLocation(videoProgram, "aTexCoord")
         videoTexelLoc = GLES20.glGetUniformLocation(videoProgram, "uTexelSize")
         videoSharpLoc = GLES20.glGetUniformLocation(videoProgram, "uSharp")
+        videoEnhanceLoc = GLES20.glGetUniformLocation(videoProgram, "uEnhance")
+        videoSrcTexelLoc = GLES20.glGetUniformLocation(videoProgram, "uSrcTexel")
         vertexBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
         backgroundBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
             put(floatArrayOf(-1f,-1f,0f,1f, 1f,-1f,1f,1f, -1f,1f,0f,0f, 1f,1f,1f,0f))

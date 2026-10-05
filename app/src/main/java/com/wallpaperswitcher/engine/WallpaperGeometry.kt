@@ -202,4 +202,67 @@ object WallpaperGeometry {
         for (i in intArrayOf(1, 5, 9, 13)) if (i < quad.size) quad[i] *= s
         return quad
     }
+
+    /**
+     * 画质增强 (超分): how strongly a magnified source should be enhanced.
+     *
+     * Loosely matches the existing clarity curve (see WallpaperRenderer):
+     * nothing below 1.25x (the source already has enough pixels), then a linear
+     * ramp that reaches full strength at 4x magnification. The screen-pixel
+     * factor follows the scale mode: FIT is limited by the smaller axis, FILL /
+     * STRETCH magnify by the larger one.
+     */
+    fun enhancementStrength(
+        sourceW: Float,
+        sourceH: Float,
+        screenW: Float,
+        screenH: Float,
+        scaleMode: ScaleMode,
+        enabled: Boolean,
+    ): Float {
+        if (!enabled || sourceW <= 0f || sourceH <= 0f || screenW <= 0f || screenH <= 0f) {
+            return 0f
+        }
+        val scaleX = screenW / sourceW
+        val scaleY = screenH / sourceH
+        val upscale = when (scaleMode) {
+            ScaleMode.FIT -> minOf(scaleX, scaleY)
+            ScaleMode.FILL, ScaleMode.STRETCH -> maxOf(scaleX, scaleY)
+        }
+        return ((upscale - 1.25f) / 2.75f).coerceIn(0f, 1f)
+    }
+
+    /**
+     * Catmull-Rom weights for the four samples at -1, 0, 1, 2 around [t] in
+     * 0..1 (the exact weights the shader's `cubicWeights` mirrors).
+     */
+    internal fun cubicWeights(t: Float): FloatArray {
+        val t2 = t * t
+        val t3 = t2 * t
+        return floatArrayOf(
+            -0.5f * t3 + t2 - 0.5f * t,
+            1.5f * t3 - 2.5f * t2 + 1f,
+            -1.5f * t3 + 2f * t2 + 0.5f * t,
+            0.5f * t3 - 0.5f * t2,
+        )
+    }
+
+    /**
+     * The 1D pair decomposition behind the shader's 4-tap bicubic.
+     *
+     * Four Catmull-Rom taps can be reproduced with two hardware-bilinear taps:
+     * the pair (-1, 0) is fetched at `posA` texels from the texel at -1 with
+     * total weight `weightA`, the pair (1, 2) at `posB` from the texel at 1
+     * with `weightB`. Returns `[posA, posB, weightA, weightB]`; the shader does
+     * the same maths per axis and combines the four 2D taps. Kept here so the
+     * decomposition can be unit-tested against [cubicWeights].
+     */
+    internal fun cubicPairs(t: Float): FloatArray {
+        val w = cubicWeights(t)
+        val weightA = w[0] + w[1]
+        val weightB = w[2] + w[3]
+        val posA = if (weightA > 0.0001f) w[1] / weightA else 0.5f
+        val posB = if (weightB > 0.0001f) w[3] / weightB else 0.5f
+        return floatArrayOf(posA, posB, weightA, weightB)
+    }
 }
