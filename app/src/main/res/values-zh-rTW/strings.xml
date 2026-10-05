@@ -479,7 +479,7 @@
     <string name="rss_url">訂閱位址（RSS/Atom）</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
     <string name="rss_import_title">匯入閱讀訂閱源</string>
-    <string name="rss_import_hint">貼上訂閱源 JSON、legado:// 分享連結或訂閱網址，也可以選擇 .json 檔案</string>
+    <string name="rss_import_hint">貼上訂閱源 JSON、legado:// 分享連結或訂閱網址，也可以選擇 .json 檔案；清單中已有的訂閱源會就地更新</string>
     <string name="rss_import_paste">訂閱源內容</string>
     <string name="rss_import_file">選擇 JSON 檔案</string>
     <string name="rss_import_action">匯入</string>
@@ -504,7 +504,7 @@
     <string name="rss_refresh_failed">重新整理失敗：%1$s</string>
     <string name="rss_refresh_started">已開始重新整理全部訂閱</string>
     <string name="rss_import_failed">匯入失敗，請檢查內容格式</string>
-    <string name="rss_import_done">已匯入 %1$d 個訂閱源（略過 %2$d 個）</string>
+    <string name="rss_import_done">已匯入 %1$d 個訂閱源，更新 %2$d 個（略過 %3$d 個）</string>
     <string name="rss_refresh_all">全部重新整理</string>
     <string name="rss_article_images">文章圖片（%1$d）</string>
     <string name="rss_select_all">全選</string>

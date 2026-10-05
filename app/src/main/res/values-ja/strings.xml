@@ -476,7 +476,7 @@
     <string name="rss_url">フィード URL（RSS/Atom）</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
     <string name="rss_import_title">阅读の購読ソースをインポート</string>
-    <string name="rss_import_hint">購読ソースの JSON、legado:// 共有リンク、購読 URL を貼り付けるか、.json ファイルを選択してください。</string>
+    <string name="rss_import_hint">購読ソースの JSON、legado:// 共有リンク、購読 URL を貼り付けるか、.json ファイルを選択してください。リストにあるソースはその場で更新されます。</string>
     <string name="rss_import_paste">ソースの内容</string>
     <string name="rss_import_file">JSON ファイルを選択</string>
     <string name="rss_import_action">インポート</string>
@@ -501,7 +501,7 @@
     <string name="rss_refresh_failed">更新失敗：%1$s</string>
     <string name="rss_refresh_started">すべての購読を更新中</string>
     <string name="rss_import_failed">インポートに失敗しました。内容を確認してください</string>
-    <string name="rss_import_done">%1$d 件のソースをインポートしました（%2$d 件スキップ）</string>
+    <string name="rss_import_done">%1$d 件のソースをインポートし、%2$d 件を更新しました（%3$d 件スキップ）</string>
     <string name="rss_refresh_all">すべて更新</string>
     <string name="rss_article_images">記事の画像（%1$d）</string>
     <string name="rss_select_all">すべて選択</string>

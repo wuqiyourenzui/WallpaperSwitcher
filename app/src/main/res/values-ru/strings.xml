@@ -488,7 +488,7 @@
     <string name="rss_url">URL ленты (RSS/Atom)</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
     <string name="rss_import_title">Импорт источников 阅读</string>
-    <string name="rss_import_hint">Вставьте JSON источника, ссылку legado:// или адрес подписки либо выберите файл .json.</string>
+    <string name="rss_import_hint">Вставьте JSON источника, ссылку legado:// или адрес подписки либо выберите файл .json. Источники, уже имеющиеся в списке, обновляются на месте.</string>
     <string name="rss_import_paste">Содержимое источника</string>
     <string name="rss_import_file">Выбрать JSON-файл</string>
     <string name="rss_import_action">Импорт</string>
@@ -513,7 +513,7 @@
     <string name="rss_refresh_failed">Ошибка обновления: %1$s</string>
     <string name="rss_refresh_started">Обновление всех подписок</string>
     <string name="rss_import_failed">Не удалось импортировать, проверьте формат</string>
-    <string name="rss_import_done">Импортировано источников: %1$d (пропущено %2$d)</string>
+    <string name="rss_import_done">Импортировано источников: %1$d, обновлено %2$d (пропущено %3$d)</string>
     <string name="rss_refresh_all">Обновить все</string>
     <string name="rss_article_images">Изображения статьи (%1$d)</string>
     <string name="rss_select_all">Выбрать все</string>

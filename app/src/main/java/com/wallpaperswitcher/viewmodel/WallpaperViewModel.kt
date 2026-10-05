@@ -1570,9 +1570,18 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             val safeName = name.trim().ifBlank {
                 safeUrl.substringAfter("//").substringBefore('/').ifBlank { safeUrl }
             }
-            db.rssSourceDao().insert(
-                com.wallpaperswitcher.data.RssSource(name = safeName, url = safeUrl)
-            )
+            // 手动填的地址已经在列表里时只改名，不再加一行（文章缓存与登录态挂在
+            // id 上，不能丢）；类型与原始规则 JSON 也保持不动——这里是"添加"，
+            // 用户没有提供新的规则。
+            val existing = db.rssSourceDao().getAll()
+                .firstOrNull { it.url.trim() == safeUrl }
+            if (existing != null) {
+                db.rssSourceDao().update(existing.copy(name = safeName))
+            } else {
+                db.rssSourceDao().insert(
+                    com.wallpaperswitcher.data.RssSource(name = safeName, url = safeUrl)
+                )
+            }
             com.wallpaperswitcher.engine.RssScheduler.ensureScheduled(getApplication())
             _toastMessage.emit(str(R.string.rss_saved))
         }
@@ -1666,12 +1675,20 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 _toastMessage.emit(str(R.string.rss_import_failed))
                 return@guardedWrite
             }
-            for (source in result.sources) {
-                db.rssSourceDao().insert(source)
-            }
+            // 同一个 URL 已经存在就地更新（保住 id → 文章缓存/登录态/列表顺序），
+            // 不再每次导入都堆一行新的（见 engine.RssSourceImport）。
+            val decision = com.wallpaperswitcher.engine.RssSourceImport
+                .decide(db.rssSourceDao().getAll(), result.sources)
+            for (source in decision.updated) db.rssSourceDao().update(source)
+            for (source in decision.inserted) db.rssSourceDao().insert(source)
             com.wallpaperswitcher.engine.RssScheduler.ensureScheduled(getApplication())
             _toastMessage.emit(
-                str(R.string.rss_import_done, result.sources.size, result.skipped)
+                str(
+                    R.string.rss_import_done,
+                    decision.inserted.size,
+                    decision.updated.size,
+                    result.skipped + decision.ignored,
+                )
             )
         }
     }

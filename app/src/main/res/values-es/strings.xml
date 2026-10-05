@@ -480,7 +480,7 @@
     <string name="rss_url">URL del feed (RSS/Atom)</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
     <string name="rss_import_title">Importar fuentes de 阅读</string>
-    <string name="rss_import_hint">Pega el JSON de la fuente, un enlace legado:// o la dirección de suscripción, o elige un archivo .json.</string>
+    <string name="rss_import_hint">Pega el JSON de la fuente, un enlace legado:// o la dirección de suscripción, o elige un archivo .json. Las fuentes que ya están en la lista se actualizan en su sitio.</string>
     <string name="rss_import_paste">Contenido de la fuente</string>
     <string name="rss_import_file">Elegir archivo JSON</string>
     <string name="rss_import_action">Importar</string>
@@ -505,7 +505,7 @@
     <string name="rss_refresh_failed">Error al actualizar: %1$s</string>
     <string name="rss_refresh_started">Actualizando todas las suscripciones</string>
     <string name="rss_import_failed">Error al importar, revisa el formato</string>
-    <string name="rss_import_done">Importadas %1$d fuentes (%2$d omitidas)</string>
+    <string name="rss_import_done">Importadas %1$d fuentes, actualizadas %2$d (%3$d omitidas)</string>
     <string name="rss_refresh_all">Actualizar todo</string>
     <string name="rss_article_images">Imágenes del artículo (%1$d)</string>
     <string name="rss_select_all">Seleccionar todo</string>

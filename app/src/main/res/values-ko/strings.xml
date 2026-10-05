@@ -476,7 +476,7 @@
     <string name="rss_url">피드 URL (RSS/Atom)</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
     <string name="rss_import_title">阅读 구독 소스 가져오기</string>
-    <string name="rss_import_hint">구독 소스 JSON, legado:// 공유 링크 또는 구독 주소를 붙여넣거나 .json 파일을 선택하세요.</string>
+    <string name="rss_import_hint">구독 소스 JSON, legado:// 공유 링크 또는 구독 주소를 붙여넣거나 .json 파일을 선택하세요. 목록에 있는 소스는 그 자리에서 업데이트됩니다.</string>
     <string name="rss_import_paste">소스 내용</string>
     <string name="rss_import_file">JSON 파일 선택</string>
     <string name="rss_import_action">가져오기</string>
@@ -501,7 +501,7 @@
     <string name="rss_refresh_failed">새로 고침 실패: %1$s</string>
     <string name="rss_refresh_started">모든 구독을 새로 고치는 중</string>
     <string name="rss_import_failed">가져오기 실패, 내용 형식을 확인하세요</string>
-    <string name="rss_import_done">%1$d개 소스를 가져왔습니다 (%2$d개 건너뜀)</string>
+    <string name="rss_import_done">%1$d개 소스를 가져오고 %2$d개를 업데이트했습니다 (%3$d개 건너뜀)</string>
     <string name="rss_refresh_all">모두 새로 고침</string>
     <string name="rss_article_images">기사 이미지 (%1$d)</string>
     <string name="rss_select_all">전체 선택</string>

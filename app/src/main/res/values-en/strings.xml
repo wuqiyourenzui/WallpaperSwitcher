@@ -510,7 +510,7 @@
     <string name="rss_url">Feed URL (RSS/Atom)</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
     <string name="rss_import_title">Import 阅读 sources</string>
-    <string name="rss_import_hint">Paste a source JSON, a legado:// link or a subscription URL, or pick a .json file.</string>
+    <string name="rss_import_hint">Paste a source JSON, a legado:// link or a subscription URL, or pick a .json file. Sources already in the list are updated in place.</string>
     <string name="rss_import_paste">Source content</string>
     <string name="rss_import_file">Pick a JSON file</string>
     <string name="rss_import_action">Import</string>
@@ -535,7 +535,7 @@
     <string name="rss_refresh_failed">Refresh failed: %1$s</string>
     <string name="rss_refresh_started">Refreshing all subscriptions</string>
     <string name="rss_import_failed">Import failed, please check the content format</string>
-    <string name="rss_import_done">Imported %1$d sources (%2$d skipped)</string>
+    <string name="rss_import_done">Imported %1$d sources, updated %2$d (%3$d skipped)</string>
     <string name="rss_refresh_all">Refresh all</string>
     <string name="rss_article_images">Article images (%1$d)</string>
     <string name="rss_select_all">Select all</string>

@@ -256,8 +256,9 @@ object ConfigBackup {
     /**
      * Apply [config]: the settings are written, each exported group becomes a
      * NEW group (media are not part of the file, so merging into an existing
-     * group is not possible), and every exported subscription is added unless a
-     * source with the same URL is already there. Returns how many were created.
+     * group is not possible), and every exported subscription is added or - when
+     * a source with the same URL is already there - updated in place
+     * (see [RssSourceImport]). Returns how many were written.
      */
     suspend fun apply(db: AppDatabase, config: Config): ApplyResult {
         for ((key, value) in config.settings) {
@@ -286,16 +287,11 @@ object ConfigBackup {
             }
         }
         var sources = 0
-        val existing = try {
-            db.rssSourceDao().getAll().map { it.url.trim() }.toHashSet()
-        } catch (_: Exception) {
-            HashSet<String>()
-        }
-        for (source in config.sources) {
-            val url = source.url.trim()
-            if (url.isEmpty() || url in existing) continue
-            try {
-                db.rssSourceDao().insert(
+        try {
+            val decision = RssSourceImport.decide(
+                existing = db.rssSourceDao().getAll(),
+                incoming = config.sources.map { source ->
+                    val url = source.url.trim()
                     com.wallpaperswitcher.data.RssSource(
                         name = source.name.trim().ifBlank { url },
                         url = url,
@@ -303,11 +299,12 @@ object ConfigBackup {
                         enabled = source.enabled,
                         rawJson = source.rawJson,
                     )
-                )
-                existing.add(url)
-                sources++
-            } catch (_: Exception) {
-            }
+                },
+            )
+            for (source in decision.updated) db.rssSourceDao().update(source)
+            for (source in decision.inserted) db.rssSourceDao().insert(source)
+            sources = decision.inserted.size + decision.updated.size
+        } catch (_: Exception) {
         }
         return ApplyResult(groups = created, sources = sources)
     }
