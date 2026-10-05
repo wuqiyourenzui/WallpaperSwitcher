@@ -3,28 +3,26 @@ package com.wallpaperswitcher.ui.screens
 import android.content.Context
 import android.net.Uri
 import androidx.activity.compose.BackHandler
-import androidx.annotation.StringRes
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Gif
-import androidx.compose.material.icons.filled.Restore
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material3.Icon
@@ -48,7 +46,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.decode.VideoFrameDecoder
 import coil.request.ImageRequest
@@ -57,14 +54,11 @@ import com.wallpaperswitcher.data.RecentShownEntry
 import com.wallpaperswitcher.data.WallpaperImage
 import com.wallpaperswitcher.engine.MediaTypes
 import com.wallpaperswitcher.engine.WallpaperTarget
-import com.wallpaperswitcher.ui.theme.HiCard
 import com.wallpaperswitcher.ui.theme.HiDims
 import com.wallpaperswitcher.ui.theme.HiEmptyState
 import com.wallpaperswitcher.ui.theme.HiLoadingState
 import com.wallpaperswitcher.ui.theme.HiMotion
-import com.wallpaperswitcher.ui.theme.LocalAccentColor
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
-import kotlinx.coroutines.delay
 
 /** 页面一次显示多少行。 */
 internal const val RECENT_LIST_LIMIT = 60
@@ -81,16 +75,10 @@ internal const val RECENT_FETCH_LIMIT = RECENT_LIST_LIMIT * 2
 /**
  * 缩略图解码尺寸。
  *
- * 单元格 64dp，3x 密度下约 192px；有意解码得比它小一点，换取更小的解码与位图
- * 内存（和分组九宫格同一个理由，见 GroupDetailScreen 的同名常量）。
+ * 网格单元格最小 104dp，3x 密度下约 312px；有意解码得比它小一点，换取更小的
+ * 解码与位图内存（和收藏页 / 分组九宫格同一个理由，同一个数值）。
  */
 private const val RECENT_THUMBNAIL_DECODE_SIZE = 176
-
-/** 缩略图边长。 */
-private val RECENT_THUMBNAIL_SIZE = 64.dp
-
-/** 相对时间的刷新节奏：文案最小单位是分钟，30s 一跳足够。 */
-private const val RECENT_CLOCK_TICK_MS = 30_000L
 
 // ---------------------------------------------------------------------------
 // 纯逻辑：不碰 Compose / Room / Android 框架，所以每个边界都能在单测里钉住
@@ -160,29 +148,6 @@ internal fun promoteRecentEntry(
     }
 }
 
-/**
- * 一行的时间文案：资源 id + 要填进 `%1$d` 的数字。
- *
- * 拆成"资源 + 数字"而不是直接给字符串，是因为格式化要能单测，而 `stringResource`
- * 只能在 Compose 里调用。
- */
-internal data class RecentAgoLabel(@StringRes val res: Int, val value: Long)
-
-/**
- * 这一行的相对时间（"刚刚 / 5 分钟前 / 2 小时前 / 1 天前"）。
- *
- * 算术复用设置页那条 [agoParts]（"上次扫描：3 分钟前"），两处不会漂移；包一层是
- * 为了把**本页**要的边界钉死在单测里：0 秒和 59 秒都算"刚刚"、60 秒整进位到
- * 分钟、未来时间（时钟回拨 / 时区跳变）夹到 0 —— 列表里出现"-3 分钟前"是最容易
- * 被用户当成 bug 的一种。
- */
-internal fun recentAgoLabel(shownAtMs: Long, nowMs: Long): RecentAgoLabel =
-    when (val parts = agoParts(shownAtMs, nowMs)) {
-        AgoParts.Never -> RecentAgoLabel(R.string.ago_never, 0L)
-        AgoParts.JustNow -> RecentAgoLabel(R.string.ago_just_now, 0L)
-        is AgoParts.Count -> RecentAgoLabel(parts.unit.agoLabelRes, parts.value)
-    }
-
 // ---------------------------------------------------------------------------
 // 页面
 // ---------------------------------------------------------------------------
@@ -196,9 +161,8 @@ internal fun recentAgoLabel(shownAtMs: Long, nowMs: Long): RecentAgoLabel =
  * 数据（**都走 viewModel，不要直连 DAO**）：
  *  - `viewModel.recentShownRows(limit, slot = null)` —— 挂起函数，`LaunchedEffect`
  *    里取；`slot` 传 null = 两屏合并，传 `WallpaperTarget.SLOT_HOME`/`SLOT_LOCK`
- *    只看一块屏。行里同时带着 `slot` 和 `shownAt`，这两样 `WallpaperImage` 上没有，
- *    而本页两件事都要用：**哪块屏**决定推回时 forceSlot 传什么，**多久以前**是每行
- *    的第二行文案。
+ *    只看一块屏。行里带着 `slot`（决定推回时 forceSlot 传什么）和 `shownAt`
+ *    （决定排序）。
  *  - 推回：`viewModel.setImageAsWallpaper(image, forceSlot)`，`forceSlot` 传
  *    `WallpaperTarget.SLOT_LOCK` 就只写锁屏，否则按分组自己的目标写。
  *
@@ -218,10 +182,6 @@ fun RecentScreen(
 
     var rows by remember { mutableStateOf<List<RecentShownEntry>>(emptyList()) }
     var isLoading by remember { mutableStateOf(true) }
-    // 组名：行里只有 groupId，而第二行要显示"分组名 · 3 分钟前"，所以建一张
-    // id -> name 的表（分组改名/删除后会自动跟着刷新）。
-    val groups by viewModel.groups.collectAsStateWithLifecycle()
-    val groupNames = remember(groups) { groups.associate { it.id to it.name } }
 
     // 进页面取一次。读失败和"没有历史"都返回空列表（recentShownRows 内部已经吞掉
     // 异常并记了日志），两者对用户都是"还没有记录"，不需要分开处理。
@@ -229,16 +189,6 @@ fun RecentScreen(
         isLoading = true
         rows = mergeRecentEntries(viewModel.recentShownRows(limit = RECENT_FETCH_LIMIT))
         isLoading = false
-    }
-
-    // 页面开着不动时，"刚刚"要能自己变成"1 分钟前"。最小单位是分钟，所以 30s 一跳
-    // 就够；重组的代价只有可见的那几行（读 nowMs 的是行本身）。
-    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(RECENT_CLOCK_TICK_MS)
-            nowMs = System.currentTimeMillis()
-        }
     }
 
     // 一点就推回：写屏 + 就地提升都在这一处，避免"点了没反应"。
@@ -250,9 +200,7 @@ fun RecentScreen(
     val onPush: (RecentShownEntry) -> Unit = { row ->
         viewModel.setImageAsWallpaper(row.image, recentForceSlot(row.slot)) { ok ->
             if (ok) {
-                val now = System.currentTimeMillis()
-                rows = promoteRecentEntry(rows, row.image.id, now)
-                nowMs = now
+                rows = promoteRecentEntry(rows, row.image.id, System.currentTimeMillis())
             }
         }
     }
@@ -278,12 +226,7 @@ fun RecentScreen(
                     modifier = Modifier.padding(vertical = 60.dp),
                 )
 
-                else -> RecentList(
-                    rows = rows,
-                    groupNames = groupNames,
-                    nowMs = nowMs,
-                    onPush = onPush,
-                )
+                else -> RecentGrid(rows = rows, onPush = onPush)
             }
         }
     }
@@ -322,55 +265,53 @@ private fun RecentHeader(onBack: () -> Unit) {
 }
 
 /**
- * 历史列表。
+ * 历史网格（纯缩略图）。
  *
- * 用竖排列表而不是网格：每行要放"文件名 + 分组名 + 相对时间 + 是哪块屏"，网格
- * 单元格装不下（分组详情的九宫格是"选素材"，这里更像一条操作历史）。卡片沿用
- * [HiCard]（HyperOS 的圆角卡片 + 按压缩放），和设置页同一套观感。
+ * 用户要求这一页"只显示缩略图"：没有文件名 / 分组名 / 时间 / 屏标文字，缩略图
+ * 本身就是列表项（和收藏页同一套网格：自适应 104dp、正方形、12dp 圆角）。点一下
+ * 仍然推回这张图**上次显示的那块屏**（[recentForceSlot] 决定写桌面还是锁屏）；
+ * 视频 / GIF 的小角标保留 —— 那关系到"点下去会不会只写第一帧"。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun RecentList(
+private fun RecentGrid(
     rows: List<RecentShownEntry>,
-    groupNames: Map<Long, String>,
-    nowMs: Long,
     onPush: (RecentShownEntry) -> Unit,
 ) {
-    LazyColumn(
-        modifier = Modifier.fillMaxSize(),
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(104.dp),
         contentPadding = PaddingValues(
             start = HiDims.PageHorizontal,
             end = HiDims.PageHorizontal,
             top = 4.dp,
             bottom = HiDims.PageBottom,
         ),
-        verticalArrangement = Arrangement.spacedBy(HiDims.CardSpacing),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier.fillMaxSize(),
     ) {
         items(
             items = rows,
             // 去重之后 id 唯一，可以作为稳定 key：推回置顶时 Compose 才能跟着
-            // 移动同一张卡片，而不是重建两行。
+            // 移动同一个格子，而不是重建两项。
             key = { it.image.id },
         ) { row ->
-            RecentRow(
+            RecentGridItem(
                 row = row,
-                groupName = groupNames[row.image.groupId],
-                nowMs = nowMs,
-                onPush = { onPush(row) },
+                onClick = { onPush(row) },
                 // 推回会把这一项提到最前（promoteRecentEntry）：让这次移动是滑上去，
-                // 而不是瞬间跳位。这是 LazyItemScope 的 API，只能在 item 里调用。
+                // 而不是瞬间跳位。这是 LazyGridItemScope 的 API，只能在 item 里调用。
                 modifier = Modifier.animateItemPlacement(HiMotion.selection()),
             )
         }
     }
 }
 
+/** 一个格子：缩略图 + 视频/GIF 角标。点 = 推回它上次显示的那块屏。 */
 @Composable
-private fun RecentRow(
+private fun RecentGridItem(
     row: RecentShownEntry,
-    groupName: String?,
-    nowMs: Long,
-    onPush: () -> Unit,
+    onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -382,121 +323,47 @@ private fun RecentRow(
     val placeholderPainter = remember { ColorPainter(Color(0xFFE0E0E0)) }
     val errorPainter = remember { ColorPainter(Color(0xFFBDBDBD)) }
 
-    val ago = recentAgoLabel(row.shownAt, nowMs)
-    val agoText = stringResource(ago.res, ago.value)
-    val name = image.displayName.ifBlank { stringResource(R.string.item_untitled) }
-    // 分组名只在真的取到时才拼进去（分组刚被删掉时就是 null）。
-    val subtitle = groupName?.takeIf { it.isNotBlank() }?.let { "$it · $agoText" } ?: agoText
-
-    HiCard(modifier = modifier, onClick = onPush) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
+    Box(
+        modifier = modifier
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(
+                onClickLabel = stringResource(R.string.recent_push),
+                onClick = onClick,
+            ),
+    ) {
+        AsyncImage(
+            model = request,
+            contentDescription = image.displayName.ifBlank { null },
+            contentScale = ContentScale.Crop,
+            // 视频/GIF 载不出来时给灰底方块，而不是留空或崩掉。
+            placeholder = placeholderPainter,
+            error = errorPainter,
+            modifier = Modifier.fillMaxSize(),
+        )
+        if (MediaTypes.isMotion(image.mediaType)) {
+            // 动图/视频在锁屏只能写第一帧（ViewModel 会提示），先标出来，
+            // 用户点之前就知道它不是一张静态图。
             Box(
                 modifier = Modifier
-                    .size(RECENT_THUMBNAIL_SIZE)
-                    .clip(RoundedCornerShape(12.dp)),
+                    .align(Alignment.BottomStart)
+                    .padding(4.dp)
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
             ) {
-                AsyncImage(
-                    model = request,
-                    contentDescription = name,
-                    contentScale = ContentScale.Crop,
-                    // 视频/GIF 载不出来时给灰底方块，而不是留空或崩掉。
-                    placeholder = placeholderPainter,
-                    error = errorPainter,
-                    modifier = Modifier.fillMaxSize(),
-                )
-                if (MediaTypes.isMotion(image.mediaType)) {
-                    // 动图/视频在锁屏只能写第一帧（ViewModel 会提示），先标出来，
-                    // 用户点之前就知道它不是一张静态图。
-                    Row(
-                        modifier = Modifier
-                            .align(Alignment.BottomStart)
-                            .padding(4.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
-                            .padding(horizontal = 4.dp, vertical = 2.dp),
-                    ) {
-                        Icon(
-                            imageVector = if (image.mediaType == MediaTypes.VIDEO) {
-                                Icons.Filled.Videocam
-                            } else {
-                                Icons.Filled.Gif
-                            },
-                            contentDescription = null,
-                            tint = Color.White,
-                            modifier = Modifier.size(12.dp),
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = name,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Spacer(modifier = Modifier.height(3.dp))
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                Icon(
+                    imageVector = if (image.mediaType == MediaTypes.VIDEO) {
+                        Icons.Filled.Videocam
+                    } else {
+                        Icons.Filled.Gif
+                    },
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(12.dp),
                 )
             }
-
-            Spacer(modifier = Modifier.width(8.dp))
-            SlotBadge(slot = row.slot)
         }
-    }
-}
-
-/**
- * 「哪块屏」标记：桌面 / 锁屏。
- *
- * 不只是装饰 —— 它决定的正是点下去写哪块屏（[recentForceSlot]），所以文字用的就是
- * 目标屏的名字；那枚恢复图标的无障碍说明是 [R.string.recent_push]，读屏用户听到的
- * 是"推回当前屏（锁屏）"。
- */
-@Composable
-private fun SlotBadge(slot: String, modifier: Modifier = Modifier) {
-    val accent = LocalAccentColor.current.takeIf { it != Color.Unspecified }
-        ?: MaterialTheme.colorScheme.primary
-    Row(
-        modifier = modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(accent.copy(alpha = 0.12f))
-            .padding(horizontal = 8.dp, vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            imageVector = Icons.Filled.Restore,
-            contentDescription = stringResource(R.string.recent_push),
-            tint = accent,
-            modifier = Modifier.size(14.dp),
-        )
-        Spacer(modifier = Modifier.width(4.dp))
-        Text(
-            text = stringResource(
-                if (slot == WallpaperTarget.SLOT_LOCK) {
-                    R.string.recent_slot_lock
-                } else {
-                    R.string.recent_slot_home
-                }
-            ),
-            style = MaterialTheme.typography.labelMedium,
-            color = accent,
-            maxLines = 1,
-        )
     }
 }
 

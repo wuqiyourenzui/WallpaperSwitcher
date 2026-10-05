@@ -1,6 +1,5 @@
 package com.wallpaperswitcher.ui.screens
 
-import com.wallpaperswitcher.R
 import com.wallpaperswitcher.data.RecentShownEntry
 import com.wallpaperswitcher.data.WallpaperImage
 import com.wallpaperswitcher.engine.WallpaperTarget
@@ -10,10 +9,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 「最近显示」回滚页的纯逻辑：推回写哪块屏、两屏合并怎么去重、推回之后怎么置顶，
- * 以及相对时间的边界。
+ * 「最近显示」回滚页的纯逻辑：推回写哪块屏、两屏合并怎么去重、推回之后怎么置顶。
  *
- * 这一页的价值全在"点下去会不会写错屏"和"时间显示对不对"这两件事上，两者都被抽成
+ * 这一页的价值全在"点下去会不会写错屏"和"置顶是否正确"这两件事上，两者都被抽成
  * 纯函数（见 RecentScreen.kt 的纯逻辑段），所以不需要 Compose / Room / Android 框架
  * 就能把边界钉死。
  */
@@ -120,9 +118,8 @@ class RecentRollbackLogicTest {
 
         assertEquals(listOf(3L, 1L, 2L), promoted.map { it.image.id })
         assertEquals(entries.size, promoted.size)
-        // 时间也要变成"刚刚"，否则置顶的那一行会写着"3 分钟前"，和自己排第一矛盾。
+        // 时间也要更新：它决定这一项下次被推回时在历史里的位置。
         assertEquals(now, promoted.first().shownAt)
-        assertEquals(RecentAgoLabel(R.string.ago_just_now, 0L), recentAgoLabel(promoted.first().shownAt, now))
         // 其余项原样保留它自己的屏（forceSlot 不受置顶影响）。
         assertEquals(WallpaperTarget.SLOT_LOCK, promoted[2].slot)
     }
@@ -149,37 +146,4 @@ class RecentRollbackLogicTest {
         assertTrue(promoteRecentEntry(emptyList(), mediaId = 1L, nowMs = now).isEmpty())
     }
 
-    // --- 相对时间 ------------------------------------------------------------
-
-    /** [elapsedMs] 毫秒之前显示的那一行，现在该显示成什么。 */
-    private fun ago(elapsedMs: Long) = recentAgoLabel(now - elapsedMs, now)
-
-    @Test
-    fun theFirstMinuteIsJustNowButSixtySecondsIsOneMinute() {
-        assertEquals(RecentAgoLabel(R.string.ago_just_now, 0L), ago(0L))
-        assertEquals(RecentAgoLabel(R.string.ago_just_now, 0L), ago(59_000L))
-        // 60 秒整是"刚刚"和"1 分钟前"的分界。
-        assertEquals(RecentAgoLabel(R.string.ago_minutes, 1L), ago(60_000L))
-    }
-
-    @Test
-    fun minutesHoursAndDays() {
-        assertEquals(RecentAgoLabel(R.string.ago_minutes, 59L), ago(59 * 60_000L))
-        assertEquals(RecentAgoLabel(R.string.ago_hours, 1L), ago(60 * 60_000L))
-        assertEquals(RecentAgoLabel(R.string.ago_hours, 23L), ago(23 * 3_600_000L))
-        assertEquals(RecentAgoLabel(R.string.ago_days, 1L), ago(24 * 3_600_000L))
-        assertEquals(RecentAgoLabel(R.string.ago_days, 3L), ago(3 * 24 * 3_600_000L))
-    }
-
-    @Test
-    fun aFutureTimestampNeverReadsAsANegativeAge() {
-        // 时钟回拨 / 时区跳变（真机上真的会发生）：不能出现"-3 分钟前"。
-        assertEquals(RecentAgoLabel(R.string.ago_just_now, 0L), ago(-60_000L))
-        assertEquals(RecentAgoLabel(R.string.ago_just_now, 0L), ago(-10 * 24 * 3_600_000L))
-    }
-
-    @Test
-    fun aMissingTimestampReadsAsNever() {
-        assertEquals(RecentAgoLabel(R.string.ago_never, 0L), recentAgoLabel(0L, now))
-    }
 }
