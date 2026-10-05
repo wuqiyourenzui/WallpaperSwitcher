@@ -665,8 +665,8 @@
     <string name="settings_page_scan">Сканирование папок</string>
     <string name="settings_page_button">Плавающая кнопка</string>
     <string name="settings_page_appearance">Внешний вид</string>
-    <string name="settings_page_wallpaper_desc">Режим, масштаб, чёткость, поворот</string>
-    <string name="settings_page_switch_desc">Таймер, разблокировка, двойной тап, переход, видео</string>
+    <string name="settings_page_wallpaper_desc">Режим, масштаб, переходы, видео, чёткость</string>
+    <string name="settings_page_switch_desc">Таймер, разблокировка, двойной тап, плавающая кнопка</string>
     <string name="settings_page_scan_desc">Автоматически добавлять новые файлы из папок</string>
     <string name="settings_page_button_desc">Включение, вид, цвет, текст и картинка</string>
     <string name="settings_page_appearance_desc">Язык, тема и цвет</string>

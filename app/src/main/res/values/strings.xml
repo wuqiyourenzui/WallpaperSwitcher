@@ -660,8 +660,8 @@
     <string name="settings_page_scan">文件夹扫描</string>
     <string name="settings_page_button">悬浮按钮</string>
     <string name="settings_page_appearance">外观</string>
-    <string name="settings_page_wallpaper_desc">切换模式、缩放、清晰度、方向适配</string>
-    <string name="settings_page_switch_desc">定时、解锁、双击、过渡动画、视频</string>
+    <string name="settings_page_wallpaper_desc">切换模式、缩放、过渡动画、视频、清晰度</string>
+    <string name="settings_page_switch_desc">定时、解锁、双击、悬浮按钮</string>
     <string name="settings_page_scan_desc">自动把文件夹里的新增媒体加入分组</string>
     <string name="settings_page_button_desc">开关、外观、颜色、文字与图片</string>
     <string name="settings_page_appearance_desc">语言、主题模式与主题颜色</string>

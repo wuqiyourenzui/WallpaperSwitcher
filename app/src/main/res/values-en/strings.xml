@@ -687,8 +687,8 @@
     <string name="settings_page_scan">Folder scan</string>
     <string name="settings_page_button">Floating button</string>
     <string name="settings_page_appearance">Appearance</string>
-    <string name="settings_page_wallpaper_desc">Mode, scale, clarity, rotation fit</string>
-    <string name="settings_page_switch_desc">Timer, unlock, double-tap, transition, video</string>
+    <string name="settings_page_wallpaper_desc">Mode, scale, transition, video, clarity</string>
+    <string name="settings_page_switch_desc">Timer, unlock, double-tap, floating button</string>
     <string name="settings_page_scan_desc">Add new media from imported folders automatically</string>
     <string name="settings_page_button_desc">Toggle, look, colour, text and image</string>
     <string name="settings_page_appearance_desc">Language, theme mode and colour</string>

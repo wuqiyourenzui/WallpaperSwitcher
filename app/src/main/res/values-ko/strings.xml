@@ -653,8 +653,8 @@
     <string name="settings_page_scan">폴더 스캔</string>
     <string name="settings_page_button">플로팅 버튼</string>
     <string name="settings_page_appearance">모양</string>
-    <string name="settings_page_wallpaper_desc">전환 모드, 크기, 선명도, 회전</string>
-    <string name="settings_page_switch_desc">타이머, 잠금 해제, 두 번 탭, 전환, 동영상</string>
+    <string name="settings_page_wallpaper_desc">전환 모드, 크기, 전환 효과, 동영상, 선명도</string>
+    <string name="settings_page_switch_desc">타이머, 잠금 해제, 두 번 탭, 플로팅 버튼</string>
     <string name="settings_page_scan_desc">가져온 폴더의 새 미디어 자동 추가</string>
     <string name="settings_page_button_desc">켜기/끄기, 모양, 색상, 텍스트와 이미지</string>
     <string name="settings_page_appearance_desc">언어, 테마 모드, 테마 색상</string>

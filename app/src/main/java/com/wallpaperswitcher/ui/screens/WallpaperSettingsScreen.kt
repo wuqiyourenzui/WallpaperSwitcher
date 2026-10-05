@@ -75,6 +75,9 @@ fun WallpaperSettingsScreen(
     val state by viewModel.settingsUiState.collectAsStateWithLifecycle()
     val globalSwitchMode = state.globalSwitchMode
     val globalScaleMode = state.globalScaleMode
+    val switchTransition = state.switchTransition
+    val videoSoundEnabled = state.videoSoundEnabled
+    val videoPlayToEnd = state.videoPlayToEnd
     val rotateMismatchEnabled = state.rotateMismatchEnabled
     val rotateMismatchClockwise = state.rotateMismatchClockwise
     val kenBurnsEnabled = state.kenBurnsEnabled
@@ -106,6 +109,22 @@ fun WallpaperSettingsScreen(
                     options = scaleModeOptions(),
                     selectedKey = globalScaleMode.name,
                     onSelect = { key -> scaleModeOf(key)?.let(viewModel::setGlobalScaleMode) },
+                )
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                // 过渡动画: fade / slide / zoom / none
+                // (SettingsKeys.SWITCH_TRANSITION_*)。选 "无" 时 ViewModel 会顺手把
+                // 旧的 switch_fade_enabled 兼容位写成 off，其它值写成 on —— 这套兼容
+                // 逻辑在 viewModel.setSwitchTransition 里，这里只给出用户选的那个值。
+                // 说明文字（settings_transition_hint）保留在这一行里，跟着标题一起显示。
+                HiOptionPickerRow(
+                    title = stringResource(R.string.settings_transition),
+                    subtitle = stringResource(R.string.settings_transition_hint),
+                    icon = Icons.Outlined.Animation,
+                    options = transitionOptions(),
+                    selectedKey = transitionKeyOf(switchTransition),
+                    onSelect = { viewModel.setSwitchTransition(it) },
                 )
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -166,6 +185,28 @@ fun WallpaperSettingsScreen(
                     checked = kenBurnsEnabled,
                     onCheckedChange = { viewModel.setKenBurnsEnabled(it) }
                 )
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                // 视频壁纸播放声音：只在桌面可见时出声（见 4.9.x「视频壁纸声音」）。
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.MusicNote,
+                    title = stringResource(R.string.settings_video_sound),
+                    subtitle = stringResource(R.string.settings_video_sound_hint),
+                    checked = videoSoundEnabled,
+                    onCheckedChange = { viewModel.setVideoSoundEnabled(it) }
+                )
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                // 视频播完再切：定时切换不再打断长视频。
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.Movie,
+                    title = stringResource(R.string.settings_video_play_to_end),
+                    subtitle = stringResource(R.string.settings_video_play_to_end_hint),
+                    checked = videoPlayToEnd,
+                    onCheckedChange = { viewModel.setVideoPlayToEnd(it) }
+                )
         }
     }
 }
@@ -207,6 +248,27 @@ internal fun scaleModeOptions(): List<HiOptionSpec> = ScaleMode.entries.map { mo
 /** 面板 key → [ScaleMode]；未知 key 返回 null。 */
 internal fun scaleModeOf(key: String): ScaleMode? =
     ScaleMode.entries.firstOrNull { it.name == key }
+
+// 过渡动画面板：key 就是存进 SettingsKeys.SWITCH_TRANSITION 的字符串。
+// （跟着控件从「切换方式」页搬过来：设置项和它的选项表放在同一个文件里。）
+
+/** 过渡动画面板。 */
+internal fun transitionOptions(): List<HiOptionSpec> = listOf(
+    HiOptionSpec(SettingsKeys.SWITCH_TRANSITION_FADE, R.string.transition_fade),
+    HiOptionSpec(SettingsKeys.SWITCH_TRANSITION_SLIDE, R.string.transition_slide),
+    HiOptionSpec(SettingsKeys.SWITCH_TRANSITION_ZOOM, R.string.transition_zoom),
+    HiOptionSpec(SettingsKeys.SWITCH_TRANSITION_NONE, R.string.transition_none),
+)
+
+/**
+ * 存的过渡动画 → 面板认得的 key。
+ *
+ * 渲染端只把 "fade"/"slide"/"zoom" 当成有动画，其余值（例如从备份文件里恢复进来的
+ * 陌生字符串）都是**没有过渡**（见 WallpaperRenderer 对 transitionMode 的判断），
+ * 所以未知值归一化到"无"：行右侧说的就是用户实际会看到的效果。
+ */
+internal fun transitionKeyOf(stored: String): String =
+    if (hasHiOption(transitionOptions(), stored)) stored else SettingsKeys.SWITCH_TRANSITION_DEFAULT
 
 // 超分算法：key 就是设置里存的值（SettingsKeys.ENHANCE_ALGO / engine.EnhanceMode）。
 

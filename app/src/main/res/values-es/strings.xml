@@ -657,8 +657,8 @@
     <string name="settings_page_scan">Escaneo de carpetas</string>
     <string name="settings_page_button">Botón flotante</string>
     <string name="settings_page_appearance">Apariencia</string>
-    <string name="settings_page_wallpaper_desc">Modo, escala, nitidez, rotación</string>
-    <string name="settings_page_switch_desc">Temporizador, desbloqueo, doble toque, transición, vídeo</string>
+    <string name="settings_page_wallpaper_desc">Modo, escala, transición, vídeo, nitidez</string>
+    <string name="settings_page_switch_desc">Temporizador, desbloqueo, doble toque, botón flotante</string>
     <string name="settings_page_scan_desc">Añadir automáticamente medios nuevos de las carpetas</string>
     <string name="settings_page_button_desc">Interruptor, aspecto, color, texto e imagen</string>
     <string name="settings_page_appearance_desc">Idioma, tema y color</string>

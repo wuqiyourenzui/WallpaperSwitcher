@@ -653,8 +653,8 @@
     <string name="settings_page_scan">フォルダスキャン</string>
     <string name="settings_page_button">フローティングボタン</string>
     <string name="settings_page_appearance">外観</string>
-    <string name="settings_page_wallpaper_desc">切替モード・拡大縮小・鮮明度・回転</string>
-    <string name="settings_page_switch_desc">タイマー・ロック解除・ダブルタップ・トランジション・動画</string>
+    <string name="settings_page_wallpaper_desc">切替モード・拡大縮小・トランジション・動画・鮮明度</string>
+    <string name="settings_page_switch_desc">タイマー・ロック解除・ダブルタップ・フローティングボタン</string>
     <string name="settings_page_scan_desc">取り込んだフォルダの新規メディアを自動追加</string>
     <string name="settings_page_button_desc">オンオフ・見た目・色・文字と画像</string>
     <string name="settings_page_appearance_desc">言語・テーマモード・テーマカラー</string>

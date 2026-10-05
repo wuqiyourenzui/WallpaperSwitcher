@@ -656,8 +656,8 @@
     <string name="settings_page_scan">資料夾掃描</string>
     <string name="settings_page_button">懸浮按鈕</string>
     <string name="settings_page_appearance">外觀</string>
-    <string name="settings_page_wallpaper_desc">切換模式、縮放、清晰度、方向適配</string>
-    <string name="settings_page_switch_desc">定時、解鎖、雙擊、過渡動畫、影片</string>
+    <string name="settings_page_wallpaper_desc">切換模式、縮放、過渡動畫、影片、清晰度</string>
+    <string name="settings_page_switch_desc">定時、解鎖、雙擊、懸浮按鈕</string>
     <string name="settings_page_scan_desc">自動把資料夾裡的新增媒體加入分組</string>
     <string name="settings_page_button_desc">開關、外觀、顏色、文字與圖片</string>
     <string name="settings_page_appearance_desc">語言、主題模式與主題顏色</string>
