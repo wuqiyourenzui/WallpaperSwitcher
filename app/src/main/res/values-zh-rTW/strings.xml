@@ -61,13 +61,11 @@
     <string name="settings_clarity">清晰度增強</string>
     <string name="clarity_auto">自動</string>
     <string name="clarity_off">關閉</string>
-    <string name="clarity_strong">增強</string>
     <string name="settings_auto_rotate">自動旋轉適配</string>
     <string name="settings_auto_rotate_hint">方向不符時旋轉 90°（適應模式顯示更大）</string>
     <string name="settings_ken_burns">靜態圖微動效</string>
     <string name="settings_ken_burns_hint">靜態桌布緩慢縮放，更有動態感（略增耗電）</string>
     <string name="settings_quality_enhance">畫質增強（超解析）</string>
-    <string name="settings_quality_enhance_hint">低解析度圖片與影片放大時使用超解析演算法（實驗性，略增耗電）</string>
     <string name="settings_rotate_direction">旋轉方向</string>
     <string name="rotate_clockwise">順時針</string>
     <string name="rotate_counter_clockwise">逆時針</string>

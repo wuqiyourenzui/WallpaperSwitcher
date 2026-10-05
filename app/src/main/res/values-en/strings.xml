@@ -57,13 +57,11 @@
     <string name="settings_clarity">Clarity enhancement</string>
     <string name="clarity_auto">Auto</string>
     <string name="clarity_off">Off</string>
-    <string name="clarity_strong">Strong</string>
     <string name="settings_auto_rotate">Auto-rotate mismatch</string>
     <string name="settings_auto_rotate_hint">Rotate 90° on orientation mismatch (fit mode shows more)</string>
     <string name="settings_ken_burns">Slow zoom on still images</string>
     <string name="settings_ken_burns_hint">Still wallpapers zoom in and out slowly; slightly more battery</string>
     <string name="settings_quality_enhance">Quality boost (super-resolution)</string>
-    <string name="settings_quality_enhance_hint">Super-resolution upscaling for low-resolution photos and videos (experimental; slightly more battery)</string>
     <string name="settings_rotate_direction">Rotation direction</string>
     <string name="rotate_clockwise">Clockwise</string>
     <string name="rotate_counter_clockwise">Counter-clockwise</string>

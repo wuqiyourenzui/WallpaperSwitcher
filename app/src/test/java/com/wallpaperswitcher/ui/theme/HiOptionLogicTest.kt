@@ -6,7 +6,7 @@ import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.ui.screens.CLARITY_KEY_AUTO
 import com.wallpaperswitcher.ui.screens.CLARITY_KEY_OFF
-import com.wallpaperswitcher.ui.screens.CLARITY_KEY_STRONG
+import com.wallpaperswitcher.ui.screens.CLARITY_KEY_SUPER
 import com.wallpaperswitcher.ui.screens.ROTATE_KEY_CCW
 import com.wallpaperswitcher.ui.screens.ROTATE_KEY_CW
 import com.wallpaperswitcher.ui.screens.clarityKeyOf
@@ -67,16 +67,17 @@ class HiOptionLogicTest {
     @Test
     fun `clarity panel offers the three stored values`() {
         assertEquals(
-            listOf(CLARITY_KEY_AUTO, CLARITY_KEY_OFF, CLARITY_KEY_STRONG),
+            listOf(CLARITY_KEY_AUTO, CLARITY_KEY_OFF, CLARITY_KEY_SUPER),
             clarityOptions().map { it.key }
         )
     }
 
     @Test
-    fun `clarity normalises anything unknown to auto`() {
-        // 渲染端 clarityStrength(): "off" -> 0f, "strong" -> 1.6f, 其余 -> 1.25f(自动)。
+    fun `clarity normalises the legacy strong option to super and unknown to auto`() {
+        // 渲染端 ClarityMode: "off" -> 0, "super"/旧 "strong" -> 超分，其余 -> 自动。
         assertEquals(CLARITY_KEY_OFF, clarityKeyOf(CLARITY_KEY_OFF))
-        assertEquals(CLARITY_KEY_STRONG, clarityKeyOf(CLARITY_KEY_STRONG))
+        assertEquals(CLARITY_KEY_SUPER, clarityKeyOf(CLARITY_KEY_SUPER))
+        assertEquals(CLARITY_KEY_SUPER, clarityKeyOf("strong"))
         assertEquals(CLARITY_KEY_AUTO, clarityKeyOf(CLARITY_KEY_AUTO))
         assertEquals(CLARITY_KEY_AUTO, clarityKeyOf(""))
         assertEquals(CLARITY_KEY_AUTO, clarityKeyOf("AUTO"))
@@ -143,7 +144,7 @@ class HiOptionLogicTest {
         SwitchMode.entries.forEach { assertTrue(hasHiOption(switchModeOptions(), it.name)) }
         ScaleMode.entries.forEach { assertTrue(hasHiOption(scaleModeOptions(), it.name)) }
 
-        listOf(CLARITY_KEY_AUTO, CLARITY_KEY_OFF, CLARITY_KEY_STRONG, "AUTO", "", "high").forEach {
+        listOf(CLARITY_KEY_AUTO, CLARITY_KEY_OFF, CLARITY_KEY_SUPER, "strong", "AUTO", "", "high").forEach {
             assertTrue("clarity: $it", hasHiOption(clarityOptions(), clarityKeyOf(it)))
         }
         listOf(
@@ -206,7 +207,7 @@ class HiOptionLogicTest {
         assertEquals(R.string.scale_mode_stretch, hiOptionLabelRes(scaleModeOptions(), "STRETCH"))
         assertEquals(R.string.clarity_auto, hiOptionLabelRes(clarityOptions(), CLARITY_KEY_AUTO))
         assertEquals(R.string.clarity_off, hiOptionLabelRes(clarityOptions(), CLARITY_KEY_OFF))
-        assertEquals(R.string.clarity_strong, hiOptionLabelRes(clarityOptions(), CLARITY_KEY_STRONG))
+        assertEquals(R.string.settings_quality_enhance, hiOptionLabelRes(clarityOptions(), CLARITY_KEY_SUPER))
         assertEquals(R.string.rotate_clockwise, hiOptionLabelRes(rotateDirectionOptions(), ROTATE_KEY_CW))
         assertEquals(
             R.string.rotate_counter_clockwise,

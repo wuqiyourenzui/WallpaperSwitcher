@@ -951,15 +951,25 @@ class WallpaperRenderer(
      * toggle is visible immediately instead of only after the next switch.
      * Videos pick the new strength up on the next decoded frame.
      */
-    fun applyClarity(scale: Float) {
+    fun applyClarity(scale: Float, qualityBoost: Boolean = false) {
         postToRenderThread {
             sharpnessScale = scale
+            qualityEnhance = qualityBoost
             if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return@postToRenderThread
             val bmp = lastImageBitmap
             if (lastRenderWasImage && bmp != null && !bmp.isRecycled) {
                 renderImageFromTexture()
             }
         }
+    }
+
+    /**
+     * 画质增强 flag without re-rendering: the per-switch path uses it, while a
+     * live settings change goes through [applyClarity] (which also re-presents
+     * the current still image).
+     */
+    fun setQualityBoost(enabled: Boolean) {
+        qualityEnhance = enabled
     }
 
     /**
@@ -1118,18 +1128,6 @@ class WallpaperRenderer(
                 kenBurnsFramePosted = false
                 if (lastRenderWasImage) renderImageFromTexture()
             }
-        }
-    }
-
-    /**
-     * 画质增强 (AI/超分): adopt the setting. Every draw reads the flag, so a
-     * video applies it on the next frame; a still image is re-presented once so
-     * the change is visible immediately.
-     */
-    fun setQualityEnhanceEnabled(enabled: Boolean) {
-        qualityEnhance = enabled
-        postToRenderThread {
-            if (lastRenderWasImage) renderImageFromTexture()
         }
     }
 

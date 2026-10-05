@@ -21,6 +21,7 @@ import android.view.MotionEvent
 import android.view.SurfaceHolder
 import com.wallpaperswitcher.data.*
 import com.wallpaperswitcher.engine.BitmapUtils
+import com.wallpaperswitcher.engine.ClarityMode
 import com.wallpaperswitcher.engine.GroupPick
 import com.wallpaperswitcher.engine.MediaPick
 import com.wallpaperswitcher.engine.MediaScanner
@@ -58,21 +59,6 @@ private class PrefetchedImage(
     /** The group this prefetch belongs to (0 = the screen-wide pick). */
     val groupId: Long = 0L,
 )
-
-/**
- * Clarity-enhancement strength for a `clarity_mode` setting value. Single
- * source of truth for both the live settings collector and
- * `applyClarityMode()`, which used to carry their own copies of these numbers.
- */
-private fun clarityStrength(mode: String?): Float = when (mode) {
-    "off" -> 0f
-    "strong" -> 1.6f
-    // Default "auto": 1.25x instead of 1.0x. With the display-size decode in
-    // BitmapUtils, high-res media no longer needs the unsharp mask at all; the
-    // mask now only fires for genuinely upscaled low-res content, where a
-    // slightly stronger default makes small images/videos look crisper.
-    else -> 1.25f
-}
 
 class LiveWallpaperService : WallpaperService() {
 
@@ -633,14 +619,6 @@ class LiveWallpaperService : WallpaperService() {
          */
         fun applyKenBurnsFromSettings(context: Context, enabled: Boolean) {
             activeEngine?.applyKenBurnsEnabled(enabled)
-        }
-        /**
-         * 画质增强 setting changed: adopt it in the running engine (the engine
-         * also reads the setting before every switch, so a killed/recreated
-         * engine picks it up too).
-         */
-        fun applyQualityEnhanceFromSettings(context: Context, enabled: Boolean) {
-            activeEngine?.applyQualityEnhanceEnabled(enabled)
         }
         /**
          * Low-memory callback forwarded from the Application: release optional
@@ -1318,7 +1296,14 @@ class LiveWallpaperService : WallpaperService() {
                         // the user saw the difference as "横屏设置动态壁纸卡顿、
                         // 竖屏不卡". The applied (real) wallpaper still sharpens
                         // exactly as configured.
-                        renderer?.applyClarity(if (isPreview) 0f else clarityStrength(mode))
+                        // 画质增强（超分） is the clarity panel's third option now:
+                        // one DB value drives both the sharpening scale and the
+                        // super-resolution flag (legacy "strong" migrates inside
+                        // ClarityMode).
+                        renderer?.applyClarity(
+                            if (isPreview) 0f else ClarityMode.sharpnessScale(mode),
+                            qualityBoost = !isPreview && ClarityMode.boostsQuality(mode),
+                        )
                     }
                 } catch (_: Exception) {}
             }
@@ -2851,11 +2836,6 @@ class LiveWallpaperService : WallpaperService() {
             renderer?.setKenBurnsEnabled(enabled)
         }
 
-        /** 画质增强 change pushed from the settings screen (see the companion). */
-        internal fun applyQualityEnhanceEnabled(enabled: Boolean) {
-            renderer?.setQualityEnhanceEnabled(enabled)
-        }
-
         private fun applyRotateSettingsLive(enabled: Boolean, clockwise: Boolean) {
             if (autoRotateMismatch == enabled && autoRotateClockwise == clockwise) return
             autoRotateMismatch = enabled
@@ -3119,7 +3099,6 @@ class LiveWallpaperService : WallpaperService() {
             }
             applyClarityMode()
             applyKenBurnsMode()
-            applyQualityEnhanceMode()
             autoRotateMismatch = try {
                 dao.getBool(SettingsKeys.ROTATE_MISMATCH_ENABLED, true)
             } catch (_: Exception) {
@@ -4043,7 +4022,6 @@ class LiveWallpaperService : WallpaperService() {
                     val imageDao = db.wallpaperImageDao()
                     applyClarityMode()
                     applyKenBurnsMode()
-                    applyQualityEnhanceMode()
                     autoRotateMismatch = try {
                         dao.getBool(SettingsKeys.ROTATE_MISMATCH_ENABLED, true)
                     } catch (_: Exception) {
@@ -4305,7 +4283,8 @@ class LiveWallpaperService : WallpaperService() {
             } catch (_: Exception) {
                 "auto"
             }
-            renderer?.sharpnessScale = if (isPreview) 0f else clarityStrength(mode)
+            renderer?.sharpnessScale = if (isPreview) 0f else ClarityMode.sharpnessScale(mode)
+            renderer?.setQualityBoost(!isPreview && ClarityMode.boostsQuality(mode))
         }
 
         /**
@@ -4320,20 +4299,6 @@ class LiveWallpaperService : WallpaperService() {
                 false
             }
             renderer?.setKenBurnsEnabled(enabled)
-        }
-
-        /**
-         * Sync the 画质增强 setting into the renderer (same pattern as
-         * [applyKenBurnsMode]): every switch/redraw re-reads it, so the engine
-         * never depends on a settings push having reached it.
-         */
-        private suspend fun applyQualityEnhanceMode() {
-            val enabled = try {
-                db.settingsDao().getBool(SettingsKeys.QUALITY_ENHANCE_ENABLED, false)
-            } catch (_: Exception) {
-                false
-            }
-            renderer?.setQualityEnhanceEnabled(enabled)
         }
 
         /**

@@ -55,13 +55,11 @@
     <string name="settings_clarity">清晰度增强</string>
     <string name="clarity_auto">自动</string>
     <string name="clarity_off">关闭</string>
-    <string name="clarity_strong">增强</string>
     <string name="settings_auto_rotate">自动旋转适配</string>
     <string name="settings_auto_rotate_hint">方向不符时旋转 90°（适应模式显示更大）</string>
     <string name="settings_ken_burns">静态图微动效</string>
     <string name="settings_ken_burns_hint">静态壁纸缓慢缩放，更有动态感（略增耗电）</string>
     <string name="settings_quality_enhance">画质增强（超分）</string>
-    <string name="settings_quality_enhance_hint">低分辨率图片与视频放大时使用超分算法（实验性，略增耗电）</string>
     <string name="settings_rotate_direction">旋转方向</string>
     <string name="rotate_clockwise">顺时针</string>
     <string name="rotate_counter_clockwise">逆时针</string>

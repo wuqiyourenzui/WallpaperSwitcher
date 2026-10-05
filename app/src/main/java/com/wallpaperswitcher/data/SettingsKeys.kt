@@ -97,10 +97,11 @@ object SettingsKeys {
     /** 静态图微动效 (Ken Burns): slow zoom while a still image is displayed. */
     const val KEN_BURNS_ENABLED = "ken_burns_enabled"
     /**
-     * 画质增强 (超分): low-resolution media is upscaled with a bicubic +
-     * adaptive-sharpening path while it is magnified on screen.
+     * Removed 2026-10-05 (4.9.151): the standalone 画质增强 switch moved into
+     * [CLARITY_MODE] ("super"). Kept only so the one-time migration can read and
+     * delete the old row.
      */
-    const val QUALITY_ENHANCE_ENABLED = "quality_enhance_enabled"
+    const val LEGACY_QUALITY_ENHANCE_ENABLED = "quality_enhance_enabled"
     // --- 订阅下载策略 (see engine.RssDownloadPolicy) ---
     /** 仅 Wi-Fi 下载: block subscription image downloads on metered networks. */
     const val RSS_WIFI_ONLY = "rss_wifi_only"

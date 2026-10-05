@@ -6429,7 +6429,26 @@ UID，这个开关跟着掉回默认拒绝 —— 用户上一次「另一个 AI
 - 增强路径新增**按源分辨率**的十字轻微混合（随 `uEnhance` 增长，最多约 17.5% 的
   权重），专门磨平放大后的斜边阶梯；普通路径与关闭开关时完全不受影响。
 
-**验证**：单元测试 **474 条全绿**（新增 `WallpaperGeometryEnhanceTest` 7 条），
+**按用户反馈合并（同日）**：把「清晰度增强」的第三个选项「增强」直接换成
+「画质增强（超分）」，不再单独立一个开关：
+
+- 清晰度面板 = 自动 / 关闭 / **画质增强（超分）**。归一化由一份纯逻辑
+  `engine/ClarityMode` 统一负责：旧存的 `"strong"`（增强）自动迁移为 `"super"`
+  （也就是升级到超分），未知值仍等同"自动"，"关闭"依旧是彻底关闭（清晰度 0，
+  也不走超分）。
+- 独立的 `quality_enhance_enabled` 开关、`SettingsUiState` 字段、ViewModel setter
+  与引擎的专用推送全部删除；旧开关值由一次性迁移
+  （`migrateLegacyQualityEnhance`，打开 App 时执行）合并进 `clarity_mode` 后删除
+  旧键，开发期装过中间版本、开着独立开关的用户不会丢设置。
+- 实时路径不变：引擎仍收集 `CLARITY_MODE` 的流并即时重绘当前静态图，超分标志与
+  清晰度强度在同一次 `applyClarity(scale, qualityBoost)` 里落地；每次切换前的
+  `applyClarityMode()` 也会同时设置两者（旧 `"strong"` 值在引擎侧同样归一化为
+  超分）。
+- 新增 `ClarityModeTest` 5 条（含旧值迁移），`HiOptionLogicTest` 的清晰度选项表
+  同步改成 `auto / off / super`。
+
+**验证**：单元测试 **479 条全绿**（新增 `WallpaperGeometryEnhanceTest` 7 条 +
+`ClarityModeTest` 5 条），
 `:app:assembleDebug` ✓、已装机（按用户要求不做截图分析；GPU 超分的观感由用户
 在真机上确认）。
 

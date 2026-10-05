@@ -1075,18 +1075,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 画质增强 (超分): low-resolution images and videos are upscaled with a
-     * bicubic + adaptive-sharpening path while they are magnified on screen.
-     * Default off; the running engine adopts the change immediately.
-     */
-    fun setQualityEnhanceEnabled(enabled: Boolean) {
-        guardedWrite("保存画质增强设置失败") {
-            settingsDao.setBool(SettingsKeys.QUALITY_ENHANCE_ENABLED, enabled)
-            LiveWallpaperService.applyQualityEnhanceFromSettings(getApplication(), enabled)
-        }
-    }
-
-    /**
      * 首启自检向导 done flag.
      *
      * Initial value is `true` so an install that already dismissed the wizard
@@ -1156,6 +1144,28 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) {
             AppLog.w(TAG, "sweepExpiredDownloads failed: ${e.javaClass.simpleName}")
             0
+        }
+    }
+
+    /**
+     * 清晰度增强的「增强」换成「画质增强（超分）」的一次性迁移：上一版独立开关
+     * （4.9.151 之前短暂存在）如果开着、且清晰度还是"自动"，就把清晰度提升为
+     * "超分"，然后删掉旧键（之后任何代码都不再读它）。
+     */
+    suspend fun migrateLegacyQualityEnhance() = withContext(Dispatchers.IO) {
+        try {
+            val legacy = settingsDao.getBool(SettingsKeys.LEGACY_QUALITY_ENHANCE_ENABLED, false)
+            val clarity = com.wallpaperswitcher.engine.ClarityMode
+                .normalize(settingsDao.getString(SettingsKeys.CLARITY_MODE, "auto"))
+            if (legacy && clarity == com.wallpaperswitcher.engine.ClarityMode.AUTO) {
+                settingsDao.setString(
+                    SettingsKeys.CLARITY_MODE,
+                    com.wallpaperswitcher.engine.ClarityMode.SUPER,
+                )
+            }
+            settingsDao.deleteKey(SettingsKeys.LEGACY_QUALITY_ENHANCE_ENABLED)
+        } catch (e: Exception) {
+            AppLog.w(TAG, "migrateLegacyQualityEnhance failed: ${e.javaClass.simpleName}")
         }
     }
 
@@ -1968,11 +1978,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             .map { it?.toBooleanStrictOrNull() ?: false }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
-    private val qualityEnhanceEnabled: StateFlow<Boolean> =
-        settingsDao.getValueFlow(SettingsKeys.QUALITY_ENHANCE_ENABLED)
-            .map { it?.toBooleanStrictOrNull() ?: false }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-
     private val videoPlayToEnd: StateFlow<Boolean> =
         settingsDao.getValueFlow(SettingsKeys.VIDEO_PLAY_TO_END)
             .map { it?.toBooleanStrictOrNull() ?: false }
@@ -2064,7 +2069,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         const val FAVORITE_BOOST = 25
         const val RECENT_NO_REPEAT = 26
         const val KEN_BURNS_ENABLED = 27
-        const val QUALITY_ENHANCE_ENABLED = 28
     }
 
     /**
@@ -2117,8 +2121,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         videoPlayToEnd,
         favoriteBoost,
         recentNoRepeat,
-        kenBurnsEnabled,
-        qualityEnhanceEnabled
+        kenBurnsEnabled
     ) { a ->
         SettingsUiState(
             serviceEnabled = combined(a, SettingsField.SERVICE_ENABLED, "serviceEnabled", Boolean::class.javaObjectType) ?: false,
@@ -2151,7 +2154,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             favoriteBoost = combined(a, SettingsField.FAVORITE_BOOST, "favoriteBoost", Boolean::class.javaObjectType) ?: true,
             recentNoRepeat = combined(a, SettingsField.RECENT_NO_REPEAT, "recentNoRepeat", Integer::class.javaObjectType)?.toInt() ?: 0,
             kenBurnsEnabled = combined(a, SettingsField.KEN_BURNS_ENABLED, "kenBurnsEnabled", Boolean::class.javaObjectType) ?: false,
-            qualityEnhanceEnabled = combined(a, SettingsField.QUALITY_ENHANCE_ENABLED, "qualityEnhanceEnabled", Boolean::class.javaObjectType) ?: false
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsUiState())
 
@@ -3166,7 +3168,5 @@ data class SettingsUiState(
     /** 最近 N 张不重复 (0 = off) for RANDOM. */
     val recentNoRepeat: Int = 0,
     /** 静态图微动效 (Ken Burns): still images slowly zoom in and out. */
-    val kenBurnsEnabled: Boolean = false,
-    /** 画质增强 (超分): magnified low-res media gets a sharper upscale. */
-    val qualityEnhanceEnabled: Boolean = false
+    val kenBurnsEnabled: Boolean = false
 )

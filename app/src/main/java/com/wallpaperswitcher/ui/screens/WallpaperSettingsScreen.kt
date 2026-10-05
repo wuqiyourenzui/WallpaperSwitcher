@@ -79,7 +79,6 @@ fun WallpaperSettingsScreen(
     val rotateMismatchEnabled = state.rotateMismatchEnabled
     val rotateMismatchClockwise = state.rotateMismatchClockwise
     val kenBurnsEnabled = state.kenBurnsEnabled
-    val qualityEnhanceEnabled = state.qualityEnhanceEnabled
 
     SettingsPageScaffold(onBack = onBack, modifier = modifier) {
         SettingsSection(title = stringResource(R.string.settings_page_wallpaper)) {
@@ -153,16 +152,6 @@ fun WallpaperSettingsScreen(
                     checked = kenBurnsEnabled,
                     onCheckedChange = { viewModel.setKenBurnsEnabled(it) }
                 )
-
-                Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                SettingsSwitchItem(
-                    icon = Icons.Outlined.AutoAwesome,
-                    title = stringResource(R.string.settings_quality_enhance),
-                    subtitle = stringResource(R.string.settings_quality_enhance_hint),
-                    checked = qualityEnhanceEnabled,
-                    onCheckedChange = { viewModel.setQualityEnhanceEnabled(it) }
-                )
         }
     }
 }
@@ -205,27 +194,28 @@ internal fun scaleModeOptions(): List<HiOptionSpec> = ScaleMode.entries.map { mo
 internal fun scaleModeOf(key: String): ScaleMode? =
     ScaleMode.entries.firstOrNull { it.name == key }
 
-// 清晰度存的不是枚举而是字符串（SettingsKeys.CLARITY_MODE：auto/off/strong）。
+// 清晰度存的不是枚举而是字符串（SettingsKeys.CLARITY_MODE：auto/off/super）。
 internal const val CLARITY_KEY_AUTO = "auto"
 internal const val CLARITY_KEY_OFF = "off"
-internal const val CLARITY_KEY_STRONG = "strong"
+/** 画质增强（超分）: replaces the removed 增强 ("strong") option. */
+internal const val CLARITY_KEY_SUPER = "super"
 
 /** 清晰度面板：顺序 = 默认值在前。 */
 internal fun clarityOptions(): List<HiOptionSpec> = listOf(
     HiOptionSpec(CLARITY_KEY_AUTO, R.string.clarity_auto),
     HiOptionSpec(CLARITY_KEY_OFF, R.string.clarity_off),
-    HiOptionSpec(CLARITY_KEY_STRONG, R.string.clarity_strong),
+    HiOptionSpec(CLARITY_KEY_SUPER, R.string.settings_quality_enhance),
 )
 
 /**
  * 存的清晰度 → 面板认得的 key。
  *
- * 渲染端是 `when (mode) { "off" -> 0f; "strong" -> 1.6f; else -> 1.25f }`
- * （见 LiveWallpaperService.clarityStrength），也就是说**任何未知值都等同于"自动"**。
- * 面板必须说同样的话，否则行右侧会显示一个用户根本选不到的值。
+ * 归一化交给渲染端同一份实现（[com.wallpaperswitcher.engine.ClarityMode]）：
+ * 旧版本的「增强」("strong") 现在是「画质增强（超分）」("super")，未知值等同于
+ * "自动"。面板与渲染端必须说同样的话，否则行右侧会显示一个用户选不到的值。
  */
 internal fun clarityKeyOf(stored: String): String =
-    if (hasHiOption(clarityOptions(), stored)) stored else CLARITY_KEY_AUTO
+    com.wallpaperswitcher.engine.ClarityMode.normalize(stored)
 
 // 旋转方向在设置里存的是布尔（SettingsKeys.ROTATE_MISMATCH_CW），面板需要两个 key。
 internal const val ROTATE_KEY_CW = "cw"
