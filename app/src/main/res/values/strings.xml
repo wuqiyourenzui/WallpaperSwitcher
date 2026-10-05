@@ -209,15 +209,6 @@
     <string name="media_type_video">视频</string>
     <string name="cd_more">更多</string>
     <string name="menu_set_as_wallpaper">设为壁纸</string>
-    <!-- 离线 NN 超分（TFLite ESRGAN 4x） -->
-    <string name="nn_upscale_action">AI 超分（4x）</string>
-    <string name="nn_upscale_starting">正在 AI 超分（首次需下载约 5MB 模型，可能需要十几秒）…</string>
-    <string name="nn_upscale_done">AI 超分完成：4x 图片已加入当前分组</string>
-    <string name="nn_upscale_failed">AI 超分失败</string>
-    <string name="nn_upscale_too_large">图片已经足够清晰（超过 0.5MP），无需 AI 超分</string>
-    <string name="nn_upscale_video">视频暂不支持离线 AI 超分</string>
-    <string name="nn_upscale_model_failed">AI 模型下载失败，请检查网络后重试</string>
-    <string name="nn_upscale_already">这张图已经超分过了</string>
     <string name="empty_images_title">还没有壁纸</string>
     <string name="empty_images_hint">点击「添加壁纸」开始</string>
     <string name="dialog_add_wallpaper_title">添加壁纸</string>

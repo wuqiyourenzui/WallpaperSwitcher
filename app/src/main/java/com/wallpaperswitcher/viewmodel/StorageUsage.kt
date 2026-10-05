@@ -18,7 +18,7 @@ data class StorageUsage(
     val online: StorageDirUsage = StorageDirUsage("online", 0, 0L),
     /** Copies of media another app shared into us (ACTION_SEND). */
     val shared: StorageDirUsage = StorageDirUsage("shared", 0, 0L),
-    /** 离线 NN 超分生成的 4x 副本 (files/nn). */
+    /** 已取消的离线 NN 超分的遗留目录 `files/nn`（见 §4.9.156），只为统计。 */
     val nn: StorageDirUsage = StorageDirUsage("nn", 0, 0L),
 ) {
     val totalFiles: Int get() = rss.files + online.files + shared.files + nn.files

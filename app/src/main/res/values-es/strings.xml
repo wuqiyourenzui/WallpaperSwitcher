@@ -209,15 +209,6 @@
     <string name="media_type_video">Vídeo</string>
     <string name="cd_more">Más</string>
     <string name="menu_set_as_wallpaper">Establecer como fondo</string>
-    <!-- Superresolución NN sin conexión (TFLite ESRGAN 4x) -->
-    <string name="nn_upscale_action">Superresolución IA (4x)</string>
-    <string name="nn_upscale_starting">Aplicando superresolución IA… (el primer uso descarga un modelo de ~5 MB y puede tardar)</string>
-    <string name="nn_upscale_done">Superresolución IA completada: la imagen 4x se añadió a este grupo</string>
-    <string name="nn_upscale_failed">Error en la superresolución IA</string>
-    <string name="nn_upscale_too_large">La imagen ya es suficientemente nítida (>0,5 MP)</string>
-    <string name="nn_upscale_video">Los vídeos aún no admiten superresolución IA sin conexión</string>
-    <string name="nn_upscale_model_failed">No se pudo descargar el modelo de IA; revisa la conexión</string>
-    <string name="nn_upscale_already">Esta imagen ya se ha superresuelto</string>
     <string name="empty_images_title">Aún no hay fondos</string>
     <string name="empty_images_hint">Toca “Añadir fondos” para empezar</string>
     <string name="dialog_add_wallpaper_title">Añadir fondos</string>

@@ -212,15 +212,6 @@
     <string name="media_type_video">影片</string>
     <string name="cd_more">更多</string>
     <string name="menu_set_as_wallpaper">設為壁紙</string>
-    <!-- 離線 NN 超解析（TFLite ESRGAN 4x） -->
-    <string name="nn_upscale_action">AI 超解析（4x）</string>
-    <string name="nn_upscale_starting">正在 AI 超解析（首次需下載約 5MB 模型，可能需要十幾秒）…</string>
-    <string name="nn_upscale_done">AI 超解析完成：4x 圖片已加入目前分組</string>
-    <string name="nn_upscale_failed">AI 超解析失敗</string>
-    <string name="nn_upscale_too_large">圖片已經足夠清晰（超過 0.5MP），無需 AI 超解析</string>
-    <string name="nn_upscale_video">影片暫不支援離線 AI 超解析</string>
-    <string name="nn_upscale_model_failed">AI 模型下載失敗，請檢查網路後重試</string>
-    <string name="nn_upscale_already">這張圖已經超解析過了</string>
     <string name="empty_images_title">還沒有壁紙</string>
     <string name="empty_images_hint">點擊「新增壁紙」開始</string>
     <string name="dialog_add_wallpaper_title">新增壁紙</string>

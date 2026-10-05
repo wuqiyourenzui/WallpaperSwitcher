@@ -176,5 +176,10 @@ object OwnedMediaCleaner {
     private val OWNED_NAME = Regex("""[0-9a-f]{64}\.[A-Za-z0-9]{2,5}""")
 
     /** App-private media directories this cleaner owns (never user files). */
+    /**
+     * `nn` 是已取消的离线 NN 超分留下的目录（见 §4.9.156）：功能删掉了，但目录
+     * 仍在清理范围内，这样设备上已经下载的模型（约 5MB，没有任何媒体行引用）和
+     * 已生成但被删行的副本都能被回收。
+     */
     private val MANAGED_DIRS = listOf("rss", "online", "shared", "nn")
 }

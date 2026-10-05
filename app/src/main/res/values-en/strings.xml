@@ -234,15 +234,6 @@
     <string name="media_type_video">Video</string>
     <string name="cd_more">More</string>
     <string name="menu_set_as_wallpaper">Set as wallpaper</string>
-    <!-- Offline NN upscaling (TFLite ESRGAN 4x) -->
-    <string name="nn_upscale_action">AI upscale (4x)</string>
-    <string name="nn_upscale_starting">AI upscaling… (the first run downloads a ~5MB model and can take a while)</string>
-    <string name="nn_upscale_done">AI upscale done: the 4x image was added to this group</string>
-    <string name="nn_upscale_failed">AI upscale failed</string>
-    <string name="nn_upscale_too_large">This image is already sharp enough (>0.5MP) for AI upscaling</string>
-    <string name="nn_upscale_video">Videos are not supported by offline AI upscaling yet</string>
-    <string name="nn_upscale_model_failed">AI model download failed; check your connection and try again</string>
-    <string name="nn_upscale_already">This image has already been upscaled</string>
     <string name="empty_images_title">No wallpapers yet</string>
     <string name="empty_images_hint">Tap “Add wallpapers” to start</string>
     <string name="dialog_add_wallpaper_title">Add wallpapers</string>
