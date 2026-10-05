@@ -86,7 +86,6 @@
     <string name="settings_video_sound_hint">Play sound while the home screen is visible (muted elsewhere)</string>
 
     <!-- Settings screen: lock screen -->
-    <string name="settings_section_lock">Lock screen switching (independent of the desktop)</string>
     <string name="settings_lock_timer">Locked-screen timed switching</string>
     <string name="settings_lock_timer_hint">Change the lock wallpaper on its own interval below</string>
     <string name="settings_lock_interval">Lock switch interval</string>

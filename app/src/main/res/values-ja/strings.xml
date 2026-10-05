@@ -85,7 +85,6 @@
     <string name="settings_switch_fade_hint">切り替え時にフェードインします</string>
     <string name="settings_video_sound">動画壁紙の音声</string>
     <string name="settings_video_sound_hint">ホーム画面が見えているときだけ音声を再生</string>
-    <string name="settings_section_lock">ロック画面の切り替え（ホームとは独立）</string>
     <string name="settings_lock_timer">ロック画面のタイマー切り替え</string>
     <string name="settings_lock_timer_hint">下の間隔でロック画面の壁紙だけを切り替えます</string>
     <string name="settings_lock_interval">ロック画面の切り替え間隔</string>

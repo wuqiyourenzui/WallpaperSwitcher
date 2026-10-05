@@ -82,7 +82,6 @@
     <string name="settings_switch_fade_hint">切换壁纸时淡入显示</string>
     <string name="settings_video_sound">视频壁纸播放声音</string>
     <string name="settings_video_sound_hint">桌面可见时播放声音，其余场景静音</string>
-    <string name="settings_section_lock">锁屏切换（独立于桌面）</string>
     <string name="settings_lock_timer">锁屏定时切换</string>
     <string name="settings_lock_timer_hint">按下方间隔单独更换锁屏壁纸</string>
     <string name="settings_lock_interval">锁屏切换间隔</string>

@@ -85,7 +85,6 @@
     <string name="settings_switch_fade_hint">Fundido de entrada al cambiar de fondo</string>
     <string name="settings_video_sound">Sonido del fondo de vídeo</string>
     <string name="settings_video_sound_hint">Sonido solo cuando se ve Inicio</string>
-    <string name="settings_section_lock">Cambio en la pantalla de bloqueo (independiente)</string>
     <string name="settings_lock_timer">Cambio por temporizador en bloqueo</string>
     <string name="settings_lock_timer_hint">Cambia solo el fondo de bloqueo con el intervalo de abajo</string>
     <string name="settings_lock_interval">Intervalo del fondo de bloqueo</string>

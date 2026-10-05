@@ -119,6 +119,56 @@ fun SwitchMethodsScreen(
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
+                // 锁屏定时切换：与桌面的定时完全独立（双屏思路），只从「应用位置」
+                // 含锁屏的分组里取图，并且有自己的间隔。它紧跟桌面定时开关，放在
+                // 同一张卡片里 —— 用户要求"锁屏定时切换移到定时切换下方"。
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.Timer,
+                    title = stringResource(R.string.settings_lock_timer),
+                    subtitle = stringResource(R.string.settings_lock_timer_hint),
+                    checked = lockTimerEnabled,
+                    onCheckedChange = { viewModel.toggleLockTimer(it) }
+                )
+
+                AnimatedVisibility(
+                    visible = lockTimerEnabled,
+                    enter = fadeIn(HiMotion.enter()) + expandVertically(HiMotion.enter()),
+                    exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
+                ) {
+                    Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { showLockIntervalDialog = true }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Outlined.Schedule,
+                            null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(stringResource(R.string.settings_lock_interval))
+                            Text(
+                                formatInterval(lockIntervalMs),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Text(
+                            stringResource(R.string.action_modify),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = LocalAccentColor.current
+                        )
+                    }
+                }
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
                 SettingsSwitchItem(
                     icon = Icons.Outlined.LockOpen,
                     title = stringResource(R.string.settings_unlock_switch),
@@ -147,57 +197,6 @@ fun SwitchMethodsScreen(
                     checked = floatingButtonEnabled,
                     onCheckedChange = { viewModel.toggleFloatingButton(it) }
                 )
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        // 锁屏切换：与桌面的定时/双击/解锁完全独立（双屏思路）。只从「应用位置」
-        // 含锁屏的分组里取图，并且有自己的间隔 —— 桌面锁屏各换各的。
-        SettingsSection(title = stringResource(R.string.settings_section_lock)) {
-            SettingsSwitchItem(
-                icon = Icons.Outlined.Timer,
-                title = stringResource(R.string.settings_lock_timer),
-                subtitle = stringResource(R.string.settings_lock_timer_hint),
-                checked = lockTimerEnabled,
-                onCheckedChange = { viewModel.toggleLockTimer(it) }
-            )
-
-            AnimatedVisibility(
-                visible = lockTimerEnabled,
-                enter = fadeIn(HiMotion.enter()) + expandVertically(HiMotion.enter()),
-                exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
-            ) {
-                Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showLockIntervalDialog = true }
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        Icons.Outlined.Schedule,
-                        null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(16.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(stringResource(R.string.settings_lock_interval))
-                        Text(
-                            formatInterval(lockIntervalMs),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Text(
-                        stringResource(R.string.action_modify),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = LocalAccentColor.current
-                    )
-                }
-            }
-        }
         }
     }
 

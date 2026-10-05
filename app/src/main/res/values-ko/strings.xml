@@ -85,7 +85,6 @@
     <string name="settings_switch_fade_hint">전환할 때 페이드 인으로 표시</string>
     <string name="settings_video_sound">동영상 배경 화면 소리</string>
     <string name="settings_video_sound_hint">홈 화면이 보일 때만 소리 재생</string>
-    <string name="settings_section_lock">잠금 화면 전환(홈과 별개)</string>
     <string name="settings_lock_timer">잠금 화면 예약 전환</string>
     <string name="settings_lock_timer_hint">아래 간격으로 잠금 화면 배경만 따로 변경합니다</string>
     <string name="settings_lock_interval">잠금 화면 전환 간격</string>

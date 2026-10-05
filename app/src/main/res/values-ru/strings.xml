@@ -85,7 +85,6 @@
     <string name="settings_switch_fade_hint">Плавное появление при смене обоев</string>
     <string name="settings_video_sound">Звук видеообоев</string>
     <string name="settings_video_sound_hint">Звук только когда виден рабочий стол</string>
-    <string name="settings_section_lock">Смена на экране блокировки (независимо)</string>
     <string name="settings_lock_timer">Смена на блокировке по таймеру</string>
     <string name="settings_lock_timer_hint">Менять только обои экрана блокировки с интервалом ниже</string>
     <string name="settings_lock_interval">Интервал для экрана блокировки</string>
