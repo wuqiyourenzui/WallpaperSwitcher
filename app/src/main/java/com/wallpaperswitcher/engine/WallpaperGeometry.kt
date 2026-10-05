@@ -180,4 +180,26 @@ object WallpaperGeometry {
             else -> quad
         }
     }
+
+    /**
+     * 静态图微动效 (Ken Burns): scale the quad around the viewport centre so a
+     * still image very slowly zooms in and out.
+     *
+     * [phase] runs 0..1 over one full cycle; 0 / 1 (and every wrap) leave the
+     * quad untouched, so the settled FILL / FIT / STRETCH layout is met exactly
+     * once per cycle and a transition that starts on top of it starts from the
+     * real layout. Only scaling is applied - translating the quad would expose
+     * the black letterbox bands of a FIT layout at the edges.
+     */
+    fun applyKenBurns(quad: FloatArray, phase: Float, amplitude: Float): FloatArray {
+        if (quad.size < 14 || amplitude <= 0f || !phase.isFinite()) return quad
+        // Triangle wave: 0 -> 1 -> 0 over the cycle, so the zoom reverses
+        // smoothly instead of jumping back to 1x at the wrap.
+        val p = phase - kotlin.math.floor(phase)
+        val tri = if (p < 0.5f) p * 2f else (1f - p) * 2f
+        val s = 1f + amplitude * tri
+        for (i in intArrayOf(0, 4, 8, 12)) if (i < quad.size) quad[i] *= s
+        for (i in intArrayOf(1, 5, 9, 13)) if (i < quad.size) quad[i] *= s
+        return quad
+    }
 }

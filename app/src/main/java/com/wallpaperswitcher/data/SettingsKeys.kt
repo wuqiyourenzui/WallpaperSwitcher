@@ -94,6 +94,8 @@ object SettingsKeys {
      * "not done" and shows it once.
      */
     const val SETUP_WIZARD_DONE = "setup_wizard_done"
+    /** 静态图微动效 (Ken Burns): slow zoom while a still image is displayed. */
+    const val KEN_BURNS_ENABLED = "ken_burns_enabled"
     // --- 订阅下载策略 (see engine.RssDownloadPolicy) ---
     /** 仅 Wi-Fi 下载: block subscription image downloads on metered networks. */
     const val RSS_WIFI_ONLY = "rss_wifi_only"

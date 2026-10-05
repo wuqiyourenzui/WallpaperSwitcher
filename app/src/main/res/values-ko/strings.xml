@@ -61,6 +61,8 @@
     <string name="clarity_strong">강하게</string>
     <string name="settings_auto_rotate">자동 회전 대응</string>
     <string name="settings_auto_rotate_hint">방향이 맞지 않으면 90° 회전(맞추기 모드는 더 넓게 표시)</string>
+    <string name="settings_ken_burns">정지 이미지 느린 줌</string>
+    <string name="settings_ken_burns_hint">정지 배경 화면이 천천히 확대·축소됩니다. 배터리 사용이 조금 늘어납니다</string>
     <string name="settings_rotate_direction">회전 방향</string>
     <string name="rotate_clockwise">시계 방향</string>
     <string name="rotate_counter_clockwise">반시계 방향</string>

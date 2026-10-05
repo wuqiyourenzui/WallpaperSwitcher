@@ -81,6 +81,14 @@ class WallpaperRenderer(
          * 卡顿" report. Real minification (≥1.6x) still gets mipmaps.
          */
         private const val MIPMAP_MIN_DOWNSCALE = 1.6f
+        /** 静态图微动效 (Ken Burns): one zoom tick every ~66ms (~15fps). */
+        private const val KEN_BURNS_FRAME_MS = 66L
+        /** One full zoom-in + zoom-out cycle. */
+        private const val KEN_BURNS_PERIOD_MS = 24_000L
+        /** Peak extra scale: 6% is clearly visible but crops very little. */
+        private const val KEN_BURNS_AMPLITUDE = 0.06f
+        /** While GIF frames arrive this often, Ken Burns stays out of the way. */
+        private const val KEN_BURNS_GIF_SUPPRESS_MS = 1_500L
         /** Codec-specific-data keys re-submitted after a codec flush. */
         private val CODEC_CONFIG_KEYS = arrayOf("csd-0", "csd-1", "csd-2")
 
@@ -235,6 +243,8 @@ class WallpaperRenderer(
                 audioSession.pause()
             } else {
                 synchronized(pauseLock) { pauseLock.notifyAll() }
+                // Ken Burns sleeps with the wallpaper; wake its ticker up.
+                postToRenderThread { maybeStartKenBurns() }
             }
         }
     /** See [powerSaveMode]; guards the pause waits of the video/audio loops. */
@@ -269,6 +279,18 @@ class WallpaperRenderer(
     /** GPU quarter turn applied to the image currently uploaded (see computeQuad). */
     private var lastImageRotateCw: Boolean? = null
     private var lastRenderWasImage = false
+    // --- 静态图微动效 (Ken Burns) ---
+    /** Render-thread state; written through [setKenBurnsEnabled]. */
+    private var kenBurnsEnabled = false
+    /** When the still image's zoom cycle started (render thread). */
+    private var kenBurnsStartMs = 0L
+    private var kenBurnsFramePosted = false
+    /**
+     * Timestamp of the last GIF-ticker frame (written on the engine thread,
+     * read by [kenBurnsRunnable]): while a GIF animates itself, Ken Burns stays
+     * out of the way instead of doubling its frame rate.
+     */
+    @Volatile private var lastGifFrameAtMs = 0L
     private var vertexBuffer: FloatBuffer? = null
     private var imageTexId = 0
     private var imageTexMatrix = FloatArray(16)
@@ -742,6 +764,7 @@ class WallpaperRenderer(
         audioMutedForOwnUi = false
         audioSession.release()
         val handler = renderHandler
+        handler?.removeCallbacks(kenBurnsRunnable)
         val thread = renderThread
         if (handler != null && thread != null) {
             val latch = CountDownLatch(1)
@@ -785,6 +808,7 @@ class WallpaperRenderer(
      * must always be drawn even if the previous frame is still queued.
      */
     fun showGifFrame(bitmap: Bitmap, scaleMode: ScaleMode) {
+        lastGifFrameAtMs = SystemClock.elapsedRealtime()
         if (!imageRenderPostQueued.compareAndSet(false, true)) return
         postToRenderThread {
             imageRenderPostQueued.set(false)
@@ -830,6 +854,69 @@ class WallpaperRenderer(
             transitionProgress = 1f
         }
     }
+
+    /**
+     * 静态图微动效 (Ken Burns): adopt the setting without restarting anything.
+     *
+     * Enabling it starts the zoom ticker on the image already on screen;
+     * disabling it cancels the ticker and re-presents the settled layout once,
+     * so the wallpaper never stays frozen mid-zoom.
+     */
+    fun setKenBurnsEnabled(enabled: Boolean) {
+        postToRenderThread {
+            if (kenBurnsEnabled == enabled) return@postToRenderThread
+            kenBurnsEnabled = enabled
+            if (enabled) {
+                kenBurnsStartMs = SystemClock.elapsedRealtime()
+                maybeStartKenBurns()
+            } else {
+                renderHandler?.removeCallbacks(kenBurnsRunnable)
+                kenBurnsFramePosted = false
+                if (lastRenderWasImage) renderImageFromTexture()
+            }
+        }
+    }
+
+    /**
+     * The zoom ticker: ~15fps is plenty for a very slow breathing zoom and
+     * keeps a still wallpaper far below the video path's cost. It stops while
+     * hidden ([powerSaveMode]) or while a GIF owns the screen, and restarts on
+     * the next still frame or visibility resume.
+     */
+    private val kenBurnsRunnable = object : Runnable {
+        override fun run() {
+            kenBurnsFramePosted = false
+            if (!kenBurnsEnabled || powerSaveMode || !lastRenderWasImage) return
+            if (SystemClock.elapsedRealtime() - lastGifFrameAtMs <
+                KEN_BURNS_GIF_SUPPRESS_MS
+            ) {
+                return
+            }
+            if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return
+            renderImageFromTexture()
+            if (kenBurnsEnabled && !powerSaveMode && lastRenderWasImage) {
+                kenBurnsFramePosted = true
+                renderHandler?.postDelayed(this, KEN_BURNS_FRAME_MS)
+            }
+        }
+    }
+
+    private fun maybeStartKenBurns() {
+        if (!kenBurnsEnabled || powerSaveMode || !lastRenderWasImage) return
+        if (SystemClock.elapsedRealtime() - lastGifFrameAtMs <
+            KEN_BURNS_GIF_SUPPRESS_MS
+        ) {
+            return
+        }
+        if (kenBurnsFramePosted) return
+        kenBurnsFramePosted = true
+        renderHandler?.postDelayed(kenBurnsRunnable, KEN_BURNS_FRAME_MS)
+    }
+
+    /** Position within the zoom cycle: 0..1, wrapping every [KEN_BURNS_PERIOD_MS]. */
+    private fun kenBurnsPhase(nowMs: Long): Float =
+        ((nowMs - kenBurnsStartMs).coerceAtLeast(0L) % KEN_BURNS_PERIOD_MS)
+            .toFloat() / KEN_BURNS_PERIOD_MS
 
     /**
      * Render thread: (re)start the transition for [transitionMode], on the frame
@@ -998,6 +1085,9 @@ class WallpaperRenderer(
 
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imageTexId)
             GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+            // 静态图微动效: a freshly uploaded still starts its zoom cycle at
+            // 1x, so the settled layout is presented first.
+            kenBurnsStartMs = SystemClock.elapsedRealtime()
             // One quad for both decisions below: where the image lands on screen
             // (drawnW/drawnH, in pixels) decides whether mipmaps are worth a
             // full-texture GPU pass.
@@ -1012,6 +1102,13 @@ class WallpaperRenderer(
             // Applied AFTER the mipmap decision above, which must see the real
             // on-screen size of the media.
             WallpaperGeometry.applyTransition(quad, transitionMode, transitionProgress)
+            if (kenBurnsEnabled) {
+                WallpaperGeometry.applyKenBurns(
+                    quad,
+                    kenBurnsPhase(SystemClock.elapsedRealtime()),
+                    KEN_BURNS_AMPLITUDE,
+                )
+            }
             // Mipmaps only help when the texture is DOWNSCALED on screen (the
             // minification filter is never used when the image is magnified).
             // With the display-aware decode, many images are shown at ~1:1 or
@@ -1091,6 +1188,7 @@ class WallpaperRenderer(
             lastImageScaleMode = scaleMode
             lastImageRotateCw = rotateCw
             lastRenderWasImage = true
+            maybeStartKenBurns()
         } catch (t: Throwable) {
             AppLog.e(TAG, "renderImage failed", t)
         }
@@ -1115,6 +1213,13 @@ class WallpaperRenderer(
                 lastImageRotateCw
             )
             WallpaperGeometry.applyTransition(quad, transitionMode, transitionProgress)
+            if (kenBurnsEnabled) {
+                WallpaperGeometry.applyKenBurns(
+                    quad,
+                    kenBurnsPhase(SystemClock.elapsedRealtime()),
+                    KEN_BURNS_AMPLITUDE,
+                )
+            }
             vertexBuffer?.clear()
             vertexBuffer?.put(quad)?.position(0)
 

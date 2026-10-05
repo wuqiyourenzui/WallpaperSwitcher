@@ -627,6 +627,14 @@ class LiveWallpaperService : WallpaperService() {
             activeEngine?.applyTransitionMode(mode)
         }
         /**
+         * 静态图微动效 setting changed: adopt it in the running engine (the
+         * engine also reads the setting before every switch, so a
+         * killed/recreated engine picks it up too).
+         */
+        fun applyKenBurnsFromSettings(context: Context, enabled: Boolean) {
+            activeEngine?.applyKenBurnsEnabled(enabled)
+        }
+        /**
          * Low-memory callback forwarded from the Application: release optional
          * memory (the prefetched next image) while keeping the displayed media
          * intact. No-op when the engine is not alive.
@@ -2830,6 +2838,11 @@ class LiveWallpaperService : WallpaperService() {
             renderer?.setTransitionMode(mode)
         }
 
+        /** 静态图微动效 change pushed from the settings screen (see the companion). */
+        internal fun applyKenBurnsEnabled(enabled: Boolean) {
+            renderer?.setKenBurnsEnabled(enabled)
+        }
+
         private fun applyRotateSettingsLive(enabled: Boolean, clockwise: Boolean) {
             if (autoRotateMismatch == enabled && autoRotateClockwise == clockwise) return
             autoRotateMismatch = enabled
@@ -3092,6 +3105,7 @@ class LiveWallpaperService : WallpaperService() {
                 }
             }
             applyClarityMode()
+            applyKenBurnsMode()
             autoRotateMismatch = try {
                 dao.getBool(SettingsKeys.ROTATE_MISMATCH_ENABLED, true)
             } catch (_: Exception) {
@@ -4014,6 +4028,7 @@ class LiveWallpaperService : WallpaperService() {
                     val dao = db.settingsDao()
                     val imageDao = db.wallpaperImageDao()
                     applyClarityMode()
+                    applyKenBurnsMode()
                     autoRotateMismatch = try {
                         dao.getBool(SettingsKeys.ROTATE_MISMATCH_ENABLED, true)
                     } catch (_: Exception) {
@@ -4276,6 +4291,20 @@ class LiveWallpaperService : WallpaperService() {
                 "auto"
             }
             renderer?.sharpnessScale = if (isPreview) 0f else clarityStrength(mode)
+        }
+
+        /**
+         * Sync the 静态图微动效 setting into the renderer. Called before every
+         * switch/redraw (next to [applyClarityMode]) so the engine never depends
+         * on a settings push having reached it.
+         */
+        private suspend fun applyKenBurnsMode() {
+            val enabled = try {
+                db.settingsDao().getBool(SettingsKeys.KEN_BURNS_ENABLED, false)
+            } catch (_: Exception) {
+                false
+            }
+            renderer?.setKenBurnsEnabled(enabled)
         }
 
         /**

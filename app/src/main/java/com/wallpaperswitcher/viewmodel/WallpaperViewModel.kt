@@ -1063,6 +1063,18 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * 静态图微动效 (Ken Burns): still images slowly zoom in and out. Default
+     * off (an old install behaves exactly as before); the running engine adopts
+     * the change via the companion, and every switch re-reads the setting.
+     */
+    fun setKenBurnsEnabled(enabled: Boolean) {
+        guardedWrite("保存微动效设置失败") {
+            settingsDao.setBool(SettingsKeys.KEN_BURNS_ENABLED, enabled)
+            LiveWallpaperService.applyKenBurnsFromSettings(getApplication(), enabled)
+        }
+    }
+
+    /**
      * 首启自检向导 done flag.
      *
      * Initial value is `true` so an install that already dismissed the wizard
@@ -1939,6 +1951,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 SettingsKeys.SWITCH_TRANSITION_DEFAULT
             )
 
+    private val kenBurnsEnabled: StateFlow<Boolean> =
+        settingsDao.getValueFlow(SettingsKeys.KEN_BURNS_ENABLED)
+            .map { it?.toBooleanStrictOrNull() ?: false }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
     private val videoPlayToEnd: StateFlow<Boolean> =
         settingsDao.getValueFlow(SettingsKeys.VIDEO_PLAY_TO_END)
             .map { it?.toBooleanStrictOrNull() ?: false }
@@ -2029,6 +2046,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         const val VIDEO_PLAY_TO_END = 24
         const val FAVORITE_BOOST = 25
         const val RECENT_NO_REPEAT = 26
+        const val KEN_BURNS_ENABLED = 27
     }
 
     /**
@@ -2080,7 +2098,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         switchTransition,
         videoPlayToEnd,
         favoriteBoost,
-        recentNoRepeat
+        recentNoRepeat,
+        kenBurnsEnabled
     ) { a ->
         SettingsUiState(
             serviceEnabled = combined(a, SettingsField.SERVICE_ENABLED, "serviceEnabled", Boolean::class.javaObjectType) ?: false,
@@ -2111,7 +2130,8 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 ?: SettingsKeys.SWITCH_TRANSITION_DEFAULT,
             videoPlayToEnd = combined(a, SettingsField.VIDEO_PLAY_TO_END, "videoPlayToEnd", Boolean::class.javaObjectType) ?: false,
             favoriteBoost = combined(a, SettingsField.FAVORITE_BOOST, "favoriteBoost", Boolean::class.javaObjectType) ?: true,
-            recentNoRepeat = combined(a, SettingsField.RECENT_NO_REPEAT, "recentNoRepeat", Integer::class.javaObjectType)?.toInt() ?: 0
+            recentNoRepeat = combined(a, SettingsField.RECENT_NO_REPEAT, "recentNoRepeat", Integer::class.javaObjectType)?.toInt() ?: 0,
+            kenBurnsEnabled = combined(a, SettingsField.KEN_BURNS_ENABLED, "kenBurnsEnabled", Boolean::class.javaObjectType) ?: false
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsUiState())
 
@@ -3124,5 +3144,7 @@ data class SettingsUiState(
     /** 收藏优先: favourites get a higher weight in RANDOM / SHUFFLE. */
     val favoriteBoost: Boolean = true,
     /** 最近 N 张不重复 (0 = off) for RANDOM. */
-    val recentNoRepeat: Int = 0
+    val recentNoRepeat: Int = 0,
+    /** 静态图微动效 (Ken Burns): still images slowly zoom in and out. */
+    val kenBurnsEnabled: Boolean = false
 )
