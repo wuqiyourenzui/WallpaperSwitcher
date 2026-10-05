@@ -63,7 +63,11 @@ object RssMediaImporter {
             .build()
     }
 
-    data class Report(val added: Int, val failed: Int)
+    /**
+     * [blocked] is a machine-readable policy reason ("wifi" / "limit") when the
+     * download never started; null means it ran normally.
+     */
+    data class Report(val added: Int, val failed: Int, val blocked: String? = null)
 
     suspend fun importImages(
         context: Context,
@@ -73,6 +77,20 @@ object RssMediaImporter {
         extraHeaders: Map<String, String> = emptyMap(),
     ): Report = withContext(Dispatchers.IO) {
         if (urls.isEmpty()) return@withContext Report(0, 0)
+        // 订阅下载策略 (仅 Wi-Fi / 每日上限): refuse BEFORE any network traffic.
+        val policy = RssDownloadPolicy.check(context)
+        if (!policy.allowed) {
+            AppLog.d(TAG, "import blocked by download policy: ${policy.reason}")
+            return@withContext Report(
+                added = 0,
+                failed = urls.size,
+                blocked = when (policy.reason) {
+                    RssDownloadPolicy.Reason.WIFI_ONLY -> "wifi"
+                    RssDownloadPolicy.Reason.DAILY_LIMIT -> "limit"
+                    RssDownloadPolicy.Reason.OK -> null
+                },
+            )
+        }
         AppLog.d(
             TAG,
             "import start: ${urls.size} url(s) -> group $groupId " +
@@ -169,6 +187,9 @@ object RssMediaImporter {
                 if (file == null) failed++ else downloaded.add(url to file)
             }
         }
+        // Charge today's counter with everything pulled from the network - the
+        // files that fail validation below still cost the user traffic.
+        RssDownloadPolicy.record(context, downloaded.sumOf { it.second.length() })
 
         // 2) Validate + de-duplicate, then insert the whole batch in one call.
         // 用户可以在设置里指定下载目录（SAF）；没指定就留在应用私有目录。

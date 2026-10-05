@@ -1080,6 +1080,61 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // --- 订阅下载策略 (see engine.RssDownloadPolicy) ---
+
+    /** 仅 Wi-Fi 下载: block subscription imports on metered networks. */
+    val rssWifiOnly: StateFlow<Boolean> =
+        settingsDao.getValueFlow(SettingsKeys.RSS_WIFI_ONLY)
+            .map { it?.toBooleanStrictOrNull() ?: false }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    /** Daily cap in MB; 0 = 不限. */
+    val rssDailyLimitMb: StateFlow<Int> =
+        settingsDao.getValueFlow(SettingsKeys.RSS_DAILY_LIMIT_MB)
+            .map { it?.toIntOrNull() ?: 0 }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    /** 残留自动清理 TTL in days; 0 = 关闭. */
+    val rssOrphanTtlDays: StateFlow<Int> =
+        settingsDao.getValueFlow(SettingsKeys.RSS_ORPHAN_TTL_DAYS)
+            .map { it?.toIntOrNull() ?: 0 }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+
+    fun setRssWifiOnly(enabled: Boolean) {
+        guardedWrite("保存下载设置失败") {
+            settingsDao.setBool(SettingsKeys.RSS_WIFI_ONLY, enabled)
+        }
+    }
+
+    fun setRssDailyLimitMb(mb: Int) {
+        guardedWrite("保存下载设置失败") {
+            settingsDao.setLong(SettingsKeys.RSS_DAILY_LIMIT_MB, mb.coerceAtLeast(0).toLong())
+        }
+    }
+
+    fun setRssOrphanTtlDays(days: Int) {
+        guardedWrite("保存下载设置失败") {
+            settingsDao.setLong(SettingsKeys.RSS_ORPHAN_TTL_DAYS, days.coerceAtLeast(0).toLong())
+        }
+    }
+
+    /**
+     * 缓存 TTL: run the expired-orphan sweep (no-op while 残留自动清理 = 关闭).
+     * Called once when the app comes to the foreground; failures only log.
+     */
+    suspend fun sweepExpiredDownloads(): Int = withContext(Dispatchers.IO) {
+        try {
+            val days = settingsDao.getLong(SettingsKeys.RSS_ORPHAN_TTL_DAYS, 0L).toInt()
+            if (days <= 0) return@withContext 0
+            com.wallpaperswitcher.engine.OwnedMediaCleaner
+                .sweepExpired(getApplication(), days)
+                .files
+        } catch (e: Exception) {
+            AppLog.w(TAG, "sweepExpiredDownloads failed: ${e.javaClass.simpleName}")
+            0
+        }
+    }
+
     /** 向导用：打开系统动态壁纸选择器；false = 两个入口都打不开。 */
     fun openLiveWallpaperPicker(): Boolean = launchLiveWallpaperPicker()
 
@@ -1540,10 +1595,12 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             }
             val report = com.wallpaperswitcher.engine.RssMediaImporter
                 .importImages(getApplication(), source, urls, groupId, extraHeaders)
-            val message = if (report.failed > 0) {
-                str(R.string.rss_add_to_group_partial, report.added, report.failed)
-            } else {
-                str(R.string.rss_add_to_group_done, report.added)
+            val message = when {
+                report.blocked == "wifi" -> str(R.string.rss_blocked_wifi)
+                report.blocked == "limit" -> str(R.string.rss_blocked_limit)
+                report.failed > 0 ->
+                    str(R.string.rss_add_to_group_partial, report.added, report.failed)
+                else -> str(R.string.rss_add_to_group_done, report.added)
             }
             _toastMessage.emit(message)
         }

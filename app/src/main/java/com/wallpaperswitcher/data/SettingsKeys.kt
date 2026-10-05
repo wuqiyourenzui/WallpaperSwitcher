@@ -94,6 +94,17 @@ object SettingsKeys {
      * "not done" and shows it once.
      */
     const val SETUP_WIZARD_DONE = "setup_wizard_done"
+    // --- 订阅下载策略 (see engine.RssDownloadPolicy) ---
+    /** 仅 Wi-Fi 下载: block subscription image downloads on metered networks. */
+    const val RSS_WIFI_ONLY = "rss_wifi_only"
+    /** Daily download cap in MB; 0 = unlimited. */
+    const val RSS_DAILY_LIMIT_MB = "rss_daily_limit_mb"
+    /** Auto-delete unreferenced downloads older than N days; 0 = off. */
+    const val RSS_ORPHAN_TTL_DAYS = "rss_orphan_ttl_days"
+    /** Local `yyyy-MM-dd` the [RSS_DOWNLOAD_BYTES] counter belongs to. */
+    const val RSS_DOWNLOAD_DATE = "rss_download_date"
+    /** Bytes downloaded today (reset when [RSS_DOWNLOAD_DATE] changes). */
+    const val RSS_DOWNLOAD_BYTES = "rss_download_bytes"
     // Wall-clock (ms) the current switch interval counts from: the last timed
     // switch. Kept across a lock/unlock pause (and across service restarts) so
     // an overdue tick catches up as soon as the screen comes back instead of

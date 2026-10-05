@@ -11,18 +11,24 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.DataUsage
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.RssFeed
 import androidx.compose.material.icons.outlined.SdStorage
+import androidx.compose.material.icons.outlined.Wifi
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Divider
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -41,12 +47,14 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.R
 import com.wallpaperswitcher.ui.theme.HiCard
 import com.wallpaperswitcher.ui.theme.HiDims
 import com.wallpaperswitcher.ui.theme.HiLoadingHint
 import com.wallpaperswitcher.ui.theme.HiLoadingState
 import com.wallpaperswitcher.ui.theme.LocalAccentColor
+import com.wallpaperswitcher.ui.theme.HiOptionRow
 import com.wallpaperswitcher.viewmodel.StorageCleanResult
 import com.wallpaperswitcher.viewmodel.StorageDirUsage
 import com.wallpaperswitcher.viewmodel.StorageUsage
@@ -178,6 +186,12 @@ fun StorageScreen(
     // 而 StorageCleanResult 不是 Parcelable，为它套一个自定义 Saver 不值当）。
     var cleanedFiles by rememberSaveable { mutableStateOf(0) }
     var cleanedBytes by rememberSaveable { mutableStateOf(0L) }
+    // 订阅下载策略（仅 Wi-Fi / 每日上限 / 残留 TTL）。
+    val rssWifiOnly by viewModel.rssWifiOnly.collectAsStateWithLifecycle()
+    val rssDailyLimitMb by viewModel.rssDailyLimitMb.collectAsStateWithLifecycle()
+    val rssOrphanTtlDays by viewModel.rssOrphanTtlDays.collectAsStateWithLifecycle()
+    var showLimitPicker by remember { mutableStateOf(false) }
+    var showTtlPicker by remember { mutableStateOf(false) }
     // 重建也走同一个纯函数，保证"files == 0 就不算清到东西"这条规则只有一处。
     val cleaned = remember(cleanedFiles, cleanedBytes) {
         cleanedStorageNote(StorageCleanResult(cleanedFiles, cleanedBytes))
@@ -240,9 +254,51 @@ fun StorageScreen(
                     cleaned = cleaned,
                     busy = busy,
                     onClean = onClean,
+                    wifiOnly = rssWifiOnly,
+                    onWifiOnlyChange = { viewModel.setRssWifiOnly(it) },
+                    dailyLimitMb = rssDailyLimitMb,
+                    onLimitClick = { showLimitPicker = true },
+                    ttlDays = rssOrphanTtlDays,
+                    onTtlClick = { showTtlPicker = true },
                 )
             }
         }
+    }
+
+    if (showLimitPicker) {
+        StorageChoiceDialog(
+            title = stringResource(R.string.storage_policy_limit),
+            options = listOf(
+                0 to stringResource(R.string.storage_policy_unlimited),
+                50 to stringResource(R.string.storage_policy_mb, 50),
+                100 to stringResource(R.string.storage_policy_mb, 100),
+                200 to stringResource(R.string.storage_policy_mb, 200),
+                500 to stringResource(R.string.storage_policy_mb, 500),
+            ),
+            selected = rssDailyLimitMb,
+            onSelect = {
+                viewModel.setRssDailyLimitMb(it)
+                showLimitPicker = false
+            },
+            onDismiss = { showLimitPicker = false },
+        )
+    }
+    if (showTtlPicker) {
+        StorageChoiceDialog(
+            title = stringResource(R.string.storage_policy_ttl),
+            options = listOf(
+                0 to stringResource(R.string.storage_policy_off),
+                7 to stringResource(R.string.storage_policy_days, 7),
+                30 to stringResource(R.string.storage_policy_days, 30),
+                90 to stringResource(R.string.storage_policy_days, 90),
+            ),
+            selected = rssOrphanTtlDays,
+            onSelect = {
+                viewModel.setRssOrphanTtlDays(it)
+                showTtlPicker = false
+            },
+            onDismiss = { showTtlPicker = false },
+        )
     }
 }
 
@@ -304,6 +360,12 @@ private fun StorageContent(
     cleaned: StorageCleanResult?,
     busy: Boolean,
     onClean: () -> Unit,
+    wifiOnly: Boolean,
+    onWifiOnlyChange: (Boolean) -> Unit,
+    dailyLimitMb: Int,
+    onLimitClick: () -> Unit,
+    ttlDays: Int,
+    onTtlClick: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -325,6 +387,14 @@ private fun StorageContent(
             name = stringResource(R.string.storage_rss),
             icon = Icons.Outlined.RssFeed,
             dir = usage.rss,
+        )
+        StoragePolicySection(
+            wifiOnly = wifiOnly,
+            onWifiOnlyChange = onWifiOnlyChange,
+            dailyLimitMb = dailyLimitMb,
+            onLimitClick = onLimitClick,
+            ttlDays = ttlDays,
+            onTtlClick = onTtlClick,
         )
         StorageCleanCard(
             orphans = orphans,
@@ -502,6 +572,91 @@ private fun StorageCleanCard(
             }
         }
     }
+}
+
+/**
+ * 订阅下载策略：只约束**之后**新下载的订阅图片。已经落在磁盘上的文件由上面的
+ * 分项卡 / 下面的清理与 TTL 负责，所以这三行放在两者之间。
+ */
+@Composable
+private fun StoragePolicySection(
+    wifiOnly: Boolean,
+    onWifiOnlyChange: (Boolean) -> Unit,
+    dailyLimitMb: Int,
+    onLimitClick: () -> Unit,
+    ttlDays: Int,
+    onTtlClick: () -> Unit,
+) {
+    SettingsSection(title = stringResource(R.string.storage_policy_title)) {
+        SettingsSwitchItem(
+            icon = Icons.Outlined.Wifi,
+            title = stringResource(R.string.storage_policy_wifi),
+            subtitle = stringResource(R.string.storage_policy_wifi_hint),
+            checked = wifiOnly,
+            onCheckedChange = onWifiOnlyChange,
+        )
+        Divider(modifier = Modifier.padding(horizontal = 16.dp))
+        HiOptionRow(
+            icon = Icons.Outlined.DataUsage,
+            title = stringResource(R.string.storage_policy_limit),
+            subtitle = stringResource(R.string.storage_policy_limit_hint),
+            value = if (dailyLimitMb <= 0) {
+                stringResource(R.string.storage_policy_unlimited)
+            } else {
+                stringResource(R.string.storage_policy_mb, dailyLimitMb)
+            },
+            onClick = onLimitClick,
+        )
+        Divider(modifier = Modifier.padding(horizontal = 16.dp))
+        HiOptionRow(
+            icon = Icons.Outlined.DeleteSweep,
+            title = stringResource(R.string.storage_policy_ttl),
+            subtitle = stringResource(R.string.storage_policy_ttl_hint),
+            value = if (ttlDays <= 0) {
+                stringResource(R.string.storage_policy_off)
+            } else {
+                stringResource(R.string.storage_policy_days, ttlDays)
+            },
+            onClick = onTtlClick,
+        )
+    }
+}
+
+/** Single-choice dialog for the two policy values (same shape as the interval dialog). */
+@Composable
+private fun StorageChoiceDialog(
+    title: String,
+    options: List<Pair<Int, String>>,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                options.forEach { (value, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(value) }
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = value == selected, onClick = { onSelect(value) })
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(label)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
+    )
 }
 
 /** 主题强调色：跟随用户选的颜色，没设时退回 M3 primary（同 RecentScreen 的角标）。 */

@@ -112,6 +112,8 @@ fun WallpaperSwitcherApp(
             }
         }
     }
+    // 缓存 TTL: one expired-download sweep per app start (no-op while off).
+    LaunchedEffect(Unit) { viewModel.sweepExpiredDownloads() }
 
     // HyperOS/MIUI 「动态壁纸服务」 is off: the system live-wallpaper screen closes
     // itself before it is drawn, so a tap on a picture looks like a no-op. Offer

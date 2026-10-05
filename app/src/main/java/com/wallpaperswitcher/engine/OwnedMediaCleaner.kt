@@ -31,7 +31,11 @@ object OwnedMediaCleaner {
      * 判断条件与 [sweep] 完全一致（同一套引用集合 + 同一套 10 分钟保护期），
      * 所以"显示可清 280MB"和"实际清掉 280MB"不会对不上。
      */
-    suspend fun measureOrphans(context: Context): OrphanScan = withContext(Dispatchers.IO) {
+    suspend fun measureOrphans(
+        context: Context,
+        /** Files younger than this are never counted (see [MIN_AGE_MS]). */
+        minAgeMs: Long = MIN_AGE_MS,
+    ): OrphanScan = withContext(Dispatchers.IO) {
         var files = 0
         var bytes = 0L
         try {
@@ -48,7 +52,7 @@ object OwnedMediaCleaner {
                 root.walkTopDown()
                     .filter { it.isFile }
                     .forEach { file ->
-                        if (now - file.lastModified() < MIN_AGE_MS) return@forEach
+                        if (now - file.lastModified() < minAgeMs) return@forEach
                         if ("file://${file.absolutePath}" in referenced) return@forEach
                         files++
                         bytes += file.length()
@@ -60,7 +64,13 @@ object OwnedMediaCleaner {
         OrphanScan(files, bytes)
     }
 
-    suspend fun sweep(context: Context) = withContext(Dispatchers.IO) {
+    suspend fun sweep(
+        context: Context,
+        /** Files younger than this are never deleted (see [MIN_AGE_MS]). */
+        minAgeMs: Long = MIN_AGE_MS,
+    ): OrphanScan = withContext(Dispatchers.IO) {
+        var files = 0
+        var bytes = 0L
         try {
             val dao = AppDatabase.getInstance(context).wallpaperImageDao()
             for (sub in MANAGED_DIRS) {
@@ -78,7 +88,7 @@ object OwnedMediaCleaner {
                     .filter { it.isFile }
                     .forEach { file ->
                         // A download that started moments ago has no row yet.
-                        if (now - file.lastModified() < MIN_AGE_MS) return@forEach
+                        if (now - file.lastModified() < minAgeMs) return@forEach
                         if ("file://${file.absolutePath}" in referenced) return@forEach
                         val length = file.length()
                         if (file.delete()) {
@@ -86,6 +96,8 @@ object OwnedMediaCleaner {
                             freed += length
                         }
                     }
+                files += removed
+                bytes += freed
                 // Drop the now-empty per-source folders.
                 root.walkBottomUp()
                     .filter { it.isDirectory && it != root }
@@ -100,10 +112,22 @@ object OwnedMediaCleaner {
                     )
                 }
             }
-            sweepDownloadTree(context, dao)
+            files += sweepDownloadTree(context, dao, minAgeMs)
         } catch (t: Throwable) {
             AppLog.w(TAG, "sweep failed: ${t.javaClass.simpleName}")
         }
+        OrphanScan(files, bytes)
+    }
+
+    /**
+     * 缓存 TTL (设置 → 存储与流量): delete unreferenced downloads that are older
+     * than [ttlDays]. Only files this app created are ever touched, and the
+     * 10-minute protection window still applies on top.
+     */
+    suspend fun sweepExpired(context: Context, ttlDays: Int): OrphanScan {
+        if (ttlDays <= 0) return OrphanScan(0, 0)
+        val age = maxOf(MIN_AGE_MS, ttlDays * 24L * 60 * 60 * 1000)
+        return sweep(context, age)
     }
 
     /**
@@ -113,15 +137,16 @@ object OwnedMediaCleaner {
     private suspend fun sweepDownloadTree(
         context: Context,
         dao: com.wallpaperswitcher.data.WallpaperImageDao,
-    ) {
+        minAgeMs: Long,
+    ): Int {
         val treeUri = RssDownloadDir.load(context)
-        if (treeUri.isBlank()) return
+        if (treeUri.isBlank()) return 0
         val tree = try {
             androidx.documentfile.provider.DocumentFile
                 .fromTreeUri(context, android.net.Uri.parse(treeUri))
         } catch (_: Throwable) {
             null
-        } ?: return
+        } ?: return 0
         val referenced = try {
             dao.getUrisLike("content://%").toHashSet()
         } catch (_: Throwable) {
@@ -136,7 +161,7 @@ object OwnedMediaCleaner {
                 if (!OWNED_NAME.matches(name)) continue
                 if (doc.uri.toString() in referenced) continue
                 // A file written moments ago may not have its row yet.
-                if (now - doc.lastModified() < MIN_AGE_MS) continue
+                if (now - doc.lastModified() < minAgeMs) continue
                 if (doc.delete()) removed++
             }
         } catch (_: Throwable) {
@@ -144,6 +169,7 @@ object OwnedMediaCleaner {
         if (removed > 0) {
             AppLog.d(TAG, "swept $removed orphan file(s) from the chosen download folder")
         }
+        return removed
     }
 
     /** `<sha256>.<ext>` - the names this app gives its downloads. */
