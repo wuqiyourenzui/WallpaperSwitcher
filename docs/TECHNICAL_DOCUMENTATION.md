@@ -6306,6 +6306,69 @@ UID，这个开关跟着掉回默认拒绝 —— 用户上一次「另一个 AI
 
 **验证**：单元测试 **454 条全绿**、`:app:assembleDebug` ✓、已装机。
 
+#### 4.9.150 通知栏按钮 / 分享入库 / 首启自检向导 / 订阅下载策略 + 缓存 TTL / 静态图微动效
+
+用户按产品设计清单一次点了五件事。每一项都遵守"老安装行为不变"：新开关默认
+关闭，默认路径与改动前一致。
+
+**① 通知栏按钮**（`WallpaperSwitchService`）
+
+- 前台通知增加两个 action：**下一张**（与首页按钮 / 磁贴 / 小组件同一个
+  `switchNow`，来源标记 `LiveWallpaperService.SOURCE_NOTIFICATION`）和
+  **暂停 1 小时 / 继续**（共用 `PAUSE_UNTIL` 一键暂停键）。
+- 两个定时循环把刚读到的暂停状态交给 `syncNotificationPause()`，所以从首页 /
+  磁贴 / 小组件发起的暂停也会让通知按钮变成"继续"；通知自身的切换动作会唤醒
+  两个循环。新增 3 个矢量图标与 `notification_action_*` 两条字符串（7 语言）。
+
+**② 分享入库**（ACTION_SEND / ACTION_SEND_MULTIPLE）
+
+- `MainActivity` 成为系统分享目标（`singleTop` + `onNewIntent`）：图片 / 视频
+  打开分组选择对话框（可勾选「标为收藏」）；文本 / 链接跳到订阅页并预填现有的
+  导入对话框（`RssImportDialog(initialText=…)`）。
+- `engine/SharedMediaImporter` 立即把分享流复制到
+  `files/shared/<sha256>.<ext>`（ACTION_SEND 的读授权随 Activity 失效，不能只
+  存 URI），校验图片 bounds、按内容哈希 + 分组去重、插入普通 `WallpaperImage`
+  行（`folderPath = "shared"`）。
+- `files/shared` 纳入 `OwnedMediaCleaner` 与 `storageUsage()`，分享入库的副本会
+  出现在「存储与流量」里，也会被孤儿清理 / TTL 覆盖。
+
+**③ 首启自检向导**
+
+- 全屏对话框，三步实时自检（`ON_RESUME` 重新检查）：媒体权限（三个权限任一）、
+  内容（分组有媒体或订阅源非空）、动态壁纸（MIUI app-op +
+  `LiveWallpaperService.isHomeLiveWallpaper`）。
+- 动态壁纸服务被关闭时按钮直接打开 MIUI 权限页（`LiveWallpaperPermission`），
+  否则打开系统动态壁纸选择器；完成 / 稍后再说都写入 `setup_wizard_done`。
+  设置主界面新增「使用向导」入口可随时重开。
+- 首次安装自动弹出一次；本版本之前的老安装（键不存在）也会弹一次，之后不再打扰。
+
+**④ 订阅下载策略 + 缓存 TTL**
+
+- 设置 →「存储与流量」新增订阅下载策略卡：仅 Wi-Fi 下载（默认关）、每日上限
+  （不限 / 50 / 100 / 200 / 500 MB）、残留自动清理（关闭 / 7 / 30 / 90 天）。
+- `engine/RssDownloadPolicy`：纯决策核心（仅 Wi-Fi 优先于每日上限）+ 计量网络
+  判断 + 每日字节计数（日期变化自动归零）。`RssMediaImporter` 在**任何网络请求
+  之前**检查策略，结束时把本次实际下载的字节计入当天（校验失败的文件也计入——
+  流量确实花了）。
+- TTL：`OwnedMediaCleaner.sweepExpired()` 只删"数据库无人引用 + 超过 TTL"的
+  app 自建文件（保留原有 10 分钟保护期；自选 SAF 目录只认 `<sha256>.<ext>`
+  命名），每次打开 App 跑一次，关闭时不动作。
+
+**⑤ 静态图微动效（Ken Burns）**
+
+- 「壁纸设置」新增开关（默认关）：静态图以 24 秒为一个周期做 0 → 6% → 0 的缓慢
+  缩放。几何是 `WallpaperGeometry.applyKenBurns()` 纯函数——相位 0 / 1 与静止
+  布局完全一致、只缩放不平移（FIT 的黑边不会漂移），6 条单测覆盖。
+- 渲染端用 ~15fps 的 ticker 重绘**已上传的纹理**（`renderImageFromTexture`，不
+  重新解码）；不可见（`powerSaveMode`）时停、GIF 自播时让位、视频播放时不抢屏；
+  切换媒体时从 1x 重新开始。设置改动即时生效
+  （`LiveWallpaperService.applyKenBurnsFromSettings`），引擎每次切换前也会自行
+  读取该设置。
+
+**验证**：单元测试 **467 条全绿**（新增 `RssDownloadPolicyTest` 7 条 +
+`WallpaperGeometryKenBurnsTest` 6 条，含 7 语言键对齐），`:app:assembleDebug` ✓、
+已装机；按用户要求本轮不做截图分析，页面效果由用户直接核对。
+
 ---
 
 ## 七、权限声明
