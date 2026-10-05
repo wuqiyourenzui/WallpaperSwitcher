@@ -318,12 +318,20 @@ class WallpaperRenderer(
                 float yg = (tl + 2.0 * tt + tr) - (bl + 2.0 * bb + br);
                 float norm = clamp(sqrt(xg * xg + yg * yg), 0.0, 1.0);
                 float dval = clamp(animePoly(norm) * 0.5, 0.0, 1.0);
-                vec4 base = bicubic4(uv, texel);
+                // The reference blends onto the BILINEAR-upscaled frame (its
+                // pass outputs at 2x). Blending onto Catmull-Rom instead was
+                // one of the two reasons this mode looked over-sharp with heavy
+                // jaggies.
+                vec4 base = texture2D(uTexture, uv);
                 if (dval < 0.1 || norm <= 0.001) return base;
+                // Reference: one OUTPUT pixel; at its 2x output that is half a
+                // source texel. Shifting a whole source texel (the old value)
+                // doubled the edge push and aliased.
+                vec2 blendStep = texel * 0.5;
                 vec4 xval = texture2D(uTexture,
-                    clamp(uv + vec2(-sign(xg) * texel.x, 0.0), slo, shi));
+                    clamp(uv + vec2(-sign(xg) * blendStep.x, 0.0), slo, shi));
                 vec4 yval = texture2D(uTexture,
-                    clamp(uv + vec2(0.0, -sign(yg) * texel.y), slo, shi));
+                    clamp(uv + vec2(0.0, -sign(yg) * blendStep.y), slo, shi));
                 float ratio = abs(xg) / (abs(xg) + abs(yg) + 0.0001);
                 vec4 avg = ratio * xval + (1.0 - ratio) * yval;
                 return avg * dval + base * (1.0 - dval);
@@ -436,7 +444,10 @@ class WallpaperRenderer(
                     float mn = min(min(min(a0, a1), min(a2, a3)), eL);
                     float mx = max(max(max(a0, a1), max(a2, a3)), eL);
                     float amp = sqrt(clamp(mn / max(mx, 0.0001), 0.0, 1.0));
-                    float esharp = min(uSharp * (0.40 + 0.60 * amp), 0.6);
+                    // Anime4K already enhances edges; halve the generic sharpening
+                    // on top of it so the mode stops looking over-sharp.
+                    float sharpScale = uEnhanceMode > 1.5 ? 0.5 : 1.0;
+                    float esharp = min(uSharp * (0.40 + 0.60 * amp), 0.6) * sharpScale;
                     if (esharp <= 0.001) {
                         gl_FragColor = clamp(vec4(e.rgb, uAlpha), 0.0, 1.0);
                         return;
@@ -654,12 +665,20 @@ class WallpaperRenderer(
                 float yg = (tl + 2.0 * tt + tr) - (bl + 2.0 * bb + br);
                 float norm = clamp(sqrt(xg * xg + yg * yg), 0.0, 1.0);
                 float dval = clamp(animePoly(norm) * 0.5, 0.0, 1.0);
-                vec4 base = bicubic4(uv, texel);
+                // The reference blends onto the BILINEAR-upscaled frame (its
+                // pass outputs at 2x). Blending onto Catmull-Rom instead was
+                // one of the two reasons this mode looked over-sharp with heavy
+                // jaggies.
+                vec4 base = texture2D(uTexture, uv);
                 if (dval < 0.1 || norm <= 0.001) return base;
+                // Reference: one OUTPUT pixel; at its 2x output that is half a
+                // source texel. Shifting a whole source texel (the old value)
+                // doubled the edge push and aliased.
+                vec2 blendStep = texel * 0.5;
                 vec4 xval = texture2D(uTexture,
-                    clamp(uv + vec2(-sign(xg) * texel.x, 0.0), slo, shi));
+                    clamp(uv + vec2(-sign(xg) * blendStep.x, 0.0), slo, shi));
                 vec4 yval = texture2D(uTexture,
-                    clamp(uv + vec2(0.0, -sign(yg) * texel.y), slo, shi));
+                    clamp(uv + vec2(0.0, -sign(yg) * blendStep.y), slo, shi));
                 float ratio = abs(xg) / (abs(xg) + abs(yg) + 0.0001);
                 vec4 avg = ratio * xval + (1.0 - ratio) * yval;
                 return avg * dval + base * (1.0 - dval);
@@ -762,7 +781,10 @@ class WallpaperRenderer(
                     float mn = min(min(min(a0, a1), min(a2, a3)), eL);
                     float mx = max(max(max(a0, a1), max(a2, a3)), eL);
                     float amp = sqrt(clamp(mn / max(mx, 0.0001), 0.0, 1.0));
-                    float esharp = min(uSharp * (0.40 + 0.60 * amp), 0.6);
+                    // Anime4K already enhances edges; halve the generic sharpening
+                    // on top of it so the mode stops looking over-sharp.
+                    float sharpScale = uEnhanceMode > 1.5 ? 0.5 : 1.0;
+                    float esharp = min(uSharp * (0.40 + 0.60 * amp), 0.6) * sharpScale;
                     if (esharp <= 0.001) {
                         gl_FragColor = clamp(e, 0.0, 1.0);
                         return;
