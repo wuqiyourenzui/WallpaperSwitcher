@@ -403,7 +403,16 @@ class WallpaperRenderer(
                     // edge direction from the screen-pixel luma neighbours and
                     // blend ALONG the edge - this is what removes magnified
                     // stair-steps without blurring the edge itself.
-                    e = mix(e, (e + blur) * 0.5, 0.10 * uEnhance);
+                    e = mix(e, (e + blur) * 0.5, 0.05 * uEnhance);
+                    // 细节增强（源像素尺度）: the fine sharpening below works at
+                    // ONE SCREEN pixel - at 4-5x magnification that is only
+                    // 0.2-0.25 of a source texel, so it cannot fight the blur
+                    // that upscaling produces. This unsharp uses the 1-source-
+                    // texel neighbourhood (s0..s3) instead, pulling the
+                    // transitions BETWEEN source pixels apart again.
+                    float detailAmount = 0.40 * uEnhance;
+                    if (uEnhanceMode > 1.5) detailAmount *= 0.75;
+                    e.rgb = clamp(e.rgb + (e.rgb - blur.rgb) * detailAmount, 0.0, 1.0);
                     float lM = luma(e.rgb);
                     float lW = luma(t0.rgb);
                     float lE = luma(t1.rgb);
@@ -754,7 +763,16 @@ class WallpaperRenderer(
                     // edge direction from the screen-pixel luma neighbours and
                     // blend ALONG the edge - this is what removes magnified
                     // stair-steps without blurring the edge itself.
-                    e = mix(e, (e + blur) * 0.5, 0.10 * uEnhance);
+                    e = mix(e, (e + blur) * 0.5, 0.05 * uEnhance);
+                    // 细节增强（源像素尺度）: the fine sharpening below works at
+                    // ONE SCREEN pixel - at 4-5x magnification that is only
+                    // 0.2-0.25 of a source texel, so it cannot fight the blur
+                    // that upscaling produces. This unsharp uses the 1-source-
+                    // texel neighbourhood (s0..s3) instead, pulling the
+                    // transitions BETWEEN source pixels apart again.
+                    float detailAmount = 0.40 * uEnhance;
+                    if (uEnhanceMode > 1.5) detailAmount *= 0.75;
+                    e.rgb = clamp(e.rgb + (e.rgb - blur.rgb) * detailAmount, 0.0, 1.0);
                     float lM = luma(e.rgb);
                     float lW = luma(t0.rgb);
                     float lE = luma(t1.rgb);
