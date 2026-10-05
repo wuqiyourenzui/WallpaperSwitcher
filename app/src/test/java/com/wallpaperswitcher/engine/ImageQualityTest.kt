@@ -80,7 +80,7 @@ class ImageQualityTest {
             gray((128 + noise).coerceIn(0, 255))
         }
         val strength = ImageQuality.denoiseStrength(pixels, w, h)
-        assertTrue("strength=$strength", strength in 0f..0.6f)
+        assertTrue("strength=$strength", strength in 0f..0.45f)
     }
 
     @Test

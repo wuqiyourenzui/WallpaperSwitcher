@@ -64,9 +64,9 @@
     <string name="settings_ken_burns_hint">Los fondos fijos se acercan y alejan lentamente; consume algo más de batería</string>
     <string name="settings_quality_enhance">Mejora de calidad (superresolución)</string>
     <string name="settings_fsr1">Escalado FSR1 EASU/RCAS</string>
-    <string name="settings_fsr1_hint">Escalado adaptativo a bordes AMD FSR 1.0 + nitidez adaptativa al contraste (experimental; solo en modo superresolución)</string>
+    <string name="settings_fsr1_hint">Escalado adaptativo a bordes AMD FSR 1.0 + nitidez adaptativa al contraste (al activarlo también se elige el modo superresolución)</string>
     <string name="settings_anime4k">Escalado Anime4K</string>
-    <string name="settings_anime4k_hint">Escalador de line art Anime4K (adaptación Original x2 de una pasada; experimental; solo en modo superresolución)</string>
+    <string name="settings_anime4k_hint">Escalador de line art Anime4K (adaptación Original x2 de una pasada; al activarlo también se elige el modo superresolución)</string>
     <string name="settings_rotate_direction">Sentido de giro</string>
     <string name="rotate_clockwise">Horario</string>
     <string name="rotate_counter_clockwise">Antihorario</string>

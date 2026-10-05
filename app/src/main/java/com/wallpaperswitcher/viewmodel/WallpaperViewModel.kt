@@ -1201,6 +1201,14 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         guardedWrite("保存超分算法失败") {
             settingsDao.setBool(SettingsKeys.FSR1_ENHANCE_ENABLED, enabled)
             if (enabled) settingsDao.setBool(SettingsKeys.ANIME4K_ENHANCE_ENABLED, false)
+            // 打开算法开关就自动把清晰度切到「画质增强（超分）」：否则开关看起来
+            // 毫无作用（算法的门槛就是这个模式），这是用户反馈"不明显"的主因。
+            if (enabled) {
+                settingsDao.setString(
+                    SettingsKeys.CLARITY_MODE,
+                    com.wallpaperswitcher.engine.ClarityMode.SUPER,
+                )
+            }
             pushEnhanceMode()
         }
     }
@@ -1209,6 +1217,12 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         guardedWrite("保存超分算法失败") {
             settingsDao.setBool(SettingsKeys.ANIME4K_ENHANCE_ENABLED, enabled)
             if (enabled) settingsDao.setBool(SettingsKeys.FSR1_ENHANCE_ENABLED, false)
+            if (enabled) {
+                settingsDao.setString(
+                    SettingsKeys.CLARITY_MODE,
+                    com.wallpaperswitcher.engine.ClarityMode.SUPER,
+                )
+            }
             pushEnhanceMode()
         }
     }

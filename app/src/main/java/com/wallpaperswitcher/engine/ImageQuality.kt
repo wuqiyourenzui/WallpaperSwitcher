@@ -27,8 +27,11 @@ object ImageQuality {
     /** 中位邻居差达到这个亮度级时用满强度。 */
     internal const val NOISE_FULL = 32.0f
 
-    /** 强度上限：再多就该叫磨皮了。 */
-    private const val MAX_STRENGTH = 0.6f
+    /**
+     * 强度上限：再多就该叫磨皮了。0.45 是"360p 放大到 3.2K 也不显糊"和"压得住
+     * 压缩噪点"之间的折中——高倍率下 0.6 会把细节一起磨掉，反而让增强"看不出来"。
+     */
+    private const val MAX_STRENGTH = 0.45f
 
     /** 纯逻辑核心：ARGB 像素、[width] x [height]（至少 3x3）。 */
     internal fun denoiseStrength(pixels: IntArray, width: Int, height: Int): Float {

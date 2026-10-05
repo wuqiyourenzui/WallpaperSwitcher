@@ -64,9 +64,9 @@
     <string name="settings_ken_burns_hint">정지 배경 화면이 천천히 확대·축소됩니다. 배터리 사용이 조금 늘어납니다</string>
     <string name="settings_quality_enhance">화질 향상(초해상도)</string>
     <string name="settings_fsr1">FSR1 EASU/RCAS 초해상도</string>
-    <string name="settings_fsr1_hint">AMD FSR 1.0 에지 적응 업스케일 + 대비 적응 샤프닝(실험적, 초해상도 모드에서만)</string>
+    <string name="settings_fsr1_hint">AMD FSR 1.0 에지 적응 업스케일 + 대비 적응 샤프닝(켜면 초해상도 모드로 전환됩니다)</string>
     <string name="settings_anime4k">Anime4K 초해상도</string>
-    <string name="settings_anime4k_hint">Anime4K 선화 업스케일러(Original x2 단일 패스 이식, 실험적, 초해상도 모드에서만)</string>
+    <string name="settings_anime4k_hint">Anime4K 선화 업스케일러(Original x2 단일 패스 이식, 켜면 초해상도 모드로 전환됩니다)</string>
     <string name="settings_rotate_direction">회전 방향</string>
     <string name="rotate_clockwise">시계 방향</string>
     <string name="rotate_counter_clockwise">반시계 방향</string>

@@ -403,7 +403,7 @@ class WallpaperRenderer(
                     // edge direction from the screen-pixel luma neighbours and
                     // blend ALONG the edge - this is what removes magnified
                     // stair-steps without blurring the edge itself.
-                    e = mix(e, (e + blur) * 0.5, 0.15 * uEnhance);
+                    e = mix(e, (e + blur) * 0.5, 0.10 * uEnhance);
                     float lM = luma(e.rgb);
                     float lW = luma(t0.rgb);
                     float lE = luma(t1.rgb);
@@ -448,10 +448,15 @@ class WallpaperRenderer(
                     float mn = min(min(min(a0, a1), min(a2, a3)), eL);
                     float mx = max(max(max(a0, a1), max(a2, a3)), eL);
                     float amp = sqrt(clamp(mn / max(mx, 0.0001), 0.0, 1.0));
+                    // 高倍放大（360p -> 3.2K 这类 4~5x）只用放大算法会显得"平"，
+                    // 细节增强要随放大倍数加强；同时把上限从 0.6 提到 0.95。
+                    float enhSharp = uSharp * (1.0 + 0.7 * uEnhance);
+                    float sharpCap =
+                        mix(0.6, 0.95, clamp((uEnhance - 0.5) / 0.5, 0.0, 1.0));
                     // Anime4K already enhances edges; halve the generic sharpening
                     // on top of it so the mode stops looking over-sharp.
                     float sharpScale = uEnhanceMode > 1.5 ? 0.5 : 1.0;
-                    float esharp = min(uSharp * (0.40 + 0.60 * amp), 0.6) * sharpScale;
+                    float esharp = min(enhSharp * (0.40 + 0.60 * amp), sharpCap) * sharpScale;
                     if (esharp <= 0.001) {
                         gl_FragColor = clamp(vec4(e.rgb, uAlpha), 0.0, 1.0);
                         return;
@@ -749,7 +754,7 @@ class WallpaperRenderer(
                     // edge direction from the screen-pixel luma neighbours and
                     // blend ALONG the edge - this is what removes magnified
                     // stair-steps without blurring the edge itself.
-                    e = mix(e, (e + blur) * 0.5, 0.15 * uEnhance);
+                    e = mix(e, (e + blur) * 0.5, 0.10 * uEnhance);
                     float lM = luma(e.rgb);
                     float lW = luma(t0.rgb);
                     float lE = luma(t1.rgb);
@@ -789,10 +794,15 @@ class WallpaperRenderer(
                     float mn = min(min(min(a0, a1), min(a2, a3)), eL);
                     float mx = max(max(max(a0, a1), max(a2, a3)), eL);
                     float amp = sqrt(clamp(mn / max(mx, 0.0001), 0.0, 1.0));
+                    // 高倍放大（360p -> 3.2K 这类 4~5x）只用放大算法会显得"平"，
+                    // 细节增强要随放大倍数加强；同时把上限从 0.6 提到 0.95。
+                    float enhSharp = uSharp * (1.0 + 0.7 * uEnhance);
+                    float sharpCap =
+                        mix(0.6, 0.95, clamp((uEnhance - 0.5) / 0.5, 0.0, 1.0));
                     // Anime4K already enhances edges; halve the generic sharpening
                     // on top of it so the mode stops looking over-sharp.
                     float sharpScale = uEnhanceMode > 1.5 ? 0.5 : 1.0;
-                    float esharp = min(uSharp * (0.40 + 0.60 * amp), 0.6) * sharpScale;
+                    float esharp = min(enhSharp * (0.40 + 0.60 * amp), sharpCap) * sharpScale;
                     if (esharp <= 0.001) {
                         gl_FragColor = clamp(e, 0.0, 1.0);
                         return;
@@ -4044,8 +4054,9 @@ class WallpaperRenderer(
                 videoScaleMode, qualityEnhance,
             )
             GLES20.glUniform1f(videoEnhanceLoc, videoEnhance)
-            // 视频不做逐帧检测：按放大倍数给一个固定的小降噪强度。
-            GLES20.glUniform1f(videoDenoiseLoc, 0.30f * videoEnhance)
+            // 视频不做逐帧检测：按放大倍数给一个固定的小降噪强度（高倍率下再
+            // 大会把细节磨掉，反而不像"增强"）。
+            GLES20.glUniform1f(videoDenoiseLoc, 0.22f * videoEnhance)
             val videoDrawnW = (videoQuadHalfW * screenW).coerceAtLeast(1f)
             val videoDrawnH =
                 (kotlin.math.abs(videoQuadHalfH) * screenH).coerceAtLeast(1f)

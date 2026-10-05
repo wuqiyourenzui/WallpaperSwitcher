@@ -67,9 +67,9 @@
     <string name="settings_ken_burns_hint">靜態桌布緩慢縮放，更有動態感（略增耗電）</string>
     <string name="settings_quality_enhance">畫質增強（超解析）</string>
     <string name="settings_fsr1">FSR1 EASU/RCAS 超解析</string>
-    <string name="settings_fsr1_hint">AMD FSR 1.0 的邊緣自適應放大 + 對比度自適應銳化（實驗性，僅超解析模式生效）</string>
+    <string name="settings_fsr1_hint">AMD FSR 1.0 的邊緣自適應放大 + 對比度自適應銳化（開啟即自動切到「畫質增強（超分）」）</string>
     <string name="settings_anime4k">Anime4K 超解析</string>
-    <string name="settings_anime4k_hint">Anime4K 線稿放大演算法（Original x2 單 pass 移植；實驗性，僅超解析模式生效）</string>
+    <string name="settings_anime4k_hint">Anime4K 線稿放大演算法（Original x2 單 pass 移植；開啟即自動切到「畫質增強（超分）」）</string>
     <string name="settings_rotate_direction">旋轉方向</string>
     <string name="rotate_clockwise">順時針</string>
     <string name="rotate_counter_clockwise">逆時針</string>
