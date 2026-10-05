@@ -410,9 +410,20 @@ class WallpaperRenderer(
                     // that upscaling produces. This unsharp uses the 1-source-
                     // texel neighbourhood (s0..s3) instead, pulling the
                     // transitions BETWEEN source pixels apart again.
-                    float detailAmount = 0.40 * uEnhance;
+                    float detailAmount = 0.60 * uEnhance;
                     if (uEnhanceMode > 1.5) detailAmount *= 0.75;
                     e.rgb = clamp(e.rgb + (e.rgb - blur.rgb) * detailAmount, 0.0, 1.0);
+                    // 第二尺度：2 个源纹素半径的局部对比（"通透感"）。高倍率下
+                    // 人眼对中频对比最敏感，这一层比 1 纹素的细部 unsharp 更显眼。
+                    vec2 wide2 = uSrcTexel * 2.0;
+                    vec4 c0 = texture2D(uTexture, clamp(vTexCoord + vec2(-wide2.x, 0.0), slo, shi));
+                    vec4 c1 = texture2D(uTexture, clamp(vTexCoord + vec2(wide2.x, 0.0), slo, shi));
+                    vec4 c2 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, -wide2.y), slo, shi));
+                    vec4 c3 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, wide2.y), slo, shi));
+                    vec4 wideAvg = (c0 + c1 + c2 + c3) * 0.25;
+                    float wideAmount = 0.25 * uEnhance;
+                    if (uEnhanceMode > 1.5) wideAmount *= 0.75;
+                    e.rgb = clamp(e.rgb + (e.rgb - wideAvg.rgb) * wideAmount, 0.0, 1.0);
                     float lM = luma(e.rgb);
                     float lW = luma(t0.rgb);
                     float lE = luma(t1.rgb);
@@ -770,9 +781,20 @@ class WallpaperRenderer(
                     // that upscaling produces. This unsharp uses the 1-source-
                     // texel neighbourhood (s0..s3) instead, pulling the
                     // transitions BETWEEN source pixels apart again.
-                    float detailAmount = 0.40 * uEnhance;
+                    float detailAmount = 0.60 * uEnhance;
                     if (uEnhanceMode > 1.5) detailAmount *= 0.75;
                     e.rgb = clamp(e.rgb + (e.rgb - blur.rgb) * detailAmount, 0.0, 1.0);
+                    // 第二尺度：2 个源纹素半径的局部对比（"通透感"）。高倍率下
+                    // 人眼对中频对比最敏感，这一层比 1 纹素的细部 unsharp 更显眼。
+                    vec2 wide2 = uSrcTexel * 2.0;
+                    vec4 c0 = texture2D(uTexture, clamp(vTexCoord + vec2(-wide2.x, 0.0), slo, shi));
+                    vec4 c1 = texture2D(uTexture, clamp(vTexCoord + vec2(wide2.x, 0.0), slo, shi));
+                    vec4 c2 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, -wide2.y), slo, shi));
+                    vec4 c3 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, wide2.y), slo, shi));
+                    vec4 wideAvg = (c0 + c1 + c2 + c3) * 0.25;
+                    float wideAmount = 0.25 * uEnhance;
+                    if (uEnhanceMode > 1.5) wideAmount *= 0.75;
+                    e.rgb = clamp(e.rgb + (e.rgb - wideAvg.rgb) * wideAmount, 0.0, 1.0);
                     float lM = luma(e.rgb);
                     float lW = luma(t0.rgb);
                     float lE = luma(t1.rgb);
