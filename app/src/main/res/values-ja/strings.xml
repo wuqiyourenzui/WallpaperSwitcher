@@ -63,6 +63,10 @@
     <string name="settings_ken_burns">静止画のゆっくりズーム</string>
     <string name="settings_ken_burns_hint">静止画の壁紙がゆっくり拡大縮小します。消費電力が少し増えます</string>
     <string name="settings_quality_enhance">画質強化（超解像）</string>
+    <string name="settings_fsr1">FSR1 EASU/RCAS 超解像</string>
+    <string name="settings_fsr1_hint">AMD FSR 1.0 のエッジ適応アップスケール + コントラスト適応シャープ（実験的、超解像モード時のみ）</string>
+    <string name="settings_anime4k">Anime4K 超解像</string>
+    <string name="settings_anime4k_hint">Anime4K の線画アップスケーラ（Original x2 を 1 パス移植、実験的、超解像モード時のみ）</string>
     <string name="settings_rotate_direction">回転方向</string>
     <string name="rotate_clockwise">時計回り</string>
     <string name="rotate_counter_clockwise">反時計回り</string>

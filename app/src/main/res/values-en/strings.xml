@@ -62,6 +62,10 @@
     <string name="settings_ken_burns">Slow zoom on still images</string>
     <string name="settings_ken_burns_hint">Still wallpapers zoom in and out slowly; slightly more battery</string>
     <string name="settings_quality_enhance">Quality boost (super-resolution)</string>
+    <string name="settings_fsr1">FSR1 EASU/RCAS upscaling</string>
+    <string name="settings_fsr1_hint">AMD FSR 1.0 edge-adaptive upscaling + contrast-adaptive sharpening (experimental; super-resolution mode only)</string>
+    <string name="settings_anime4k">Anime4K upscaling</string>
+    <string name="settings_anime4k_hint">Anime4K line-art upscaler (Original x2 single-pass port; experimental; super-resolution mode only)</string>
     <string name="settings_rotate_direction">Rotation direction</string>
     <string name="rotate_clockwise">Clockwise</string>
     <string name="rotate_counter_clockwise">Counter-clockwise</string>

@@ -139,6 +139,8 @@ class WallpaperRenderer(
             uniform float uSharp;
             uniform float uEnhance;
             uniform float uDenoise;
+            uniform float uEnhanceMode;
+            uniform vec2 uEasuScale;
             uniform float uAlpha;
 
             vec4 cubicWeights(float t) {
@@ -183,9 +185,185 @@ class WallpaperRenderer(
             float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
             float dist2(vec3 a, vec3 b) { vec3 d = a - b; return dot(d, d); }
 
+            // ===== 画质增强的放大算法（只在 uEnhanceMode > 0 时使用）=====
+            //
+            // FSR1 EASU: port of AMD FidelityFX FSR 1.0 [EASU] (MIT). The
+            // reference gathers 2x2 quads with textureGather; the same 12
+            // texels are addressed directly here, so it runs in the existing
+            // GLES2 single pass. [RCAS] below is the single-pass adaptation.
+            //
+            // Anime4K: single-pass port of "Upscale: Original x2" from
+            // bloc97/Anime4K v4 (MIT): luma sobel -> polynomial refinement
+            // value -> blend along the gradient direction.
+            float easuLuma(vec4 c) { return c.b * 0.5 + (c.r * 0.5 + c.g); }
+
+            void easuSet(inout vec2 dir, inout float len, float w,
+                         float lA, float lB, float lC, float lD, float lE) {
+                float lenX = max(abs(lD - lC), abs(lC - lB));
+                lenX = 1.0 / max(lenX, 1.0 / 32768.0);
+                float dirX = lD - lB;
+                dir.x += dirX * w;
+                lenX = clamp(abs(dirX) * lenX, 0.0, 1.0);
+                len += lenX * lenX * w;
+                float lenY = max(abs(lE - lC), abs(lC - lA));
+                lenY = 1.0 / max(lenY, 1.0 / 32768.0);
+                float dirY = lE - lA;
+                dir.y += dirY * w;
+                lenY = clamp(abs(dirY) * lenY, 0.0, 1.0);
+                len += lenY * lenY * w;
+            }
+
+            void easuTap(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len,
+                         float lob, float clp, vec3 c) {
+                vec2 v = vec2(off.x * dir.x + off.y * dir.y,
+                              off.x * (-dir.y) + off.y * dir.x);
+                v *= len;
+                float d2 = min(dot(v, v), clp);
+                float wB = (2.0 / 5.0) * d2 - 1.0;
+                float wA = lob * d2 - 1.0;
+                wB *= wB;
+                wA *= wA;
+                wB = (25.0 / 16.0) * wB - (25.0 / 16.0 - 1.0);
+                float w = wB * wA;
+                aC += c * w;
+                aW += w;
+            }
+
+            vec4 easuSample(vec2 uv, vec2 texel, vec2 scale) {
+                vec2 ip = uv / (texel * max(scale, vec2(0.0001)));
+                vec2 pp = ip * scale + (0.5 * scale - 0.5);
+                vec2 fp = floor(pp);
+                pp -= fp;
+                vec2 slo = texel * 0.5;
+                vec2 shi = vec2(1.0) - slo;
+                // 12-tap kernel:  b c / e f g h / i j k l / n o.
+                vec4 tB = texture2D(uTexture, clamp((fp + vec2( 0.0, -1.0)) * texel, slo, shi));
+                vec4 tC = texture2D(uTexture, clamp((fp + vec2( 1.0, -1.0)) * texel, slo, shi));
+                vec4 tE = texture2D(uTexture, clamp((fp + vec2(-1.0,  0.0)) * texel, slo, shi));
+                vec4 tF = texture2D(uTexture, clamp(fp * texel, slo, shi));
+                vec4 tG = texture2D(uTexture, clamp((fp + vec2( 1.0,  0.0)) * texel, slo, shi));
+                vec4 tH = texture2D(uTexture, clamp((fp + vec2( 2.0,  0.0)) * texel, slo, shi));
+                vec4 tI = texture2D(uTexture, clamp((fp + vec2(-1.0,  1.0)) * texel, slo, shi));
+                vec4 tJ = texture2D(uTexture, clamp((fp + vec2( 0.0,  1.0)) * texel, slo, shi));
+                vec4 tK = texture2D(uTexture, clamp((fp + vec2( 1.0,  1.0)) * texel, slo, shi));
+                vec4 tL = texture2D(uTexture, clamp((fp + vec2( 2.0,  1.0)) * texel, slo, shi));
+                vec4 tN = texture2D(uTexture, clamp((fp + vec2( 0.0,  2.0)) * texel, slo, shi));
+                vec4 tO = texture2D(uTexture, clamp((fp + vec2( 1.0,  2.0)) * texel, slo, shi));
+                float bL = easuLuma(tB); float cL = easuLuma(tC);
+                float eL = easuLuma(tE); float fL = easuLuma(tF);
+                float gL = easuLuma(tG); float hL = easuLuma(tH);
+                float iL = easuLuma(tI); float jL = easuLuma(tJ);
+                float kL = easuLuma(tK); float lL = easuLuma(tL);
+                float nL = easuLuma(tN); float oL = easuLuma(tO);
+                vec2 dir = vec2(0.0);
+                float len = 0.0;
+                easuSet(dir, len, (1.0 - pp.x) * (1.0 - pp.y), bL, eL, fL, gL, jL);
+                easuSet(dir, len, pp.x * (1.0 - pp.y), cL, fL, gL, hL, kL);
+                easuSet(dir, len, (1.0 - pp.x) * pp.y, fL, iL, jL, kL, nL);
+                easuSet(dir, len, pp.x * pp.y, gL, jL, kL, lL, oL);
+                float dirR = dot(dir, dir);
+                if (dirR < (1.0 / 32768.0)) {
+                    dir = vec2(1.0, 0.0);
+                } else {
+                    dir *= inversesqrt(dirR);
+                }
+                len *= 0.5;
+                len *= len;
+                float stretch = dot(dir, dir) *
+                    (1.0 / max(max(abs(dir.x), abs(dir.y)), 0.0001));
+                vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
+                float lob = 0.5 + ((1.0 / 4.0 - 0.04) - 0.5) * len;
+                float clp = 1.0 / max(lob, 0.0001);
+                vec3 min4 = min(min(tF.rgb, tG.rgb), min(tJ.rgb, tK.rgb));
+                vec3 max4 = max(max(tF.rgb, tG.rgb), max(tJ.rgb, tK.rgb));
+                vec3 aC = vec3(0.0);
+                float aW = 0.0;
+                easuTap(aC, aW, vec2( 0.0, -1.0) - pp, dir, len2, lob, clp, tB.rgb);
+                easuTap(aC, aW, vec2( 1.0, -1.0) - pp, dir, len2, lob, clp, tC.rgb);
+                easuTap(aC, aW, vec2(-1.0,  1.0) - pp, dir, len2, lob, clp, tI.rgb);
+                easuTap(aC, aW, vec2( 0.0,  1.0) - pp, dir, len2, lob, clp, tJ.rgb);
+                easuTap(aC, aW, vec2( 0.0,  0.0) - pp, dir, len2, lob, clp, tF.rgb);
+                easuTap(aC, aW, vec2(-1.0,  0.0) - pp, dir, len2, lob, clp, tE.rgb);
+                easuTap(aC, aW, vec2( 1.0,  1.0) - pp, dir, len2, lob, clp, tK.rgb);
+                easuTap(aC, aW, vec2( 2.0,  1.0) - pp, dir, len2, lob, clp, tL.rgb);
+                easuTap(aC, aW, vec2( 2.0,  0.0) - pp, dir, len2, lob, clp, tH.rgb);
+                easuTap(aC, aW, vec2( 1.0,  0.0) - pp, dir, len2, lob, clp, tG.rgb);
+                easuTap(aC, aW, vec2( 1.0,  2.0) - pp, dir, len2, lob, clp, tO.rgb);
+                easuTap(aC, aW, vec2( 0.0,  2.0) - pp, dir, len2, lob, clp, tN.rgb);
+                vec3 pix = min(max4, max(min4, aC / max(aW, 0.0001)));
+                return vec4(pix, tF.a);
+            }
+
+            float animePoly(float x) {
+                return 11.68129591 * x * x * x * x * x
+                     - 42.46906057 * x * x * x * x
+                     + 60.28286266 * x * x * x
+                     - 41.84451327 * x * x
+                     + 14.05517353 * x
+                     - 1.08152193;
+            }
+
+            vec4 anime4kSample(vec2 uv, vec2 texel) {
+                vec2 slo = texel * 0.5;
+                vec2 shi = vec2(1.0) - slo;
+                float tl = easuLuma(texture2D(uTexture, clamp(uv + vec2(-texel.x, -texel.y), slo, shi)));
+                float tt = easuLuma(texture2D(uTexture, clamp(uv + vec2( 0.0, -texel.y), slo, shi)));
+                float tr = easuLuma(texture2D(uTexture, clamp(uv + vec2( texel.x, -texel.y), slo, shi)));
+                float ll = easuLuma(texture2D(uTexture, clamp(uv + vec2(-texel.x,  0.0), slo, shi)));
+                float rr = easuLuma(texture2D(uTexture, clamp(uv + vec2( texel.x,  0.0), slo, shi)));
+                float bl = easuLuma(texture2D(uTexture, clamp(uv + vec2(-texel.x,  texel.y), slo, shi)));
+                float bb = easuLuma(texture2D(uTexture, clamp(uv + vec2( 0.0,  texel.y), slo, shi)));
+                float br = easuLuma(texture2D(uTexture, clamp(uv + vec2( texel.x,  texel.y), slo, shi)));
+                float xg = (tr - tl) + 2.0 * (rr - ll) + (br - bl);
+                float yg = (tl + 2.0 * tt + tr) - (bl + 2.0 * bb + br);
+                float norm = clamp(sqrt(xg * xg + yg * yg), 0.0, 1.0);
+                float dval = clamp(animePoly(norm) * 0.5, 0.0, 1.0);
+                vec4 base = bicubic4(uv, texel);
+                if (dval < 0.1 || norm <= 0.001) return base;
+                vec4 xval = texture2D(uTexture,
+                    clamp(uv + vec2(-sign(xg) * texel.x, 0.0), slo, shi));
+                vec4 yval = texture2D(uTexture,
+                    clamp(uv + vec2(0.0, -sign(yg) * texel.y), slo, shi));
+                float ratio = abs(xg) / (abs(xg) + abs(yg) + 0.0001);
+                vec4 avg = ratio * xval + (1.0 - ratio) * yval;
+                return avg * dval + base * (1.0 - dval);
+            }
+
+            vec3 rcasFilter(vec3 e, vec3 b, vec3 d, vec3 f, vec3 h, float sharpness) {
+                float bL = easuLuma(vec4(b, 1.0));
+                float dL = easuLuma(vec4(d, 1.0));
+                float eL = easuLuma(vec4(e, 1.0));
+                float fL = easuLuma(vec4(f, 1.0));
+                float hL = easuLuma(vec4(h, 1.0));
+                float mxL = max(max(bL, dL), max(fL, hL));
+                float mnL = min(min(bL, dL), min(fL, hL));
+                float nz = 0.25 * (bL + dL + fL + hL) - eL;
+                nz = clamp(abs(nz) / max(mxL - mnL, 0.0001), 0.0, 1.0);
+                nz = 1.0 - 0.5 * nz;
+                vec3 mn4 = min(min(b, d), min(f, h));
+                vec3 mx4 = max(max(b, d), max(f, h));
+                vec3 hitMin = min(mn4, e) / (4.0 * max(mx4, 0.0001) + 0.0001);
+                vec3 hitMax = (vec3(1.0) - max(mx4, e)) /
+                              (4.0 * mn4 - 4.0 + 0.0001);
+                vec3 lobe = max(-hitMin, hitMax);
+                float lobeS = max(-0.1875,
+                    min(max(max(lobe.r, lobe.g), lobe.b), 0.0)) * sharpness;
+                // FSR_RCAS_DENOISE: scale the lobe by the noise detector.
+                lobeS *= nz;
+                float rcpL = 1.0 / (4.0 * lobeS + 1.0);
+                return (lobeS * (b + d + f + h) + e) * rcpL;
+            }
+
             void main() {
                 if (uEnhance > 0.001) {
-                    vec4 e = bicubic4(vTexCoord, uSrcTexel);
+                    vec4 e;
+                    if (uEnhanceMode > 1.5) {
+                        e = anime4kSample(vTexCoord, uSrcTexel);
+                    } else if (uEnhanceMode > 0.5) {
+                        e = easuSample(vTexCoord, uSrcTexel, uEasuScale);
+                    } else {
+                        e = bicubic4(vTexCoord, uSrcTexel);
+                    }
                     // Anti-aliasing at SOURCE resolution: at 3-4x magnification
                     // the source's own stair-steps are what gets enlarged, so a
                     // small cross-blur of the neighbouring source texels smooths
@@ -234,6 +412,15 @@ class WallpaperRenderer(
                     }
                     if (uSharp <= 0.001) {
                         gl_FragColor = clamp(vec4(e.rgb, uAlpha), 0.0, 1.0);
+                        return;
+                    }
+                    if (uEnhanceMode > 0.5 && uEnhanceMode < 1.5) {
+                        // FSR1: RCAS replaces the generic unsharp (single-pass
+                        // adaptation of the reference's second pass).
+                        vec3 rcas = rcasFilter(
+                            e.rgb, t2.rgb, t0.rgb, t1.rgb, t3.rgb,
+                            clamp(uSharp * 2.5, 0.0, 1.0));
+                        gl_FragColor = clamp(vec4(rcas, uAlpha), 0.0, 1.0);
                         return;
                     }
                     // Contrast-adaptive sharpening (RCAS-style): high-contrast
@@ -294,6 +481,8 @@ class WallpaperRenderer(
             uniform float uEnhance;
 
             uniform float uDenoise;
+            uniform float uEnhanceMode;
+            uniform vec2 uEasuScale;
             vec4 cubicWeights(float t) {
                 float t2 = t * t;
                 float t3 = t2 * t;
@@ -332,9 +521,185 @@ class WallpaperRenderer(
             float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
             float dist2(vec3 a, vec3 b) { vec3 d = a - b; return dot(d, d); }
 
+            // ===== 画质增强的放大算法（只在 uEnhanceMode > 0 时使用）=====
+            //
+            // FSR1 EASU: port of AMD FidelityFX FSR 1.0 [EASU] (MIT). The
+            // reference gathers 2x2 quads with textureGather; the same 12
+            // texels are addressed directly here, so it runs in the existing
+            // GLES2 single pass. [RCAS] below is the single-pass adaptation.
+            //
+            // Anime4K: single-pass port of "Upscale: Original x2" from
+            // bloc97/Anime4K v4 (MIT): luma sobel -> polynomial refinement
+            // value -> blend along the gradient direction.
+            float easuLuma(vec4 c) { return c.b * 0.5 + (c.r * 0.5 + c.g); }
+
+            void easuSet(inout vec2 dir, inout float len, float w,
+                         float lA, float lB, float lC, float lD, float lE) {
+                float lenX = max(abs(lD - lC), abs(lC - lB));
+                lenX = 1.0 / max(lenX, 1.0 / 32768.0);
+                float dirX = lD - lB;
+                dir.x += dirX * w;
+                lenX = clamp(abs(dirX) * lenX, 0.0, 1.0);
+                len += lenX * lenX * w;
+                float lenY = max(abs(lE - lC), abs(lC - lA));
+                lenY = 1.0 / max(lenY, 1.0 / 32768.0);
+                float dirY = lE - lA;
+                dir.y += dirY * w;
+                lenY = clamp(abs(dirY) * lenY, 0.0, 1.0);
+                len += lenY * lenY * w;
+            }
+
+            void easuTap(inout vec3 aC, inout float aW, vec2 off, vec2 dir, vec2 len,
+                         float lob, float clp, vec3 c) {
+                vec2 v = vec2(off.x * dir.x + off.y * dir.y,
+                              off.x * (-dir.y) + off.y * dir.x);
+                v *= len;
+                float d2 = min(dot(v, v), clp);
+                float wB = (2.0 / 5.0) * d2 - 1.0;
+                float wA = lob * d2 - 1.0;
+                wB *= wB;
+                wA *= wA;
+                wB = (25.0 / 16.0) * wB - (25.0 / 16.0 - 1.0);
+                float w = wB * wA;
+                aC += c * w;
+                aW += w;
+            }
+
+            vec4 easuSample(vec2 uv, vec2 texel, vec2 scale) {
+                vec2 ip = uv / (texel * max(scale, vec2(0.0001)));
+                vec2 pp = ip * scale + (0.5 * scale - 0.5);
+                vec2 fp = floor(pp);
+                pp -= fp;
+                vec2 slo = texel * 0.5;
+                vec2 shi = vec2(1.0) - slo;
+                // 12-tap kernel:  b c / e f g h / i j k l / n o.
+                vec4 tB = texture2D(uTexture, clamp((fp + vec2( 0.0, -1.0)) * texel, slo, shi));
+                vec4 tC = texture2D(uTexture, clamp((fp + vec2( 1.0, -1.0)) * texel, slo, shi));
+                vec4 tE = texture2D(uTexture, clamp((fp + vec2(-1.0,  0.0)) * texel, slo, shi));
+                vec4 tF = texture2D(uTexture, clamp(fp * texel, slo, shi));
+                vec4 tG = texture2D(uTexture, clamp((fp + vec2( 1.0,  0.0)) * texel, slo, shi));
+                vec4 tH = texture2D(uTexture, clamp((fp + vec2( 2.0,  0.0)) * texel, slo, shi));
+                vec4 tI = texture2D(uTexture, clamp((fp + vec2(-1.0,  1.0)) * texel, slo, shi));
+                vec4 tJ = texture2D(uTexture, clamp((fp + vec2( 0.0,  1.0)) * texel, slo, shi));
+                vec4 tK = texture2D(uTexture, clamp((fp + vec2( 1.0,  1.0)) * texel, slo, shi));
+                vec4 tL = texture2D(uTexture, clamp((fp + vec2( 2.0,  1.0)) * texel, slo, shi));
+                vec4 tN = texture2D(uTexture, clamp((fp + vec2( 0.0,  2.0)) * texel, slo, shi));
+                vec4 tO = texture2D(uTexture, clamp((fp + vec2( 1.0,  2.0)) * texel, slo, shi));
+                float bL = easuLuma(tB); float cL = easuLuma(tC);
+                float eL = easuLuma(tE); float fL = easuLuma(tF);
+                float gL = easuLuma(tG); float hL = easuLuma(tH);
+                float iL = easuLuma(tI); float jL = easuLuma(tJ);
+                float kL = easuLuma(tK); float lL = easuLuma(tL);
+                float nL = easuLuma(tN); float oL = easuLuma(tO);
+                vec2 dir = vec2(0.0);
+                float len = 0.0;
+                easuSet(dir, len, (1.0 - pp.x) * (1.0 - pp.y), bL, eL, fL, gL, jL);
+                easuSet(dir, len, pp.x * (1.0 - pp.y), cL, fL, gL, hL, kL);
+                easuSet(dir, len, (1.0 - pp.x) * pp.y, fL, iL, jL, kL, nL);
+                easuSet(dir, len, pp.x * pp.y, gL, jL, kL, lL, oL);
+                float dirR = dot(dir, dir);
+                if (dirR < (1.0 / 32768.0)) {
+                    dir = vec2(1.0, 0.0);
+                } else {
+                    dir *= inversesqrt(dirR);
+                }
+                len *= 0.5;
+                len *= len;
+                float stretch = dot(dir, dir) *
+                    (1.0 / max(max(abs(dir.x), abs(dir.y)), 0.0001));
+                vec2 len2 = vec2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
+                float lob = 0.5 + ((1.0 / 4.0 - 0.04) - 0.5) * len;
+                float clp = 1.0 / max(lob, 0.0001);
+                vec3 min4 = min(min(tF.rgb, tG.rgb), min(tJ.rgb, tK.rgb));
+                vec3 max4 = max(max(tF.rgb, tG.rgb), max(tJ.rgb, tK.rgb));
+                vec3 aC = vec3(0.0);
+                float aW = 0.0;
+                easuTap(aC, aW, vec2( 0.0, -1.0) - pp, dir, len2, lob, clp, tB.rgb);
+                easuTap(aC, aW, vec2( 1.0, -1.0) - pp, dir, len2, lob, clp, tC.rgb);
+                easuTap(aC, aW, vec2(-1.0,  1.0) - pp, dir, len2, lob, clp, tI.rgb);
+                easuTap(aC, aW, vec2( 0.0,  1.0) - pp, dir, len2, lob, clp, tJ.rgb);
+                easuTap(aC, aW, vec2( 0.0,  0.0) - pp, dir, len2, lob, clp, tF.rgb);
+                easuTap(aC, aW, vec2(-1.0,  0.0) - pp, dir, len2, lob, clp, tE.rgb);
+                easuTap(aC, aW, vec2( 1.0,  1.0) - pp, dir, len2, lob, clp, tK.rgb);
+                easuTap(aC, aW, vec2( 2.0,  1.0) - pp, dir, len2, lob, clp, tL.rgb);
+                easuTap(aC, aW, vec2( 2.0,  0.0) - pp, dir, len2, lob, clp, tH.rgb);
+                easuTap(aC, aW, vec2( 1.0,  0.0) - pp, dir, len2, lob, clp, tG.rgb);
+                easuTap(aC, aW, vec2( 1.0,  2.0) - pp, dir, len2, lob, clp, tO.rgb);
+                easuTap(aC, aW, vec2( 0.0,  2.0) - pp, dir, len2, lob, clp, tN.rgb);
+                vec3 pix = min(max4, max(min4, aC / max(aW, 0.0001)));
+                return vec4(pix, tF.a);
+            }
+
+            float animePoly(float x) {
+                return 11.68129591 * x * x * x * x * x
+                     - 42.46906057 * x * x * x * x
+                     + 60.28286266 * x * x * x
+                     - 41.84451327 * x * x
+                     + 14.05517353 * x
+                     - 1.08152193;
+            }
+
+            vec4 anime4kSample(vec2 uv, vec2 texel) {
+                vec2 slo = texel * 0.5;
+                vec2 shi = vec2(1.0) - slo;
+                float tl = easuLuma(texture2D(uTexture, clamp(uv + vec2(-texel.x, -texel.y), slo, shi)));
+                float tt = easuLuma(texture2D(uTexture, clamp(uv + vec2( 0.0, -texel.y), slo, shi)));
+                float tr = easuLuma(texture2D(uTexture, clamp(uv + vec2( texel.x, -texel.y), slo, shi)));
+                float ll = easuLuma(texture2D(uTexture, clamp(uv + vec2(-texel.x,  0.0), slo, shi)));
+                float rr = easuLuma(texture2D(uTexture, clamp(uv + vec2( texel.x,  0.0), slo, shi)));
+                float bl = easuLuma(texture2D(uTexture, clamp(uv + vec2(-texel.x,  texel.y), slo, shi)));
+                float bb = easuLuma(texture2D(uTexture, clamp(uv + vec2( 0.0,  texel.y), slo, shi)));
+                float br = easuLuma(texture2D(uTexture, clamp(uv + vec2( texel.x,  texel.y), slo, shi)));
+                float xg = (tr - tl) + 2.0 * (rr - ll) + (br - bl);
+                float yg = (tl + 2.0 * tt + tr) - (bl + 2.0 * bb + br);
+                float norm = clamp(sqrt(xg * xg + yg * yg), 0.0, 1.0);
+                float dval = clamp(animePoly(norm) * 0.5, 0.0, 1.0);
+                vec4 base = bicubic4(uv, texel);
+                if (dval < 0.1 || norm <= 0.001) return base;
+                vec4 xval = texture2D(uTexture,
+                    clamp(uv + vec2(-sign(xg) * texel.x, 0.0), slo, shi));
+                vec4 yval = texture2D(uTexture,
+                    clamp(uv + vec2(0.0, -sign(yg) * texel.y), slo, shi));
+                float ratio = abs(xg) / (abs(xg) + abs(yg) + 0.0001);
+                vec4 avg = ratio * xval + (1.0 - ratio) * yval;
+                return avg * dval + base * (1.0 - dval);
+            }
+
+            vec3 rcasFilter(vec3 e, vec3 b, vec3 d, vec3 f, vec3 h, float sharpness) {
+                float bL = easuLuma(vec4(b, 1.0));
+                float dL = easuLuma(vec4(d, 1.0));
+                float eL = easuLuma(vec4(e, 1.0));
+                float fL = easuLuma(vec4(f, 1.0));
+                float hL = easuLuma(vec4(h, 1.0));
+                float mxL = max(max(bL, dL), max(fL, hL));
+                float mnL = min(min(bL, dL), min(fL, hL));
+                float nz = 0.25 * (bL + dL + fL + hL) - eL;
+                nz = clamp(abs(nz) / max(mxL - mnL, 0.0001), 0.0, 1.0);
+                nz = 1.0 - 0.5 * nz;
+                vec3 mn4 = min(min(b, d), min(f, h));
+                vec3 mx4 = max(max(b, d), max(f, h));
+                vec3 hitMin = min(mn4, e) / (4.0 * max(mx4, 0.0001) + 0.0001);
+                vec3 hitMax = (vec3(1.0) - max(mx4, e)) /
+                              (4.0 * mn4 - 4.0 + 0.0001);
+                vec3 lobe = max(-hitMin, hitMax);
+                float lobeS = max(-0.1875,
+                    min(max(max(lobe.r, lobe.g), lobe.b), 0.0)) * sharpness;
+                // FSR_RCAS_DENOISE: scale the lobe by the noise detector.
+                lobeS *= nz;
+                float rcpL = 1.0 / (4.0 * lobeS + 1.0);
+                return (lobeS * (b + d + f + h) + e) * rcpL;
+            }
+
             void main() {
                 if (uEnhance > 0.001) {
-                    vec4 e = bicubic4(vTexCoord, uSrcTexel);
+                    vec4 e;
+                    if (uEnhanceMode > 1.5) {
+                        e = anime4kSample(vTexCoord, uSrcTexel);
+                    } else if (uEnhanceMode > 0.5) {
+                        e = easuSample(vTexCoord, uSrcTexel, uEasuScale);
+                    } else {
+                        e = bicubic4(vTexCoord, uSrcTexel);
+                    }
                     vec2 slo = uSrcTexel * 0.5;
                     vec2 shi = vec2(1.0) - slo;
                     vec4 s0 = texture2D(uTexture, clamp(vTexCoord + vec2(-uSrcTexel.x, 0.0), slo, shi));
@@ -378,6 +743,15 @@ class WallpaperRenderer(
                     }
                     if (uSharp <= 0.001) {
                         gl_FragColor = clamp(e, 0.0, 1.0);
+                        return;
+                    }
+                    if (uEnhanceMode > 0.5 && uEnhanceMode < 1.5) {
+                        // FSR1: RCAS replaces the generic unsharp (single-pass
+                        // adaptation of the reference's second pass).
+                        vec3 rcas = rcasFilter(
+                            e.rgb, t2.rgb, t0.rgb, t1.rgb, t3.rgb,
+                            clamp(uSharp * 2.5, 0.0, 1.0));
+                        gl_FragColor = clamp(vec4(rcas, 1.0), 0.0, 1.0);
                         return;
                     }
                     float eL = dot(e.rgb, vec3(0.299, 0.587, 0.114));
@@ -513,12 +887,21 @@ class WallpaperRenderer(
     private var videoSrcTexelLoc = -1
     private var imageDenoiseLoc = -1
     private var videoDenoiseLoc = -1
+    private var imageEnhanceModeLoc = -1
+    private var imageEasuScaleLoc = -1
+    private var videoEnhanceModeLoc = -1
+    private var videoEasuScaleLoc = -1
     /**
      * 画质增强 (AI/超分): when on, a source that is being magnified is sampled
      * with a 4-tap Catmull-Rom bicubic and sharper unsharp masking (images and
      * video frames share the path). Written from the engine thread.
      */
     @Volatile private var qualityEnhance: Boolean = false
+    /**
+     * 放大算法: [com.wallpaperswitcher.engine.EnhanceMode]（0 = 内置双三次、
+     * 1 = FSR1 EASU/RCAS、2 = Anime4K）。只在增强分支（uEnhance > 0）里生效。
+     */
+    @Volatile private var enhanceMode: Int = 0
     /** 静态图的降噪强度（CPU 小样检测，随新图重算）。 */
     private var lastImageDenoise = 0f
     private var lastDenoiseBitmap: Bitmap? = null
@@ -1022,10 +1405,11 @@ class WallpaperRenderer(
      * toggle is visible immediately instead of only after the next switch.
      * Videos pick the new strength up on the next decoded frame.
      */
-    fun applyClarity(scale: Float, qualityBoost: Boolean = false) {
+    fun applyClarity(scale: Float, qualityBoost: Boolean = false, mode: Int = 0) {
         postToRenderThread {
             sharpnessScale = scale
             qualityEnhance = qualityBoost
+            enhanceMode = mode.coerceIn(0, 2)
             if (!surfaceReady || eglSurface == EGL14.EGL_NO_SURFACE) return@postToRenderThread
             val bmp = lastImageBitmap
             if (lastRenderWasImage && bmp != null && !bmp.isRecycled) {
@@ -1041,6 +1425,16 @@ class WallpaperRenderer(
      */
     fun setQualityBoost(enabled: Boolean) {
         qualityEnhance = enabled
+    }
+
+    /**
+     * 切换放大算法；静态图立刻重绘一次，视频下一帧生效。
+     */
+    fun setEnhanceMode(mode: Int) {
+        enhanceMode = mode.coerceIn(0, 2)
+        postToRenderThread {
+            if (lastRenderWasImage) renderImageFromTexture()
+        }
     }
 
     /**
@@ -1514,6 +1908,12 @@ class WallpaperRenderer(
                 1f / bitmap.height.coerceAtLeast(1),
             )
             GLES20.glUniform1f(imageDenoiseLoc, lastImageDenoise)
+            GLES20.glUniform1f(imageEnhanceModeLoc, enhanceMode.toFloat())
+            GLES20.glUniform2f(
+                imageEasuScaleLoc,
+                bitmap.width.toFloat() / drawnW.coerceAtLeast(1f),
+                bitmap.height.toFloat() / drawnH.coerceAtLeast(1f),
+            )
             GLES20.glUniform1f(imageAlphaLoc, 1f)
 
             vertexBuffer?.position(0)
@@ -1559,6 +1959,8 @@ class WallpaperRenderer(
                 bmp.width.toFloat(), bmp.height.toFloat(), screenW, screenH, lastImageScaleMode,
                 lastImageRotateCw
             )
+            val drawnW = kotlin.math.abs(quad[4]) * screenW
+            val drawnH = kotlin.math.abs(quad[5]) * screenH
             WallpaperGeometry.applyTransition(quad, transitionMode, transitionProgress)
             if (kenBurnsEnabled) {
                 WallpaperGeometry.applyKenBurns(
@@ -1597,6 +1999,12 @@ class WallpaperRenderer(
                 1f / bmp.height.coerceAtLeast(1),
             )
             GLES20.glUniform1f(imageDenoiseLoc, lastImageDenoise)
+            GLES20.glUniform1f(imageEnhanceModeLoc, enhanceMode.toFloat())
+            GLES20.glUniform2f(
+                imageEasuScaleLoc,
+                bmp.width.toFloat() / drawnW.coerceAtLeast(1f),
+                bmp.height.toFloat() / drawnH.coerceAtLeast(1f),
+            )
             GLES20.glUniform1f(imageAlphaLoc, 1f)
 
             vertexBuffer?.position(0)
@@ -3603,6 +4011,15 @@ class WallpaperRenderer(
             GLES20.glUniform1f(videoEnhanceLoc, videoEnhance)
             // 视频不做逐帧检测：按放大倍数给一个固定的小降噪强度。
             GLES20.glUniform1f(videoDenoiseLoc, 0.30f * videoEnhance)
+            val videoDrawnW = (videoQuadHalfW * screenW).coerceAtLeast(1f)
+            val videoDrawnH =
+                (kotlin.math.abs(videoQuadHalfH) * screenH).coerceAtLeast(1f)
+            GLES20.glUniform1f(videoEnhanceModeLoc, enhanceMode.toFloat())
+            GLES20.glUniform2f(
+                videoEasuScaleLoc,
+                if (videoSrcW > 0f) videoSrcW / videoDrawnW else 0f,
+                if (videoSrcH > 0f) videoSrcH / videoDrawnH else 0f,
+            )
             GLES20.glUniform2f(
                 videoSrcTexelLoc,
                 if (videoSrcW > 0f) 1f / videoSrcW else 0f,
@@ -3838,6 +4255,8 @@ class WallpaperRenderer(
         imageEnhanceLoc = GLES20.glGetUniformLocation(imageProgram, "uEnhance")
         imageSrcTexelLoc = GLES20.glGetUniformLocation(imageProgram, "uSrcTexel")
         imageDenoiseLoc = GLES20.glGetUniformLocation(imageProgram, "uDenoise")
+        imageEnhanceModeLoc = GLES20.glGetUniformLocation(imageProgram, "uEnhanceMode")
+        imageEasuScaleLoc = GLES20.glGetUniformLocation(imageProgram, "uEasuScale")
         videoTexMatLoc = GLES20.glGetUniformLocation(videoProgram, "uTexMatrix")
         videoTexLoc = GLES20.glGetUniformLocation(videoProgram, "uTexture")
         videoPosLoc = GLES20.glGetAttribLocation(videoProgram, "aPosition")
@@ -3847,6 +4266,8 @@ class WallpaperRenderer(
         videoEnhanceLoc = GLES20.glGetUniformLocation(videoProgram, "uEnhance")
         videoSrcTexelLoc = GLES20.glGetUniformLocation(videoProgram, "uSrcTexel")
         videoDenoiseLoc = GLES20.glGetUniformLocation(videoProgram, "uDenoise")
+        videoEnhanceModeLoc = GLES20.glGetUniformLocation(videoProgram, "uEnhanceMode")
+        videoEasuScaleLoc = GLES20.glGetUniformLocation(videoProgram, "uEasuScale")
         vertexBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
         backgroundBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply {
             put(floatArrayOf(-1f,-1f,0f,1f, 1f,-1f,1f,1f, -1f,1f,0f,0f, 1f,1f,1f,0f))

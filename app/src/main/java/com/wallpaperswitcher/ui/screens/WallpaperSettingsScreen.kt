@@ -79,6 +79,8 @@ fun WallpaperSettingsScreen(
     val rotateMismatchEnabled = state.rotateMismatchEnabled
     val rotateMismatchClockwise = state.rotateMismatchClockwise
     val kenBurnsEnabled = state.kenBurnsEnabled
+    val fsr1EnhanceEnabled by viewModel.fsr1EnhanceEnabled.collectAsStateWithLifecycle()
+    val anime4kEnhanceEnabled by viewModel.anime4kEnhanceEnabled.collectAsStateWithLifecycle()
 
     SettingsPageScaffold(onBack = onBack, modifier = modifier) {
         SettingsSection(title = stringResource(R.string.settings_page_wallpaper)) {
@@ -117,6 +119,27 @@ fun WallpaperSettingsScreen(
                     options = clarityOptions(),
                     selectedKey = clarityKeyOf(clarityMode),
                     onSelect = { viewModel.setClarityMode(it) },
+                )
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                // 放大算法（互斥）：只在「画质增强（超分）」模式下生效。
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.AutoAwesome,
+                    title = stringResource(R.string.settings_fsr1),
+                    subtitle = stringResource(R.string.settings_fsr1_hint),
+                    checked = fsr1EnhanceEnabled,
+                    onCheckedChange = { viewModel.setFsr1EnhanceEnabled(it) }
+                )
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.Movie,
+                    title = stringResource(R.string.settings_anime4k),
+                    subtitle = stringResource(R.string.settings_anime4k_hint),
+                    checked = anime4kEnhanceEnabled,
+                    onCheckedChange = { viewModel.setAnime4kEnhanceEnabled(it) }
                 )
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))

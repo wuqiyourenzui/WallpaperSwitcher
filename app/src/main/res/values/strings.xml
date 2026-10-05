@@ -60,6 +60,10 @@
     <string name="settings_ken_burns">静态图微动效</string>
     <string name="settings_ken_burns_hint">静态壁纸缓慢缩放，更有动态感（略增耗电）</string>
     <string name="settings_quality_enhance">画质增强（超分）</string>
+    <string name="settings_fsr1">FSR1 EASU/RCAS 超分</string>
+    <string name="settings_fsr1_hint">AMD FSR 1.0 的边缘自适应放大 + 对比度自适应锐化（实验性，仅超分模式生效）</string>
+    <string name="settings_anime4k">Anime4K 超分</string>
+    <string name="settings_anime4k_hint">Anime4K 线稿放大算法（Original x2 单 pass 移植；实验性，仅超分模式生效）</string>
     <string name="settings_rotate_direction">旋转方向</string>
     <string name="rotate_clockwise">顺时针</string>
     <string name="rotate_counter_clockwise">逆时针</string>

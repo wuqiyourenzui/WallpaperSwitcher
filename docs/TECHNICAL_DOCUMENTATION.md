@@ -6527,6 +6527,44 @@ UID，这个开关跟着掉回默认拒绝 —— 用户上一次「另一个 AI
 **验证**：单元测试 **499 条全绿**、`:app:assembleDebug` ✓、已装机（按用户要求不做
 截图分析；FXAA / 降噪的实际观感由用户在真机确认）。
 
+#### 4.9.154 超分算法可选：FSR1 EASU/RCAS 与 Anime4K（各一个开关）
+
+用户要求："做 FSR1 EASU/RCAS，Anime4K，设置增加对应开关"。
+
+**实现（图片 / 视频共用同一条增强通路）**
+
+- 新增 uniform `uEnhanceMode`（0 = 内置 4-tap 双三次、1 = FSR1、2 = Anime4K）与
+  `uEasuScale`（输入/输出尺寸比）。只有「清晰度增强 = 画质增强（超分）」且素材被
+  放大时才会进入增强分支，两条新算法都在这个分支里替换基础采样。
+- **FSR1 EASU**：从 AMD FidelityFX FSR 1.0（MIT，`ffx-fsr/ffx_fsr1.h`）移植的
+  12-tap 边缘自适应椭圆滤波。参考实现用 `textureGather` 取 2x2 quad；这里直接把它
+  需要的 12 个纹素用普通 `texture2D` 取出来，所以既不需要 GLES 3.1 也不需要加
+  FBO，仍然是一个 pass。`FsrEasuSetF` 的四个编译期分支展开成四次带权调用；
+  con0 的缩放用 shader 里的 `uEasuScale` 现算（`ip = uv / (texel * scale)`）。
+- **FSR1 RCAS**：参考实现是 EASU 之后的第二个 pass；这里用同一套屏幕像素邻域采样
+  （t0..t3）做单 pass 适配：保留 noise 检测（`nz`）、peak limiter、`FSR_RCAS_LIMIT
+  = 0.1875` 与 `FSR_RCAS_DENOISE` 的 lobe 缩放，锐度由清晰度强度映射
+  （`clamp(uSharp * 2.5, 0, 1)`）。FSR1 模式下 RCAS 取代通用的对比度自适应锐化。
+- **Anime4K**：移植 `bloc97/Anime4K`（MIT）v4 的 `Upscale: Original x2` 线稿算法
+  （v3.2 同源）：luma Sobel → 官方多项式（P5..P0）算 refinement 值 dval → 沿梯度
+  方向在 x/y 邻域之间按比例混合；dval < 0.1 时回退双三次。它是 Anime4K 里可实时、
+  可单 pass 化的那个算法；v4 的 CNN / GAN 变体（18KB~1MB 的生成着色器、多 pass +
+  LUT）没有移植，设置文案如实写明是 Original x2 单 pass 移植。
+- 降噪 / FXAA / 锐化的后处理链对三种模式都保留（FSR1 的锐化阶段换成 RCAS）。
+
+**设置**
+
+- 壁纸设置 →「清晰度增强」下面新增两个开关：「FSR1 EASU/RCAS 超分」与
+  「Anime4K 超分」。互斥（打开一个自动关另一个），都默认关闭，文案注明"仅超分模式
+  生效"。运行中的引擎由 `applyEnhanceModeFromSettings` 即时切换（静态图立刻重绘、
+  视频下一帧生效）；每次切换前 `applyClarityMode()` 也会重读两个开关。
+- 新增 `EnhanceModeTest` 4 条（模式映射 + 同时打开时 Anime4K 优先）。
+
+**验证**：单元测试 **503 条全绿**、`:app:assembleDebug` ✓；两个 fragment shader
+（含 EASU / RCAS / Anime4K）用 glslang 16.6.0 以 `#version 100`（ESSL）离线校验
+通过——视频 shader 里一处 RCAS 结果的 vec3→vec4 赋值就是这一步抓出来并修掉的；
+着色器编译失败仍有旧 fallback 着色器兜底。已装机（不截图）。
+
 ---
 
 ## 七、权限声明

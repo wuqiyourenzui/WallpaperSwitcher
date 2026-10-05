@@ -22,6 +22,7 @@ import android.view.SurfaceHolder
 import com.wallpaperswitcher.data.*
 import com.wallpaperswitcher.engine.BitmapUtils
 import com.wallpaperswitcher.engine.ClarityMode
+import com.wallpaperswitcher.engine.EnhanceMode
 import com.wallpaperswitcher.engine.GroupPick
 import com.wallpaperswitcher.engine.MediaPick
 import com.wallpaperswitcher.engine.MediaScanner
@@ -620,6 +621,12 @@ class LiveWallpaperService : WallpaperService() {
         fun applyKenBurnsFromSettings(context: Context, enabled: Boolean) {
             activeEngine?.applyKenBurnsEnabled(enabled)
         }
+
+        /** 放大算法（FSR1 / Anime4K）开关变化：立刻应用并重绘当前静态图。 */
+        fun applyEnhanceModeFromSettings(context: Context, mode: Int) {
+            activeEngine?.applyEnhanceMode(mode)
+        }
+
         /**
          * Low-memory callback forwarded from the Application: release optional
          * memory (the prefetched next image) while keeping the displayed media
@@ -1303,6 +1310,7 @@ class LiveWallpaperService : WallpaperService() {
                         renderer?.applyClarity(
                             if (isPreview) 0f else ClarityMode.sharpnessScale(mode),
                             qualityBoost = !isPreview && ClarityMode.boostsQuality(mode),
+                            mode = if (isPreview) EnhanceMode.BUILT_IN else currentEnhanceMode(),
                         )
                     }
                 } catch (_: Exception) {}
@@ -2836,6 +2844,11 @@ class LiveWallpaperService : WallpaperService() {
             renderer?.setKenBurnsEnabled(enabled)
         }
 
+        /** 放大算法变化（见 [com.wallpaperswitcher.engine.EnhanceMode]）。 */
+        internal fun applyEnhanceMode(mode: Int) {
+            renderer?.setEnhanceMode(mode)
+        }
+
         private fun applyRotateSettingsLive(enabled: Boolean, clockwise: Boolean) {
             if (autoRotateMismatch == enabled && autoRotateClockwise == clockwise) return
             autoRotateMismatch = enabled
@@ -4285,6 +4298,19 @@ class LiveWallpaperService : WallpaperService() {
             }
             renderer?.sharpnessScale = if (isPreview) 0f else ClarityMode.sharpnessScale(mode)
             renderer?.setQualityBoost(!isPreview && ClarityMode.boostsQuality(mode))
+            renderer?.setEnhanceMode(if (isPreview) EnhanceMode.BUILT_IN else currentEnhanceMode())
+        }
+
+        /** 当前放大算法：读两个互斥开关（见 [EnhanceMode]）。 */
+        private suspend fun currentEnhanceMode(): Int = try {
+            EnhanceMode.of(
+                fsr1 = db.settingsDao()
+                    .getBool(SettingsKeys.FSR1_ENHANCE_ENABLED, false),
+                anime4k = db.settingsDao()
+                    .getBool(SettingsKeys.ANIME4K_ENHANCE_ENABLED, false),
+            )
+        } catch (_: Exception) {
+            EnhanceMode.BUILT_IN
         }
 
         /**

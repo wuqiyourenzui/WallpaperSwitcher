@@ -1183,6 +1183,45 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // --- 放大算法（画质增强超分，两个开关互斥）---
+
+    /** FSR1 EASU/RCAS 开关（与 Anime4K 互斥）。 */
+    val fsr1EnhanceEnabled: StateFlow<Boolean> =
+        settingsDao.getValueFlow(SettingsKeys.FSR1_ENHANCE_ENABLED)
+            .map { it?.toBooleanStrictOrNull() ?: false }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    /** Anime4K（Original x2）开关（与 FSR1 互斥）。 */
+    val anime4kEnhanceEnabled: StateFlow<Boolean> =
+        settingsDao.getValueFlow(SettingsKeys.ANIME4K_ENHANCE_ENABLED)
+            .map { it?.toBooleanStrictOrNull() ?: false }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setFsr1EnhanceEnabled(enabled: Boolean) {
+        guardedWrite("保存超分算法失败") {
+            settingsDao.setBool(SettingsKeys.FSR1_ENHANCE_ENABLED, enabled)
+            if (enabled) settingsDao.setBool(SettingsKeys.ANIME4K_ENHANCE_ENABLED, false)
+            pushEnhanceMode()
+        }
+    }
+
+    fun setAnime4kEnhanceEnabled(enabled: Boolean) {
+        guardedWrite("保存超分算法失败") {
+            settingsDao.setBool(SettingsKeys.ANIME4K_ENHANCE_ENABLED, enabled)
+            if (enabled) settingsDao.setBool(SettingsKeys.FSR1_ENHANCE_ENABLED, false)
+            pushEnhanceMode()
+        }
+    }
+
+    /** 读出两个互斥开关并推给运行中的引擎（见 engine.EnhanceMode）。 */
+    private suspend fun pushEnhanceMode() {
+        val mode = com.wallpaperswitcher.engine.EnhanceMode.of(
+            fsr1 = settingsDao.getBool(SettingsKeys.FSR1_ENHANCE_ENABLED, false),
+            anime4k = settingsDao.getBool(SettingsKeys.ANIME4K_ENHANCE_ENABLED, false),
+        )
+        LiveWallpaperService.applyEnhanceModeFromSettings(getApplication(), mode)
+    }
+
     /** 向导用：打开系统动态壁纸选择器；false = 两个入口都打不开。 */
     fun openLiveWallpaperPicker(): Boolean = launchLiveWallpaperPicker()
 

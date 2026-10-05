@@ -102,6 +102,12 @@ object SettingsKeys {
      * delete the old row.
      */
     const val LEGACY_QUALITY_ENHANCE_ENABLED = "quality_enhance_enabled"
+    /**
+     * 画质增强的放大算法（互斥开关，只在「清晰度增强 = 画质增强（超分）」下生效）：
+     * FSR1 EASU/RCAS 与 Anime4K（Original 线稿算法）。
+     */
+    const val FSR1_ENHANCE_ENABLED = "fsr1_enhance_enabled"
+    const val ANIME4K_ENHANCE_ENABLED = "anime4k_enhance_enabled"
     // --- 订阅下载策略 (see engine.RssDownloadPolicy) ---
     /** 仅 Wi-Fi 下载: block subscription image downloads on metered networks. */
     const val RSS_WIFI_ONLY = "rss_wifi_only"

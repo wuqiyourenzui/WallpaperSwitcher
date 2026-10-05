@@ -63,6 +63,10 @@
     <string name="settings_ken_burns">Плавный зум статичных обоев</string>
     <string name="settings_ken_burns_hint">Статичные обои медленно приближаются и отдаляются; чуть больше расхода батареи</string>
     <string name="settings_quality_enhance">Улучшение качества (суперразрешение)</string>
+    <string name="settings_fsr1">Апскейл FSR1 EASU/RCAS</string>
+    <string name="settings_fsr1_hint">Пространственный апскейл AMD FSR 1.0 + адаптивная резкость (экспериментально; только в режиме суперразрешения)</string>
+    <string name="settings_anime4k">Апскейл Anime4K</string>
+    <string name="settings_anime4k_hint">Апскейлер штриховой графики Anime4K (порт Original x2 в один проход; экспериментально; только в режиме суперразрешения)</string>
     <string name="settings_rotate_direction">Направление поворота</string>
     <string name="rotate_clockwise">По часовой</string>
     <string name="rotate_counter_clockwise">Против часовой</string>
