@@ -14,6 +14,11 @@ android {
         targetSdk = 34
         versionCode = 2
         versionName = "1.1"
+        ndk {
+            // TFLite ships four ABIs of native libs; x86/x86_64 are emulator-only
+            // and alone added ~20MB to the debug APK. Real devices are ARM.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
     }
 
     buildTypes {
@@ -110,6 +115,12 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
 
     implementation("androidx.documentfile:documentfile:1.0.1")
+
+    // 离线 NN 超分: TensorFlow Lite + GPU delegate.
+    // The ESRGAN model (50x50 -> 200x200, 4x) is downloaded on first use into
+    // files/nn/ - it is not bundled in the APK.
+    implementation("org.tensorflow:tensorflow-lite:2.16.1")
+    implementation("org.tensorflow:tensorflow-lite-gpu:2.16.1")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 

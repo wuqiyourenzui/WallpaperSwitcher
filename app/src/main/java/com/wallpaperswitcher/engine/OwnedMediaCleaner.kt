@@ -176,5 +176,5 @@ object OwnedMediaCleaner {
     private val OWNED_NAME = Regex("""[0-9a-f]{64}\.[A-Za-z0-9]{2,5}""")
 
     /** App-private media directories this cleaner owns (never user files). */
-    private val MANAGED_DIRS = listOf("rss", "online", "shared")
+    private val MANAGED_DIRS = listOf("rss", "online", "shared", "nn")
 }

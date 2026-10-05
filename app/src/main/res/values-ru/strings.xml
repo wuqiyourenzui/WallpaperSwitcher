@@ -209,6 +209,15 @@
     <string name="media_type_video">Видео</string>
     <string name="cd_more">Ещё</string>
     <string name="menu_set_as_wallpaper">Сделать обоями</string>
+    <!-- Офлайн NN-апскейл (TFLite ESRGAN 4x) -->
+    <string name="nn_upscale_action">AI-апскейл (4x)</string>
+    <string name="nn_upscale_starting">AI-апскейл… (при первом запуске скачается модель ~5 МБ, это может занять время)</string>
+    <string name="nn_upscale_done">AI-апскейл завершён: изображение 4x добавлено в группу</string>
+    <string name="nn_upscale_failed">Не удалось выполнить AI-апскейл</string>
+    <string name="nn_upscale_too_large">Изображение уже достаточно чёткое (>0,5 МП)</string>
+    <string name="nn_upscale_video">Офлайн AI-апскейл видео пока не поддерживается</string>
+    <string name="nn_upscale_model_failed">Не удалось скачать модель; проверьте сеть</string>
+    <string name="nn_upscale_already">Это изображение уже было улучшено</string>
     <string name="empty_images_title">Обоев пока нет</string>
     <string name="empty_images_hint">Нажмите «Добавить обои», чтобы начать</string>
     <string name="dialog_add_wallpaper_title">Добавить обои</string>

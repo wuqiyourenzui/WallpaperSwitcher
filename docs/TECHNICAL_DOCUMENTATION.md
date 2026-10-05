@@ -6608,6 +6608,34 @@ UID，这个开关跟着掉回默认拒绝 —— 用户上一次「另一个 AI
 两个 shader 重新过 glslang ESSL 校验；504 条单测全绿、`assembleDebug`、装机启动
 均正常。
 
+#### 4.9.155 真正的离线 NN 超分（TFLite ESRGAN 4x，静态图）
+
+用户要求"做真正的离线 NN 超分"。按调研结论（`docs/research-ai-upscaling-2026-10-05.md`）
+落地为**静态图的一次性 4x 超分**：
+
+- **运行时**：TensorFlow Lite 2.16.1 + ESRGAN 模型（TF 官方 super_resolution 示例
+  同款：50x50 → 200x200、float32 RGB 0..255）。模型**不打进 APK**，首次使用时从
+  Google 官方地址
+  （`storage.googleapis.com/download.tensorflow.org/models/tflite/esrgan/ESRGAN.tflite`，
+  实测 4,993,712 字节）下载到 `files/nn/esrgan.tflite` 并校验大小。
+- **推理**：`engine/NnUpscaler` 按 50x50 分块、输出 200x200 贴回；**最后一行/列的
+  块贴边对齐**（`tileOrigins` 纯函数 + 4 条单测），不补黑边；GPU delegate 优先，
+  构造或首次推理失败自动退回 CPU 4 线程；输入面积上限 0.5MP（360p 在范围内，再大
+  就明显不值得且容易 OOM）。
+- **入口**：分组九宫格图片的 ⋮ 菜单 →「AI 超分（4x）」（仅静态图；视频提示暂不
+  支持）。结果保存为 `files/nn/<sha1(uri)>_x4.jpg`，并以新行加入**同一分组**
+  （显示名带 "(AI 4x)"）——超分只做一次，之后就是普通素材，不影响运行时功耗；
+  重复点同一张会提示"已经超分过"。`files/nn` 纳入孤儿清理与存储统计。
+- **依赖与体积**：+`tensorflow-lite` / `tensorflow-lite-gpu`；`abiFilters` 只保留
+  arm64-v8a / armeabi-v7a（x86 是模拟器专用，debug APK 47.6MB → 32.8MB）。
+- **已知事项**：模型来源的许可证仍拿不到一手声明（见调研文档 §3.1），因此选择
+  **运行时下载**而不是打进包；对外发布前需要确认。视频的离线重编码不在本次范围。
+- **与去重的互动**：超分图和原图内容一致，存储页的「重复图片清理」会把它们视为
+  同图不同尺寸、保留 4x 的那张——通常是想要的，但清理会删掉原图。
+
+**验证**：单元测试 **508 条全绿**（新增 `NnUpscalerTest` 4 条）、
+`:app:assembleDebug` ✓、已装机（不截图）。
+
 ---
 
 ## 七、权限声明

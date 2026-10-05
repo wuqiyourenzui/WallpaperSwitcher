@@ -209,6 +209,15 @@
     <string name="media_type_video">動画</string>
     <string name="cd_more">その他</string>
     <string name="menu_set_as_wallpaper">壁紙に設定</string>
+    <!-- オフライン NN 超解像（TFLite ESRGAN 4x） -->
+    <string name="nn_upscale_action">AI 超解像（4x）</string>
+    <string name="nn_upscale_starting">AI 超解像中…（初回は約 5MB のモデルをダウンロードします）</string>
+    <string name="nn_upscale_done">AI 超解像が完了しました：4x 画像をこのグループに追加しました</string>
+    <string name="nn_upscale_failed">AI 超解像に失敗しました</string>
+    <string name="nn_upscale_too_large">この画像は十分に精細です（0.5MP 超）</string>
+    <string name="nn_upscale_video">動画のオフライン AI 超解像は未対応です</string>
+    <string name="nn_upscale_model_failed">AI モデルのダウンロードに失敗しました。ネットワークを確認してください</string>
+    <string name="nn_upscale_already">この画像はすでに超解像済みです</string>
     <string name="empty_images_title">壁紙がまだありません</string>
     <string name="empty_images_hint">「壁紙を追加」から始めましょう</string>
     <string name="dialog_add_wallpaper_title">壁紙を追加</string>

@@ -209,6 +209,15 @@
     <string name="media_type_video">동영상</string>
     <string name="cd_more">더보기</string>
     <string name="menu_set_as_wallpaper">배경 화면으로 설정</string>
+    <!-- 오프라인 NN 초해상도(TFLite ESRGAN 4x) -->
+    <string name="nn_upscale_action">AI 초해상도(4x)</string>
+    <string name="nn_upscale_starting">AI 초해상도 처리 중…(첫 사용 시 약 5MB 모델을 내려받습니다)</string>
+    <string name="nn_upscale_done">AI 초해상도 완료: 4x 이미지를 현재 그룹에 추가했습니다</string>
+    <string name="nn_upscale_failed">AI 초해상도 실패</string>
+    <string name="nn_upscale_too_large">이미 충분히 선명합니다(0.5MP 초과)</string>
+    <string name="nn_upscale_video">동영상은 오프라인 AI 초해상도를 지원하지 않습니다</string>
+    <string name="nn_upscale_model_failed">AI 모델 다운로드 실패. 네트워크를 확인해 주세요</string>
+    <string name="nn_upscale_already">이 이미지는 이미 초해상도 처리되었습니다</string>
     <string name="empty_images_title">아직 배경 화면이 없습니다</string>
     <string name="empty_images_hint">“배경 화면 추가”로 시작하세요</string>
     <string name="dialog_add_wallpaper_title">배경 화면 추가</string>

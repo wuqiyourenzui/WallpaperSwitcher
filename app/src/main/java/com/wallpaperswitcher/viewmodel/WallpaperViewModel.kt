@@ -917,6 +917,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 rss = scan("rss"),
                 online = scan("online"),
                 shared = scan("shared"),
+                nn = scan("nn"),
             )
         } catch (e: Exception) {
             AppLog.w(TAG, "storageUsage failed: ${e.javaClass.simpleName}")
@@ -1735,6 +1736,138 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 else -> str(R.string.share_import_error)
             }
             _toastMessage.emit(message)
+        }
+    }
+
+    /**
+     * 离线 NN 超分（4x，静态图专用）：TensorFlow Lite + ESRGAN。
+     *
+     * 结果写到 `files/nn/<sha1(uri)>_x4.jpg`，并作为新的媒体行加入同一个分组——
+     * 超分只做一次，之后这张 4x 图就是普通素材，不影响运行时功耗。视频不在本次
+     * 范围（逐帧 NN 不可行，离线重编码是另一个大工程）。
+     */
+    fun upscaleImageWithNn(image: WallpaperImage) {
+        viewModelScope.launch {
+            if (image.mediaType != MediaTypes.IMAGE) {
+                _toastMessage.emit(str(R.string.nn_upscale_video))
+                return@launch
+            }
+            val app = getApplication<Application>()
+            val output = com.wallpaperswitcher.engine.NnUpscaler.outputFile(app, image.uri)
+            try {
+                if (output.uri in imageDao.getUrisByGroup(image.groupId)) {
+                    _toastMessage.emit(str(R.string.nn_upscale_already))
+                    return@launch
+                }
+                if (!output.file.isFile) {
+                    when (val loaded = loadForNnUpscale(image.uri)) {
+                        is NnLoad.TooLarge -> {
+                            _toastMessage.emit(str(R.string.nn_upscale_too_large))
+                            return@launch
+                        }
+                        is NnLoad.Failed -> {
+                            _toastMessage.emit(str(R.string.nn_upscale_failed))
+                            return@launch
+                        }
+                        is NnLoad.Ok -> {
+                            _toastMessage.emit(str(R.string.nn_upscale_starting))
+                            if (!com.wallpaperswitcher.engine.NnUpscaler.ensureModel(app)) {
+                                loaded.bitmap.recycle()
+                                _toastMessage.emit(str(R.string.nn_upscale_model_failed))
+                                return@launch
+                            }
+                            val enhanced = com.wallpaperswitcher.engine.NnUpscaler
+                                .upscale(app, loaded.bitmap)
+                            loaded.bitmap.recycle()
+                            if (enhanced == null) {
+                                _toastMessage.emit(str(R.string.nn_upscale_failed))
+                                return@launch
+                            }
+                            val saved = withContext(Dispatchers.IO) {
+                                try {
+                                    java.io.FileOutputStream(output.file).use { out ->
+                                        enhanced.compress(
+                                            android.graphics.Bitmap.CompressFormat.JPEG,
+                                            95,
+                                            out,
+                                        )
+                                    }
+                                    true
+                                } catch (e: Exception) {
+                                    AppLog.w(TAG, "nn save failed: ${e.javaClass.simpleName}")
+                                    output.file.delete()
+                                    false
+                                }
+                            }
+                            enhanced.recycle()
+                            if (!saved) {
+                                _toastMessage.emit(str(R.string.nn_upscale_failed))
+                                return@launch
+                            }
+                        }
+                    }
+                }
+                // 读一下实际尺寸入库（4x 后的宽高）。
+                val bounds = android.graphics.BitmapFactory.Options()
+                    .apply { inJustDecodeBounds = true }
+                android.graphics.BitmapFactory.decodeFile(output.file.absolutePath, bounds)
+                val baseName = image.displayName.substringBeforeLast('.').ifBlank { "image" }
+                imageDao.insert(
+                    WallpaperImage(
+                        groupId = image.groupId,
+                        uri = output.uri,
+                        displayName = "$baseName (AI 4x).jpg",
+                        mediaType = MediaTypes.IMAGE,
+                        isFromFolder = false,
+                        folderPath = "nn",
+                        width = bounds.outWidth.coerceAtLeast(0),
+                        height = bounds.outHeight.coerceAtLeast(0),
+                    ),
+                )
+                com.wallpaperswitcher.engine.MediaPick.invalidateEnabledIds()
+                WallpaperSwitchService.poke(app)
+                _toastMessage.emit(str(R.string.nn_upscale_done))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.e(TAG, "nn upscale failed", e)
+                _toastMessage.emit(str(R.string.nn_upscale_failed))
+            }
+        }
+    }
+
+    private sealed interface NnLoad {
+        data class Ok(val bitmap: android.graphics.Bitmap) : NnLoad
+        data object TooLarge : NnLoad
+        data object Failed : NnLoad
+    }
+
+    /**
+     * 读取 NN 超分的源图：先用 bounds 判断尺寸（超过 0.5MP 直接拒绝，不解整张图），
+     * content:// 与 file:// 都支持。
+     */
+    private suspend fun loadForNnUpscale(uri: String): NnLoad = withContext(Dispatchers.IO) {
+        try {
+            val parsed = android.net.Uri.parse(uri)
+            fun open() = if (parsed.scheme == "file") {
+                java.io.FileInputStream(parsed.path.orEmpty())
+            } else {
+                getApplication<Application>().contentResolver.openInputStream(parsed)
+            }
+            val bounds = android.graphics.BitmapFactory.Options()
+                .apply { inJustDecodeBounds = true }
+            open()?.use { android.graphics.BitmapFactory.decodeStream(it, null, bounds) }
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext NnLoad.Failed
+            if (bounds.outWidth.toLong() * bounds.outHeight >
+                com.wallpaperswitcher.engine.NnUpscaler.MAX_INPUT_PIXELS
+            ) {
+                return@withContext NnLoad.TooLarge
+            }
+            val bitmap = open()?.use { android.graphics.BitmapFactory.decodeStream(it) }
+            if (bitmap == null) NnLoad.Failed else NnLoad.Ok(bitmap)
+        } catch (e: Exception) {
+            AppLog.w(TAG, "nn load failed: ${e.javaClass.simpleName}")
+            NnLoad.Failed
         }
     }
 

@@ -443,6 +443,7 @@ fun GroupDetailScreen(
                         // confirm button applies the media (engine switch when
                         // the live wallpaper runs, otherwise a static apply).
                         val onSetWallpaper = remember(image.id) { { previewImage = image } }
+                        val onNnUpscale = remember(image.id) { { viewModel.upscaleImageWithNn(image) } }
                         ImageGridItem(
                             image = image,
                             isSelected = isImageSelected,
@@ -450,6 +451,7 @@ fun GroupDetailScreen(
                             onClick = onClick,
                             onDelete = onDelete,
                             onSetWallpaper = onSetWallpaper,
+                            onNnUpscale = onNnUpscale,
                         )
                     }
                 }
@@ -991,7 +993,8 @@ private fun ImageGridItem(
     selectionMode: Boolean,
     onClick: () -> Unit,
     onDelete: () -> Unit,
-    onSetWallpaper: () -> Unit
+    onSetWallpaper: () -> Unit,
+    onNnUpscale: () -> Unit
 ) {
     var showMenu by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -1135,6 +1138,13 @@ private fun ImageGridItem(
                             onClick = { showMenu = false; onSetWallpaper() },
                             leadingIcon = { Icon(Icons.Filled.Wallpaper, null) }
                         )
+                        if (image.mediaType == com.wallpaperswitcher.engine.MediaTypes.IMAGE) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.nn_upscale_action)) },
+                                onClick = { showMenu = false; onNnUpscale() },
+                                leadingIcon = { Icon(Icons.Filled.AutoAwesome, null) }
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.action_delete)) },
                             onClick = { showMenu = false; onDelete() },
