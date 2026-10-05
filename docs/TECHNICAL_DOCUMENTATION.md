@@ -6369,6 +6369,49 @@ UID，这个开关跟着掉回默认拒绝 —— 用户上一次「另一个 AI
 `WallpaperGeometryKenBurnsTest` 6 条，含 7 语言键对齐），`:app:assembleDebug` ✓、
 已装机；按用户要求本轮不做截图分析，页面效果由用户直接核对。
 
+#### 4.9.151 画质增强（超分）：低画质图片与视频
+
+用户要求："搜索有关 AI 画质增强的内容，对于低画质图片和视频增加 AI 画质增强的
+功能"。技术调研（一手来源、含失败结论）见
+`docs/research-ai-upscaling-2026-10-05.md`。核心结论：
+
+- **真 NN 逐帧视频超分在手机上不可行**：TF 官方 TFLite 超分示例自己把"用蒸馏
+  模型做视频超分"列为 Future work；Anime4K 官方 README 的对比把 waifu2x /
+  Real-ESRGAN 归为非实时。
+- **真 NN 静态图超分可行但代价明确**：示例的 `ESRGAN.tflite` 实测 4,993,712
+  字节、输入 50×50 → 输出 200×200（4x）；模型来源（TF Hub
+  `captain-pool/esrgan-tf2`）**拿不到一手许可证声明**（TF Hub 页面静态不可抓、
+  对应 GitHub 仓库 404），因此本期不进包。
+- **实时路线只能是 GPU 着色器**：FSR 1.0 的 EASU 依赖 `gather4`（需要 GLES 3.1），
+  Anime4K 是 mpv 的多 pass 大着色器；都不适配当前 GLES 2.0 单 pass 引擎。
+  高通的 SGSR 只有 Unity/URP 包，是游戏渲染管线组件，不适用。
+
+本期实现（不新增任何依赖）：
+
+1. `WallpaperGeometry.enhancementStrength()`：素材放大 <1.25x 不增强，线性到
+   4x 满强度；FIT 取较小轴、FILL/STRETCH 取较大轴（与既有清晰度曲线同一套放大
+   倍数口径）。
+2. 图像与视频 fragment shader 增加 `uEnhance` / `uSrcTexel` 通路：4-tap
+   Catmull-Rom 双三次（每对样本用一个硬件双线性取样复现 16 tap 双三次；配对
+   数学在 `WallpaperGeometry.cubicPairs()` 里与直接权重对照做单测）+ 2x 强度的
+   unsharp。`uEnhance == 0` 时完全走原路径，行为与 GPU 成本不变。
+3. 视频的双三次步长用**实际解码尺寸**（decode-cap 之后），图片用 bitmap 尺寸；
+   每帧/每次绘制作为 uniform 传入。
+4. **着色器自动回退**：新源编译失败就用改动前的
+   `IMAGE/VIDEO_FRAGMENT_SHADER_FALLBACK`，增强静默失效——任何驱动都不能因为
+   这次改动出现黑屏。
+5. 设置 →「壁纸设置」新增「**画质增强（超分）**」（默认关）。运行中的引擎由
+   `applyQualityEnhanceFromSettings` 即时切换（静态图立即重绘，视频下一帧生效），
+   每次切换/重绘前也会重读设置，引擎被系统重建后同样生效。
+
+命名按调研结论保持克制：实现是 GPU 着色器超分而非神经网络，因此设置名不写
+"AI"。二期若要做真 NN，只建议对静态图做离线 4x 超分，前提是先解决模型许可证
+与 patch 推理耗时（一张 720p 约 350 个 50×50 patch）。
+
+**验证**：单元测试 **474 条全绿**（新增 `WallpaperGeometryEnhanceTest` 7 条），
+`:app:assembleDebug` ✓、已装机（按用户要求不做截图分析；GPU 超分的观感由用户
+在真机上确认）。
+
 ---
 
 ## 七、权限声明
