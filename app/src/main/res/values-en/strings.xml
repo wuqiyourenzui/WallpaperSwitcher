@@ -183,6 +183,8 @@
     <string name="home_groups_title">Wallpaper groups</string>
     <string name="cd_select_groups">Select groups</string>
     <string name="cd_select_sources">Select subscriptions</string>
+    <string name="cd_rss_view_grid">Switch to thumbnail grid</string>
+    <string name="cd_rss_view_list">Switch to list</string>
     <string name="dialog_delete_sources_message">Delete the %1$d selected subscriptions? Pictures already added to groups are kept.</string>
     <string name="action_new_group">New group</string>
     <string name="home_status_home_lock">Home + lock screen running</string>

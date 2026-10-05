@@ -18,6 +18,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ViewList
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
@@ -314,6 +315,21 @@ fun WallpaperSwitcherApp(
                 actions = {
                     when (val screen = currentScreen) {
                         is Screen.Subscriptions -> {
+                            // 显示方式切换：卡片列表 ⇄ 缩略图网格（站点图标）。
+                            // 持久化在设置里，重进/重启后保持。
+                            val gridView by viewModel.rssGridView
+                                .collectAsStateWithLifecycle()
+                            IconButton(onClick = { viewModel.setRssGridView(!gridView) }) {
+                                Icon(
+                                    if (gridView) Icons.AutoMirrored.Filled.ViewList
+                                    else Icons.Filled.GridView,
+                                    contentDescription = stringResource(
+                                        if (gridView) R.string.cd_rss_view_list
+                                        else R.string.cd_rss_view_grid
+                                    ),
+                                    modifier = Modifier.size(22.dp),
+                                )
+                            }
                             IconButton(onClick = { sourceSelectionRequest++ }) {
                                 Icon(
                                     Icons.Filled.Checklist,

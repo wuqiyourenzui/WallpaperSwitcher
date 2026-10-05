@@ -116,6 +116,11 @@ object SettingsKeys {
     // --- 订阅下载策略 (see engine.RssDownloadPolicy) ---
     /** 仅 Wi-Fi 下载: block subscription image downloads on metered networks. */
     const val RSS_WIFI_ONLY = "rss_wifi_only"
+    /**
+     * 订阅源列表的显示方式：false = 卡片列表（默认），true = 缩略图网格
+     * （站点图标，见 engine.RssIcons）。只影响界面，不触发任何抓取。
+     */
+    const val RSS_GRID_VIEW = "rss_grid_view"
     /** Daily download cap in MB; 0 = unlimited. */
     const val RSS_DAILY_LIMIT_MB = "rss_daily_limit_mb"
     /** Auto-delete unreferenced downloads older than N days; 0 = off. */

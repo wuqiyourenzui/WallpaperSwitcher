@@ -159,6 +159,8 @@
     <string name="home_groups_title">Grupos de fondos</string>
     <string name="cd_select_groups">Seleccionar varios grupos</string>
     <string name="cd_select_sources">Seleccionar varias suscripciones</string>
+    <string name="cd_rss_view_grid">Cambiar a cuadrícula de miniaturas</string>
+    <string name="cd_rss_view_list">Cambiar a lista</string>
     <string name="dialog_delete_sources_message">¿Eliminar las %1$d suscripciones seleccionadas? Las imágenes ya añadidas a grupos se conservan.</string>
     <string name="action_new_group">Grupo nuevo</string>
     <string name="home_status_home_lock">Inicio + bloqueo activos</string>

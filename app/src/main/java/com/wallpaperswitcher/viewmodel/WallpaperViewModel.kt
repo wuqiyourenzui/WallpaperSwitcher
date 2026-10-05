@@ -136,6 +136,20 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         db.rssSourceDao().observeAll()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    /**
+     * 订阅源列表的显示方式：false = 卡片列表（默认，老安装不变），
+     * true = 缩略图网格（见 engine.RssIcons）。
+     */
+    val rssGridView: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.RSS_GRID_VIEW)
+        .map { it?.toBooleanStrictOrNull() ?: false }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+
+    fun setRssGridView(enabled: Boolean) {
+        guardedWrite("保存订阅显示方式失败") {
+            settingsDao.setBool(SettingsKeys.RSS_GRID_VIEW, enabled)
+        }
+    }
+
     val serviceEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.SERVICE_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: false }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)

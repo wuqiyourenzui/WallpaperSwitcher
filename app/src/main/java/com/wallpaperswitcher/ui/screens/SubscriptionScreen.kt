@@ -48,6 +48,7 @@ import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.MenuBook
 import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.outlined.Circle
@@ -55,6 +56,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Divider
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledTonalButton
@@ -142,6 +145,7 @@ fun SubscriptionScreen(
         androidx.compose.foundation.lazy.rememberLazyListState(),
 ) {
     val sources by viewModel.rssSources.collectAsStateWithLifecycle()
+    val gridView by viewModel.rssGridView.collectAsStateWithLifecycle()
     var showAdd by remember { mutableStateOf(false) }
     var showImport by remember { mutableStateOf(false) }
     LaunchedEffect(prefillImport) {
@@ -193,51 +197,74 @@ fun SubscriptionScreen(
                 modifier = Modifier.align(Alignment.Center).padding(32.dp),
             )
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                // Owned by the caller so entering a source (which swaps this
-                // screen out) does not scroll the card list back to the top.
-                state = listState,
-                contentPadding = PaddingValues(16.dp, 4.dp, 16.dp, 96.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(sources, key = { it.id }) { source ->
-                    RssSourceCard(
-                        source = source,
-                        selectionMode = selectionMode,
-                        isSelected = selectedIds.containsKey(source.id),
-                        onOpen = {
-                            if (selectionMode) {
-                                if (selectedIds.containsKey(source.id)) {
-                                    selectedIds.remove(source.id)
-                                } else {
-                                    selectedIds[source.id] = true
-                                }
-                            } else {
-                                // 网页型源直接全屏浏览器打开：单 URL 源、以及
-                                // 规则要运行时从远程 jsLib 解出来的 JS 源
-                                //（我们跑不了，以前点进去只能看到「不支持的 JS 源」）。
-                                if (com.wallpaperswitcher.engine.legado.LegadoRss
-                                        .isBrowseOnly(source)
-                                ) {
-                                    onOpenBrowser(source)
-                                } else {
-                                    onOpenArticles(source.id)
-                                }
-                            }
-                        },
-                        onLongClick = {
-                            if (!selectionMode) {
-                                selectedIds.clear()
-                                selectedIds[source.id] = true
-                                selectionMode = true
-                            }
-                        },
-                        onDelete = { deleteTarget = source },
-                        // 浏览器打开：复用"网页型源"那条路径（同一屏全屏浏览器，
-                        // 带源的 header/cookie），不新增导航目标。
-                        onOpenInBrowser = { onOpenBrowser(source) },
-                    )
+            val onOpen: (RssSource) -> Unit = { source ->
+                if (selectionMode) {
+                    if (selectedIds.containsKey(source.id)) {
+                        selectedIds.remove(source.id)
+                    } else {
+                        selectedIds[source.id] = true
+                    }
+                } else {
+                    // 网页型源直接全屏浏览器打开：单 URL 源、以及
+                    // 规则要运行时从远程 jsLib 解出来的 JS 源
+                    //（我们跑不了，以前点进去只能看到「不支持的 JS 源」）。
+                    if (com.wallpaperswitcher.engine.legado.LegadoRss.isBrowseOnly(source)) {
+                        onOpenBrowser(source)
+                    } else {
+                        onOpenArticles(source.id)
+                    }
+                }
+            }
+            val onLongClick: (RssSource) -> Unit = { source ->
+                if (!selectionMode) {
+                    selectedIds.clear()
+                    selectedIds[source.id] = true
+                    selectionMode = true
+                }
+            }
+            if (gridView) {
+                // 缩略图网格：站点图标 + 名称（订阅源不缓存文章，见 engine.RssIcons）。
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(140.dp),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp, 4.dp, 16.dp, 96.dp),
+                    horizontalArrangement = Arrangement.spacedBy(GRID_SPACING),
+                    verticalArrangement = Arrangement.spacedBy(GRID_SPACING),
+                ) {
+                    items(sources, key = { it.id }) { source ->
+                        RssSourceTile(
+                            source = source,
+                            selectionMode = selectionMode,
+                            isSelected = selectedIds.containsKey(source.id),
+                            onOpen = { onOpen(source) },
+                            onLongClick = { onLongClick(source) },
+                            onDelete = { deleteTarget = source },
+                            onOpenInBrowser = { onOpenBrowser(source) },
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    // Owned by the caller so entering a source (which swaps this
+                    // screen out) does not scroll the card list back to the top.
+                    state = listState,
+                    contentPadding = PaddingValues(16.dp, 4.dp, 16.dp, 96.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(sources, key = { it.id }) { source ->
+                        RssSourceCard(
+                            source = source,
+                            selectionMode = selectionMode,
+                            isSelected = selectedIds.containsKey(source.id),
+                            onOpen = { onOpen(source) },
+                            onLongClick = { onLongClick(source) },
+                            onDelete = { deleteTarget = source },
+                            // 浏览器打开：复用"网页型源"那条路径（同一屏全屏浏览器，
+                            // 带源的 header/cookie），不新增导航目标。
+                            onOpenInBrowser = { onOpenBrowser(source) },
+                        )
+                    }
                 }
             }
         }
@@ -428,6 +455,154 @@ private fun RssSourceCard(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 }
             )
+        }
+    }
+}
+
+/**
+ * 缩略图网格里的一格：站点图标 + 名称 + 状态。
+ *
+ * 订阅源按设计不在本地缓存文章（进源实时加载、退出即清空），所以这里能显示的
+ * 图像只有站点自己的 `/favicon.ico`（见 [com.wallpaperswitcher.engine.RssIcons]）；
+ * 解析不出主机（`legado://` 分享链接等）或图标取不到时退回占位图标。
+ *
+ * 交互与列表卡片一致：点开、长按进多选；列表卡片上的「浏览器打开 / 删除」在网格
+ * 里收进右上角的 ⋮ 菜单（与分组网格的媒体卡片同一形态），选中态用描边 + 勾号表达。
+ */
+@Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+private fun RssSourceTile(
+    source: RssSource,
+    selectionMode: Boolean = false,
+    isSelected: Boolean = false,
+    onOpen: () -> Unit,
+    onLongClick: () -> Unit = {},
+    onDelete: () -> Unit,
+    onOpenInBrowser: () -> Unit = {},
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val iconUrl = remember(source.url) {
+        com.wallpaperswitcher.engine.RssIcons.iconUrl(source.url)
+    }
+    val browserOnly = remember(source.id, source.rawJson) {
+        com.wallpaperswitcher.engine.legado.LegadoRss.isBrowseOnly(source)
+    }
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(onClick = onOpen, onLongClick = onLongClick)
+            .then(
+                if (isSelected) {
+                    Modifier.border(
+                        2.dp,
+                        LocalAccentColor.current,
+                        RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner),
+                    )
+                } else {
+                    Modifier
+                }
+            ),
+        shape = RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isSelected) {
+                MaterialTheme.colorScheme.secondaryContainer
+            } else {
+                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+            }
+        )
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1.35f)
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (iconUrl != null) {
+                    AsyncImage(
+                        model = imageRequest(context, iconUrl, null),
+                        contentDescription = null,
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .size(52.dp)
+                            .clip(RoundedCornerShape(14.dp)),
+                    )
+                } else {
+                    Icon(
+                        Icons.Outlined.MenuBook,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(34.dp),
+                    )
+                }
+                if (selectionMode) {
+                    Icon(
+                        if (isSelected) Icons.Filled.CheckCircle else Icons.Outlined.Circle,
+                        contentDescription = null,
+                        tint = if (isSelected) LocalAccentColor.current
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp)
+                            .size(20.dp),
+                    )
+                } else {
+                    Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                        IconButton(
+                            onClick = { showMenu = true },
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.MoreVert,
+                                contentDescription = stringResource(R.string.cd_more),
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = showMenu,
+                            onDismissRequest = { showMenu = false },
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.rss_open_in_browser)) },
+                                onClick = {
+                                    showMenu = false
+                                    onOpenInBrowser()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.action_delete)) },
+                                onClick = {
+                                    showMenu = false
+                                    onDelete()
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                Text(
+                    source.name,
+                    style = MaterialTheme.typography.titleSmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    if (browserOnly) OnlineSourceRules.logSafeHost(source.url)
+                    else rssStatusText(source),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (source.lastErrorAt > 0L && !browserOnly) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }

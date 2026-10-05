@@ -159,6 +159,8 @@
     <string name="home_groups_title">Группы обоев</string>
     <string name="cd_select_groups">Выбрать несколько групп</string>
     <string name="cd_select_sources">Выбрать несколько подписок</string>
+    <string name="cd_rss_view_grid">Переключить на сетку миниатюр</string>
+    <string name="cd_rss_view_list">Переключить на список</string>
     <string name="dialog_delete_sources_message">Удалить выбранные подписки (%1$d)? Изображения, уже добавленные в группы, останутся.</string>
     <string name="action_new_group">Новая группа</string>
     <string name="home_status_home_lock">Стол + блокировка работают</string>

@@ -159,6 +159,8 @@
     <string name="home_groups_title">배경 화면 그룹</string>
     <string name="cd_select_groups">그룹 여러 개 선택</string>
     <string name="cd_select_sources">구독 소스 여러 개 선택</string>
+    <string name="cd_rss_view_grid">썸네일 그리드로 전환</string>
+    <string name="cd_rss_view_list">목록으로 전환</string>
     <string name="dialog_delete_sources_message">선택한 구독 %1$d개를 삭제할까요? 그룹에 추가한 이미지/동영상은 유지됩니다.</string>
     <string name="action_new_group">새 그룹</string>
     <string name="home_status_home_lock">홈 + 잠금 화면 실행 중</string>
