@@ -206,10 +206,12 @@ object WallpaperGeometry {
     /**
      * 画质增强 (超分): how strongly a magnified source should be enhanced.
      *
-     * Loosely matches the existing clarity curve (see WallpaperRenderer):
-     * nothing below 1.25x (the source already has enough pixels), then a linear
-     * ramp that reaches full strength at 4x magnification. The screen-pixel
-     * factor follows the scale mode: FIT is limited by the smaller axis, FILL /
+     * Recalibrated after user feedback ("the modes are barely noticeable"):
+     * the old curve started at 1.25x and only reached full strength at 4x, so
+     * 1080p content on a 1440p screen (1.33x) ran at ~0.03 strength. The ramp
+     * now starts at 1.0x and reaches full strength at 2x, which is where these
+     * upscalers actually have something to reconstruct. The screen-pixel factor
+     * follows the scale mode: FIT is limited by the smaller axis, FILL /
      * STRETCH magnify by the larger one.
      */
     fun enhancementStrength(
@@ -229,7 +231,7 @@ object WallpaperGeometry {
             ScaleMode.FIT -> minOf(scaleX, scaleY)
             ScaleMode.FILL, ScaleMode.STRETCH -> maxOf(scaleX, scaleY)
         }
-        return ((upscale - 1.25f) / 2.75f).coerceIn(0f, 1f)
+        return (upscale - 1f).coerceIn(0f, 1f)
     }
 
     /**

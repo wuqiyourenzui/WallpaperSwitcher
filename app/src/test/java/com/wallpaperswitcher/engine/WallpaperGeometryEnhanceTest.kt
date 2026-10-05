@@ -22,21 +22,34 @@ class WallpaperGeometryEnhanceTest {
     }
 
     @Test
-    fun `near native sources are left alone`() {
-        // 1.2x magnification: below the 1.25x threshold.
+    fun `native and downscaled sources are left alone`() {
         assertEquals(
             0f,
-            WallpaperGeometry.enhancementStrength(1200f, 1000f, 1440f, 1200f, ScaleMode.FILL, true),
+            WallpaperGeometry.enhancementStrength(1440f, 1200f, 1440f, 1200f, ScaleMode.FILL, true),
+            0.0001f,
+        )
+        assertEquals(
+            0f,
+            WallpaperGeometry.enhancementStrength(2880f, 2000f, 1440f, 1200f, ScaleMode.FILL, true),
             0.0001f,
         )
     }
 
     @Test
-    fun `the ramp reaches full strength at four times`() {
-        val four = WallpaperGeometry.enhancementStrength(360f, 800f, 1440f, 3200f, ScaleMode.FILL, true)
-        assertEquals(1f, four, 0.0001f)
+    fun `the ramp reaches full strength at two times`() {
+        val two = WallpaperGeometry.enhancementStrength(720f, 800f, 1440f, 1600f, ScaleMode.FILL, true)
+        assertEquals(1f, two, 0.0001f)
         val eight = WallpaperGeometry.enhancementStrength(180f, 400f, 1440f, 3200f, ScaleMode.FILL, true)
         assertEquals(1f, eight, 0.0001f)
+    }
+
+    @Test
+    fun `a slight magnification gets a proportional head start`() {
+        // 1080p on a 1440p screen (1.33x): the old curve gave ~0.03, the new
+        // one gives ~0.33 so the selected algorithm is actually applied.
+        val strength = WallpaperGeometry
+            .enhancementStrength(1080f, 1920f, 1440f, 1440f, ScaleMode.FILL, true)
+        assertEquals(0.33f, strength, 0.01f)
     }
 
     @Test

@@ -416,7 +416,11 @@ class WallpaperRenderer(
                         vec4 along = (abs(lE - lW) > abs(lS - lN))
                             ? (t2 + t3) * 0.5
                             : (t0 + t1) * 0.5;
-                        e = mix(e, along, min(0.5, 0.25 + 0.5 * lContrast) * uEnhance);
+                        // Anime4K pushes edges itself; give the edge smoothing
+                        // more weight there so its stair-steps get flattened.
+                        float aaBoost = uEnhanceMode > 1.5 ? 1.6 : 1.0;
+                        e = mix(e, along,
+                            min(0.6, (0.25 + 0.5 * lContrast) * aaBoost) * uEnhance);
                     }
                     if (uSharp <= 0.001) {
                         gl_FragColor = clamp(vec4(e.rgb, uAlpha), 0.0, 1.0);
@@ -758,7 +762,11 @@ class WallpaperRenderer(
                         vec4 along = (abs(lE - lW) > abs(lS - lN))
                             ? (t2 + t3) * 0.5
                             : (t0 + t1) * 0.5;
-                        e = mix(e, along, min(0.5, 0.25 + 0.5 * lContrast) * uEnhance);
+                        // Anime4K pushes edges itself; give the edge smoothing
+                        // more weight there so its stair-steps get flattened.
+                        float aaBoost = uEnhanceMode > 1.5 ? 1.6 : 1.0;
+                        e = mix(e, along,
+                            min(0.6, (0.25 + 0.5 * lContrast) * aaBoost) * uEnhance);
                     }
                     if (uSharp <= 0.001) {
                         gl_FragColor = clamp(e, 0.0, 1.0);
@@ -4026,8 +4034,13 @@ class WallpaperRenderer(
             updateVideoScreenTexelDelta()
             GLES20.glUniform2f(videoTexelLoc, videoTexelX, videoTexelY)
             GLES20.glUniform1f(videoSharpLoc, sharpnessFor(videoDisplayW, videoDisplayH, videoScaleMode))
+            // The gate must use the DECODED texture size: a 4K clip is decoded
+            // down to ~screen pixels, and comparing its original size made the
+            // strength ~0 even though the texture IS being magnified.
+            val enhancedSourceW = if (videoSrcW > 0f) videoSrcW else videoDisplayW
+            val enhancedSourceH = if (videoSrcH > 0f) videoSrcH else videoDisplayH
             val videoEnhance = WallpaperGeometry.enhancementStrength(
-                videoDisplayW, videoDisplayH, screenW, screenH,
+                enhancedSourceW, enhancedSourceH, screenW, screenH,
                 videoScaleMode, qualityEnhance,
             )
             GLES20.glUniform1f(videoEnhanceLoc, videoEnhance)
