@@ -357,7 +357,7 @@ fun WallpaperSwitcherApp(
                 currentScreen is Screen.RssLogin ||
                 currentScreen is Screen.RssSourceEdit
             val tabIndex = when {
-                currentScreen is Screen.Settings -> 2
+                currentScreen.isSettingsPage() -> 2
                 onSubscriptions -> 1
                 else -> 0
             }
@@ -746,4 +746,25 @@ private val ScreenSaver = Saver<Screen, String>(
         }
     }
 )
+
+/**
+ * 设置页 = 设置主界面 + 它下面的所有子页（壁纸设置 / 切换方式 / 文件夹扫描 /
+ * 悬浮按钮 / 外观 / 收藏 / 最近显示 / 存储与流量）。
+ *
+ * 底栏 tab 只按这份集合判断：之前这里只认 `Screen.Settings` 本身，所以从设置
+ * 点进任何一个子页，底栏都会从「设置」跳回「首页」（用户反馈）。
+ */
+internal fun Screen.isSettingsPage(): Boolean = when (this) {
+    is Screen.Settings,
+    is Screen.WallpaperSettings,
+    is Screen.SwitchMethods,
+    is Screen.FolderScan,
+    is Screen.ButtonAppearance,
+    is Screen.Appearance,
+    is Screen.Favorites,
+    is Screen.Recent,
+    is Screen.Storage,
+    -> true
+    else -> false
+}
 
