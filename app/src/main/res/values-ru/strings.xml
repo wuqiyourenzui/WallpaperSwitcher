@@ -331,11 +331,6 @@
     <string name="widget_switch">Сменить</string>
     <string name="widget_pause">Пауза</string>
     <string name="widget_resume">Продолжить</string>
-    <!-- Сценарии -->
-    <string name="settings_scene_rules">Сценарии</string>
-    <string name="settings_scene_power_save">Пауза в режиме энергосбережения</string>
-    <string name="settings_scene_low_battery" formatted="false">Пауза при заряде ниже 15%</string>
-    <string name="settings_scene_hint">Во время паузы смена не выполняется, после возобновления срабатывает сразу</string>
     <!-- Переход -->
     <string name="settings_transition">Переход</string>
     <string name="settings_transition_hint">Эффект при смене (затухание первого кадра видео тоже)</string>

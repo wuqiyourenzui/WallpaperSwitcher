@@ -322,11 +322,6 @@
     <string name="widget_switch">切換</string>
     <string name="widget_pause">暫停</string>
     <string name="widget_resume">繼續</string>
-    <!-- 情境規則 -->
-    <string name="settings_scene_rules">情境規則</string>
-    <string name="settings_scene_power_save">省電模式時暫停切換</string>
-    <string name="settings_scene_low_battery" formatted="false">電量低於 15% 時暫停切換</string>
-    <string name="settings_scene_hint">暫停期間不切換，恢復後立即補切一次</string>
     <!-- 過渡動畫 -->
     <string name="settings_transition">過渡動畫</string>
     <string name="settings_transition_hint">切換過渡效果，也用於影片首幀淡入</string>

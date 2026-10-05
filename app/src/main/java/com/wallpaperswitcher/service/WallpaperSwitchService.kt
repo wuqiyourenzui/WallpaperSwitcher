@@ -379,10 +379,9 @@ class WallpaperSwitchService : Service() {
                 // anchor + interval. The anchor is NOT reset when the screen
                 // turns off, so the time spent locked still counts.
                 val dao = db.settingsDao()
-                // 一键暂停 ("稍后切换") + 场景规则: hold the tick WITHOUT consuming
-                // it, so the moment the pause expires (or the scene rule no
-                // longer applies) the overdue switch fires - even if the app was
-                // closed the whole time.
+                // 一键暂停 ("稍后切换") holds the tick WITHOUT consuming it, so
+                // the moment the pause expires the overdue switch fires - even
+                // if the app was closed the whole time.
                 val pausedLeft = pauseRemainingMs(dao)
                 if (pausedLeft > 0L) {
                     if (!pauseIdleAnnounced) {
@@ -390,14 +389,6 @@ class WallpaperSwitchService : Service() {
                         AppLog.d(TAG, "Paused (${pausedLeft}ms left): home timer holding")
                     }
                     delay(pausedLeft.coerceAtMost(PAUSE_RECHECK_MS))
-                    continue
-                }
-                if (scenePausesSwitching(dao)) {
-                    if (!pauseIdleAnnounced) {
-                        pauseIdleAnnounced = true
-                        AppLog.d(TAG, "Scene rule active: home timer holding")
-                    }
-                    delay(PAUSE_RECHECK_MS)
                     continue
                 }
                 pauseIdleAnnounced = false
@@ -740,30 +731,6 @@ class WallpaperSwitchService : Service() {
     }
 
     /**
-     * Scene rules (see [SettingsKeys.SCENE_PAUSE_ON_POWER_SAVE] /
-     * [SettingsKeys.SCENE_PAUSE_ON_LOW_BATTERY]): true while the user asked the
-     * timers to hold their ticks for the current device state.
-     */
-    private suspend fun scenePausesSwitching(dao: SettingsDao): Boolean {
-        return try {
-            val pm = getSystemService(Context.POWER_SERVICE) as? PowerManager
-            if (pm != null && pm.isPowerSaveMode &&
-                dao.getBool(SettingsKeys.SCENE_PAUSE_ON_POWER_SAVE, false)
-            ) {
-                return true
-            }
-            val bm = getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
-            if (bm != null && dao.getBool(SettingsKeys.SCENE_PAUSE_ON_LOW_BATTERY, false)) {
-                val level = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
-                if (level in 0..SettingsKeys.SCENE_LOW_BATTERY_PERCENT) return true
-            }
-            false
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    /**
      * Independent timer for the LOCK screen.
      *
      * Own interval + anchor, paused while the screen is off like the home loop
@@ -851,15 +818,11 @@ class WallpaperSwitchService : Service() {
                 // image still gets a full interval on screen. Holding it here
                 // made the lock timer look "broken" whenever the user set a few
                 // lock images in a row (each pick renewed the hold).
-                // The 一键暂停 / 场景规则 hold applies to the lock timer too:
-                // "稍后切换" means both screens stay as they are.
+                // The 一键暂停 hold applies to the lock timer too: "稍后切换"
+                // means both screens stay as they are.
                 val pausedLeft = pauseRemainingMs(dao)
                 if (pausedLeft > 0L) {
                     delay(pausedLeft.coerceAtMost(PAUSE_RECHECK_MS))
-                    continue
-                }
-                if (scenePausesSwitching(dao)) {
-                    delay(PAUSE_RECHECK_MS)
                     continue
                 }
                 val lockTick = nextScreenTick(
@@ -1217,7 +1180,7 @@ class WallpaperSwitchService : Service() {
          */
         private const val HOME_IDLE_RECHECK_MS = 60_000L
         /**
-         * How often the loops re-check a 一键暂停 / 场景规则 hold. The hold never
+         * How often the loops re-check a 一键暂停 hold. The hold never
          * consumes the tick, so this is purely how late the catch-up switch can
          * be after the pause expires while the app stayed closed.
          */

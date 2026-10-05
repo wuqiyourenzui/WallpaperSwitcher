@@ -323,11 +323,6 @@
     <string name="widget_switch">Cambiar</string>
     <string name="widget_pause">Pausar</string>
     <string name="widget_resume">Reanudar</string>
-    <!-- Reglas de escena -->
-    <string name="settings_scene_rules">Reglas de escena</string>
-    <string name="settings_scene_power_save">Pausar con el ahorro de batería</string>
-    <string name="settings_scene_low_battery" formatted="false">Pausar con batería por debajo del 15%</string>
-    <string name="settings_scene_hint">No se cambia mientras está en pausa; al reanudar se cambia de inmediato</string>
     <!-- Transición -->
     <string name="settings_transition">Transición</string>
     <string name="settings_transition_hint">Efecto al cambiar (también el fundido del primer fotograma)</string>

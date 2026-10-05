@@ -87,9 +87,6 @@ fun SettingsScreen(
     // tab transition animation was still running (the 首页↔设置 stutter). One
     // combined flow = one emission = one recomposition per settings change.
     val settingsUiState by viewModel.settingsUiState.collectAsStateWithLifecycle()
-    // 场景规则
-    val scenePauseOnPowerSave = settingsUiState.scenePauseOnPowerSave
-    val scenePauseOnLowBattery = settingsUiState.scenePauseOnLowBattery
     // 订阅下载目录：默认应用私有目录，也可以选相册/文件管理器可见的文件夹。
     var rssDownloadDir by remember { mutableStateOf("") }
     LaunchedEffect(Unit) { rssDownloadDir = viewModel.rssDownloadDirValue() }
@@ -271,25 +268,6 @@ fun SettingsScreen(
                     color = LocalAccentColor.current
                 )
             }
-        }
-        Spacer(modifier = Modifier.height(8.dp))
-
-        SettingsSection(title = stringResource(R.string.settings_scene_rules)) {
-            SettingsSwitchItem(
-                icon = Icons.Outlined.BatterySaver,
-                title = stringResource(R.string.settings_scene_power_save),
-                subtitle = stringResource(R.string.settings_scene_hint),
-                checked = scenePauseOnPowerSave,
-                onCheckedChange = { viewModel.setScenePauseOnPowerSave(it) }
-            )
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-            SettingsSwitchItem(
-                icon = Icons.Outlined.BatteryAlert,
-                title = stringResource(R.string.settings_scene_low_battery),
-                subtitle = stringResource(R.string.settings_scene_hint),
-                checked = scenePauseOnLowBattery,
-                onCheckedChange = { viewModel.setScenePauseOnLowBattery(it) }
-            )
         }
         Spacer(modifier = Modifier.height(8.dp))
 

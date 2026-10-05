@@ -353,11 +353,6 @@
     <string name="widget_switch">Switch</string>
     <string name="widget_pause">Pause</string>
     <string name="widget_resume">Resume</string>
-    <!-- Scene rules -->
-    <string name="settings_scene_rules">Scene rules</string>
-    <string name="settings_scene_power_save">Pause switching in battery saver</string>
-    <string name="settings_scene_low_battery" formatted="false">Pause switching below 15% battery</string>
-    <string name="settings_scene_hint">No switches while held; resuming catches up immediately</string>
     <!-- Transition -->
     <string name="settings_transition">Transition</string>
     <string name="settings_transition_hint">Transition effect, also used for a video first-frame fade</string>

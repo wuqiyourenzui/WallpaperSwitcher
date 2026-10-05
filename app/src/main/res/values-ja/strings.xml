@@ -319,11 +319,6 @@
     <string name="widget_switch">切り替え</string>
     <string name="widget_pause">一時停止</string>
     <string name="widget_resume">再開</string>
-    <!-- シーンルール -->
-    <string name="settings_scene_rules">シーンルール</string>
-    <string name="settings_scene_power_save">省電力モード中は切り替えを停止</string>
-    <string name="settings_scene_low_battery" formatted="false">バッテリー残量 15% 以下で停止</string>
-    <string name="settings_scene_hint">停止中は切り替えず、再開時にすぐ 1 回切り替えます</string>
     <!-- トランジション -->
     <string name="settings_transition">トランジション</string>
     <string name="settings_transition_hint">切り替え時の効果（動画の初回フェードも同じ）</string>

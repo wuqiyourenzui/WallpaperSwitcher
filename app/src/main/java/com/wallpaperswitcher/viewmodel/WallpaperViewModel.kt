@@ -1058,20 +1058,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setScenePauseOnPowerSave(enabled: Boolean) {
-        guardedWrite("保存场景规则失败") {
-            settingsDao.setBool(SettingsKeys.SCENE_PAUSE_ON_POWER_SAVE, enabled)
-            WallpaperSwitchService.poke(getApplication())
-        }
-    }
-
-    fun setScenePauseOnLowBattery(enabled: Boolean) {
-        guardedWrite("保存场景规则失败") {
-            settingsDao.setBool(SettingsKeys.SCENE_PAUSE_ON_LOW_BATTERY, enabled)
-            WallpaperSwitchService.poke(getApplication())
-        }
-    }
-
     fun setVideoSoundEnabled(enabled: Boolean) {
         guardedWrite("保存视频声音设置失败") {
             settingsDao.setBool(SettingsKeys.VIDEO_SOUND_ENABLED, enabled)
@@ -1840,16 +1826,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 SettingsKeys.SWITCH_TRANSITION_DEFAULT
             )
 
-    val scenePauseOnPowerSave: StateFlow<Boolean> =
-        settingsDao.getValueFlow(SettingsKeys.SCENE_PAUSE_ON_POWER_SAVE)
-            .map { it?.toBooleanStrictOrNull() ?: false }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-
-    val scenePauseOnLowBattery: StateFlow<Boolean> =
-        settingsDao.getValueFlow(SettingsKeys.SCENE_PAUSE_ON_LOW_BATTERY)
-            .map { it?.toBooleanStrictOrNull() ?: false }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-
     private val videoPlayToEnd: StateFlow<Boolean> =
         settingsDao.getValueFlow(SettingsKeys.VIDEO_PLAY_TO_END)
             .map { it?.toBooleanStrictOrNull() ?: false }
@@ -1937,11 +1913,9 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         const val FLOATING_BUTTON_IMAGE_URI = 21
         const val THEME_MODE = 22
         const val SWITCH_TRANSITION = 23
-        const val SCENE_PAUSE_ON_POWER_SAVE = 24
-        const val SCENE_PAUSE_ON_LOW_BATTERY = 25
-        const val VIDEO_PLAY_TO_END = 26
-        const val FAVORITE_BOOST = 27
-        const val RECENT_NO_REPEAT = 28
+        const val VIDEO_PLAY_TO_END = 24
+        const val FAVORITE_BOOST = 25
+        const val RECENT_NO_REPEAT = 26
     }
 
     /**
@@ -1991,8 +1965,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         floatingButtonImageUri,
         themeMode,
         switchTransition,
-        scenePauseOnPowerSave,
-        scenePauseOnLowBattery,
         videoPlayToEnd,
         favoriteBoost,
         recentNoRepeat
@@ -2024,8 +1996,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             videoSoundEnabled = combined(a, SettingsField.VIDEO_SOUND_ENABLED, "videoSoundEnabled", Boolean::class.javaObjectType) ?: false,
             switchTransition = combined(a, SettingsField.SWITCH_TRANSITION, "switchTransition", String::class.java)
                 ?: SettingsKeys.SWITCH_TRANSITION_DEFAULT,
-            scenePauseOnPowerSave = combined(a, SettingsField.SCENE_PAUSE_ON_POWER_SAVE, "scenePauseOnPowerSave", Boolean::class.javaObjectType) ?: false,
-            scenePauseOnLowBattery = combined(a, SettingsField.SCENE_PAUSE_ON_LOW_BATTERY, "scenePauseOnLowBattery", Boolean::class.javaObjectType) ?: false,
             videoPlayToEnd = combined(a, SettingsField.VIDEO_PLAY_TO_END, "videoPlayToEnd", Boolean::class.javaObjectType) ?: false,
             favoriteBoost = combined(a, SettingsField.FAVORITE_BOOST, "favoriteBoost", Boolean::class.javaObjectType) ?: true,
             recentNoRepeat = combined(a, SettingsField.RECENT_NO_REPEAT, "recentNoRepeat", Integer::class.javaObjectType)?.toInt() ?: 0
@@ -3036,10 +3006,6 @@ data class SettingsUiState(
     val videoSoundEnabled: Boolean = false,
     /** 过渡动画: "fade" / "slide" / "zoom" / "none" (see SettingsKeys). */
     val switchTransition: String = SettingsKeys.SWITCH_TRANSITION_DEFAULT,
-    /** 场景规则: hold the timed loops while the battery saver is on. */
-    val scenePauseOnPowerSave: Boolean = false,
-    /** 场景规则: hold the timed loops while the battery is low (<=15%). */
-    val scenePauseOnLowBattery: Boolean = false,
     /** 视频播完再切: a timed switch waits for the current clip's pass to end. */
     val videoPlayToEnd: Boolean = false,
     /** 收藏优先: favourites get a higher weight in RANDOM / SHUFFLE. */

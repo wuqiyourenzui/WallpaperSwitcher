@@ -88,12 +88,6 @@ object SettingsKeys {
     const val PAUSE_UNTIL = "pause_until"
     /** Wall-clock ms of the pause start, for the "paused for X" line in the UI. */
     const val PAUSE_STARTED_AT = "pause_started_at"
-    /** 场景规则: hold the timed loops while the system battery saver is on. */
-    const val SCENE_PAUSE_ON_POWER_SAVE = "scene_pause_on_power_save"
-    /** 场景规则: hold the timed loops while the battery is at/below [SCENE_LOW_BATTERY_PERCENT]. */
-    const val SCENE_PAUSE_ON_LOW_BATTERY = "scene_pause_on_low_battery"
-    /** Battery percentage at or below which [SCENE_PAUSE_ON_LOW_BATTERY] pauses. */
-    const val SCENE_LOW_BATTERY_PERCENT = 15
     // Wall-clock (ms) the current switch interval counts from: the last timed
     // switch. Kept across a lock/unlock pause (and across service restarts) so
     // an overdue tick catches up as soon as the screen comes back instead of

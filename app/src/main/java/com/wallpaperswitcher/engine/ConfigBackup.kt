@@ -46,9 +46,7 @@ object ConfigBackup {
         SettingsKeys.VIDEO_SOUND_ENABLED,
         SettingsKeys.UNLOCK_SWITCH_ENABLED,
         SettingsKeys.LOCK_TIMER_ENABLED,
-        SettingsKeys.LOCK_INTERVAL_MS,
-        SettingsKeys.SCENE_PAUSE_ON_POWER_SAVE,
-        SettingsKeys.SCENE_PAUSE_ON_LOW_BATTERY
+        SettingsKeys.LOCK_INTERVAL_MS
     )
 
     /** One group as stored in the file. */

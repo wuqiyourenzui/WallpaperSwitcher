@@ -319,11 +319,6 @@
     <string name="widget_switch">전환</string>
     <string name="widget_pause">일시중지</string>
     <string name="widget_resume">재개</string>
-    <!-- 상황 규칙 -->
-    <string name="settings_scene_rules">상황 규칙</string>
-    <string name="settings_scene_power_save">절전 모드에서 전환 일시중지</string>
-    <string name="settings_scene_low_battery" formatted="false">배터리 15% 이하에서 전환 일시중지</string>
-    <string name="settings_scene_hint">일시중지 중에는 전환하지 않고, 재개 시 바로 한 번 전환합니다</string>
     <!-- 전환 효과 -->
     <string name="settings_transition">전환 효과</string>
     <string name="settings_transition_hint">전환 효과(동영상 첫 프레임 페이드에도 적용)</string>

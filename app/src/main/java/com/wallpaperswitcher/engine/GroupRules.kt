@@ -3,7 +3,7 @@ package com.wallpaperswitcher.engine
 import com.wallpaperswitcher.data.WallpaperGroup
 
 /**
- * 时间/场景规则: pure rules that decide whether a group may be shown right now.
+ * 时间规则: pure rules that decide whether a group may be shown right now.
  *
  * 时间规则 (per group): an optional window of the day. `-1` means "all day"
  * (the default, so nothing changes until the user sets a window). A window may

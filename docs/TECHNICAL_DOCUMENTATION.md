@@ -6280,6 +6280,32 @@ UID，这个开关跟着掉回默认拒绝 —— 用户上一次「另一个 AI
 **验证**：单元测试 **454 条全绿**、`:app:assembleDebug` ✓、已装机（启动无崩溃）；
 本轮按用户要求不做截图分析，页面效果由用户直接核对。
 
+#### 4.9.149 取消场景规则功能
+
+用户要求：「取消场景规则功能」。场景规则是 §4.9.61 ⑤ 引入的两个全局开关
+（省电模式时暂停切换 / 电量低于 15% 时暂停切换）：切换服务的两个定时循环在 tick
+前查询设备状态，命中就 hold 住本轮（不消费 tick，恢复后立即补切）。
+
+整条链路删除：
+
+1. **设置界面**：`SettingsScreen` 的「场景规则」一节（两个 `SettingsSwitchItem`）
+   与两个状态读取删除；7 个语言的 `settings_scene_rules` /
+   `settings_scene_power_save` / `settings_scene_low_battery` /
+   `settings_scene_hint` 四条字符串及注释块一并删除。
+2. **数据与 ViewModel**：`SettingsKeys.SCENE_PAUSE_ON_POWER_SAVE` /
+   `SCENE_PAUSE_ON_LOW_BATTERY` / `SCENE_LOW_BATTERY_PERCENT` 删除；
+   `WallpaperViewModel` 的两个 setter、两个 StateFlow、`settingsUiState` 的合并
+   输入与 `SettingsUiState` 字段删除，`SettingsField` 索引表重排（24..26）。
+   数据库里已存在的两个键**不做迁移**：从此无人读取，是惰性的历史数据。
+3. **切换服务**：`WallpaperSwitchService.scenePausesSwitching()`（PowerManager
+   省电模式 / BatteryManager 电量查询）与首页、锁屏两个循环里的调用删除；
+   「一键暂停」（`PAUSE_UNTIL`）的 hold 逻辑保持不变，相关注释同步改为只提它。
+4. **配置导出**：`ConfigBackup.EXPORTED_SETTINGS` 去掉两个键；旧备份文件里带着
+   它们的，导入时按现有的 `key !in EXPORTED_SETTINGS -> continue` 跳过，不报错。
+   `GroupRules` 的文件注释也从「时间/场景规则」改回「时间规则」。
+
+**验证**：单元测试 **454 条全绿**、`:app:assembleDebug` ✓、已装机。
+
 ---
 
 ## 七、权限声明
