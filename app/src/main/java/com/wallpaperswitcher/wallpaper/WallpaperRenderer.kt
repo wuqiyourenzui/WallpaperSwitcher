@@ -121,14 +121,24 @@ class WallpaperRenderer(
         """
 
         private const val IMAGE_FRAGMENT_SHADER = """
+            // 画质增强 needs highp: the bicubic weights are the FRACTION of a
+            // texel coordinate that reaches a few thousand, and mediump (often
+            // fp16 on mobile) quantises that fraction away - which showed up as
+            // heavy aliasing/jaggies. Falls back to mediump only on the rare
+            // GLES2 device without highp (the program then still compiles).
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            varying highp vec2 vTexCoord;
+            #else
             precision mediump float;
+            varying mediump vec2 vTexCoord;
+            #endif
             uniform sampler2D uTexture;
             uniform vec2 uTexelSize;
             uniform vec2 uSrcTexel;
             uniform float uSharp;
             uniform float uEnhance;
             uniform float uAlpha;
-            varying vec2 vTexCoord;
 
             vec4 cubicWeights(float t) {
                 float t2 = t * t;
@@ -172,16 +182,47 @@ class WallpaperRenderer(
             void main() {
                 if (uEnhance > 0.001) {
                     vec4 e = bicubic4(vTexCoord, uSrcTexel);
+                    // Anti-aliasing at SOURCE resolution: at 3-4x magnification
+                    // the source's own stair-steps are what gets enlarged, so a
+                    // small cross-blur of the neighbouring source texels smooths
+                    // diagonal edges. The blend grows with uEnhance and stays
+                    // negligible below ~2x.
+                    vec2 slo = uSrcTexel * 0.5;
+                    vec2 shi = vec2(1.0) - slo;
+                    vec4 s0 = texture2D(uTexture, clamp(vTexCoord + vec2(-uSrcTexel.x, 0.0), slo, shi));
+                    vec4 s1 = texture2D(uTexture, clamp(vTexCoord + vec2(uSrcTexel.x, 0.0), slo, shi));
+                    vec4 s2 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, -uSrcTexel.y), slo, shi));
+                    vec4 s3 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, uSrcTexel.y), slo, shi));
+                    vec4 blur = (s0 + s1 + s2 + s3) * 0.25;
+                    e = mix(e, (e + blur) * 0.5, 0.35 * uEnhance);
+                    vec4 t0 = texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0));
+                    vec4 t1 = texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0));
+                    vec4 t2 = texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y));
+                    vec4 t3 = texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y));
                     if (uSharp <= 0.001) {
                         gl_FragColor = clamp(vec4(e.rgb, uAlpha), 0.0, 1.0);
                         return;
                     }
-                    float esharp = uSharp * (1.0 + 2.0 * uEnhance);
+                    // Contrast-adaptive sharpening (RCAS-style): high-contrast
+                    // edges - exactly where over-sharpening reads as jaggies and
+                    // halos - get 40% of the clarity amount, flat areas keep it.
+                    // The cap guarantees the enhanced path is never sharper than
+                    // the normal one.
+                    float eL = dot(e.rgb, vec3(0.299, 0.587, 0.114));
+                    float a0 = dot(t0.rgb, vec3(0.299, 0.587, 0.114));
+                    float a1 = dot(t1.rgb, vec3(0.299, 0.587, 0.114));
+                    float a2 = dot(t2.rgb, vec3(0.299, 0.587, 0.114));
+                    float a3 = dot(t3.rgb, vec3(0.299, 0.587, 0.114));
+                    float mn = min(min(min(a0, a1), min(a2, a3)), eL);
+                    float mx = max(max(max(a0, a1), max(a2, a3)), eL);
+                    float amp = sqrt(clamp(mn / max(mx, 0.0001), 0.0, 1.0));
+                    float esharp = min(uSharp * (0.40 + 0.60 * amp), 0.6);
+                    if (esharp <= 0.001) {
+                        gl_FragColor = clamp(vec4(e.rgb, uAlpha), 0.0, 1.0);
+                        return;
+                    }
                     vec4 es = e * (1.0 + 4.0 * esharp)
-                           - (texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0))
-                            + texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0))
-                            + texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y))
-                            + texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y))) * esharp;
+                           - (t0 + t1 + t2 + t3) * esharp;
                     gl_FragColor = clamp(vec4(es.rgb, uAlpha), 0.0, 1.0);
                     return;
                 }
@@ -206,13 +247,18 @@ class WallpaperRenderer(
 
         private const val VIDEO_FRAGMENT_SHADER = """
             #extension GL_OES_EGL_image_external : require
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            varying highp vec2 vTexCoord;
+            #else
             precision mediump float;
+            varying mediump vec2 vTexCoord;
+            #endif
             uniform samplerExternalOES uTexture;
             uniform vec2 uTexelSize;
             uniform vec2 uSrcTexel;
             uniform float uSharp;
             uniform float uEnhance;
-            varying vec2 vTexCoord;
 
             vec4 cubicWeights(float t) {
                 float t2 = t * t;
@@ -252,16 +298,37 @@ class WallpaperRenderer(
             void main() {
                 if (uEnhance > 0.001) {
                     vec4 e = bicubic4(vTexCoord, uSrcTexel);
+                    vec2 slo = uSrcTexel * 0.5;
+                    vec2 shi = vec2(1.0) - slo;
+                    vec4 s0 = texture2D(uTexture, clamp(vTexCoord + vec2(-uSrcTexel.x, 0.0), slo, shi));
+                    vec4 s1 = texture2D(uTexture, clamp(vTexCoord + vec2(uSrcTexel.x, 0.0), slo, shi));
+                    vec4 s2 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, -uSrcTexel.y), slo, shi));
+                    vec4 s3 = texture2D(uTexture, clamp(vTexCoord + vec2(0.0, uSrcTexel.y), slo, shi));
+                    vec4 blur = (s0 + s1 + s2 + s3) * 0.25;
+                    e = mix(e, (e + blur) * 0.5, 0.35 * uEnhance);
+                    vec4 t0 = texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0));
+                    vec4 t1 = texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0));
+                    vec4 t2 = texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y));
+                    vec4 t3 = texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y));
                     if (uSharp <= 0.001) {
                         gl_FragColor = clamp(e, 0.0, 1.0);
                         return;
                     }
-                    float esharp = uSharp * (1.0 + 2.0 * uEnhance);
+                    float eL = dot(e.rgb, vec3(0.299, 0.587, 0.114));
+                    float a0 = dot(t0.rgb, vec3(0.299, 0.587, 0.114));
+                    float a1 = dot(t1.rgb, vec3(0.299, 0.587, 0.114));
+                    float a2 = dot(t2.rgb, vec3(0.299, 0.587, 0.114));
+                    float a3 = dot(t3.rgb, vec3(0.299, 0.587, 0.114));
+                    float mn = min(min(min(a0, a1), min(a2, a3)), eL);
+                    float mx = max(max(max(a0, a1), max(a2, a3)), eL);
+                    float amp = sqrt(clamp(mn / max(mx, 0.0001), 0.0, 1.0));
+                    float esharp = min(uSharp * (0.40 + 0.60 * amp), 0.6);
+                    if (esharp <= 0.001) {
+                        gl_FragColor = clamp(e, 0.0, 1.0);
+                        return;
+                    }
                     vec4 es = e * (1.0 + 4.0 * esharp)
-                           - (texture2D(uTexture, vTexCoord + vec2(-uTexelSize.x, 0.0))
-                            + texture2D(uTexture, vTexCoord + vec2(uTexelSize.x, 0.0))
-                            + texture2D(uTexture, vTexCoord + vec2(0.0, -uTexelSize.y))
-                            + texture2D(uTexture, vTexCoord + vec2(0.0, uTexelSize.y))) * esharp;
+                           - (t0 + t1 + t2 + t3) * esharp;
                     gl_FragColor = clamp(es, 0.0, 1.0);
                     return;
                 }
