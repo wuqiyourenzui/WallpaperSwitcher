@@ -4,13 +4,11 @@ import com.wallpaperswitcher.R
 import com.wallpaperswitcher.data.ScaleMode
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.SwitchMode
-import com.wallpaperswitcher.ui.screens.CLARITY_KEY_AUTO
-import com.wallpaperswitcher.ui.screens.CLARITY_KEY_OFF
-import com.wallpaperswitcher.ui.screens.CLARITY_KEY_SUPER
+import com.wallpaperswitcher.engine.EnhanceMode
 import com.wallpaperswitcher.ui.screens.ROTATE_KEY_CCW
 import com.wallpaperswitcher.ui.screens.ROTATE_KEY_CW
-import com.wallpaperswitcher.ui.screens.clarityKeyOf
-import com.wallpaperswitcher.ui.screens.clarityOptions
+import com.wallpaperswitcher.ui.screens.enhanceAlgoOf
+import com.wallpaperswitcher.ui.screens.enhanceAlgoOptions
 import com.wallpaperswitcher.ui.screens.rotateDirectionClockwise
 import com.wallpaperswitcher.ui.screens.rotateDirectionKey
 import com.wallpaperswitcher.ui.screens.rotateDirectionOptions
@@ -65,23 +63,19 @@ class HiOptionLogicTest {
     }
 
     @Test
-    fun `clarity panel offers the three stored values`() {
+    fun `the upscaling algorithm panel offers fsr1 and anime4k`() {
         assertEquals(
-            listOf(CLARITY_KEY_AUTO, CLARITY_KEY_OFF, CLARITY_KEY_SUPER),
-            clarityOptions().map { it.key }
+            listOf(EnhanceMode.FSR1_KEY, EnhanceMode.ANIME4K_KEY),
+            enhanceAlgoOptions().map { it.key }
         )
     }
 
     @Test
-    fun `clarity normalises the legacy strong option to super and unknown to auto`() {
-        // 渲染端 ClarityMode: "off" -> 0, "super"/旧 "strong" -> 超分，其余 -> 自动。
-        assertEquals(CLARITY_KEY_OFF, clarityKeyOf(CLARITY_KEY_OFF))
-        assertEquals(CLARITY_KEY_SUPER, clarityKeyOf(CLARITY_KEY_SUPER))
-        assertEquals(CLARITY_KEY_SUPER, clarityKeyOf("strong"))
-        assertEquals(CLARITY_KEY_AUTO, clarityKeyOf(CLARITY_KEY_AUTO))
-        assertEquals(CLARITY_KEY_AUTO, clarityKeyOf(""))
-        assertEquals(CLARITY_KEY_AUTO, clarityKeyOf("AUTO"))
-        assertEquals(CLARITY_KEY_AUTO, clarityKeyOf("high"))
+    fun `unknown algorithm values normalise to fsr1`() {
+        assertEquals(EnhanceMode.FSR1_KEY, enhanceAlgoOf(EnhanceMode.FSR1_KEY))
+        assertEquals(EnhanceMode.ANIME4K_KEY, enhanceAlgoOf(EnhanceMode.ANIME4K_KEY))
+        assertEquals(EnhanceMode.FSR1_KEY, enhanceAlgoOf(""))
+        assertEquals(EnhanceMode.FSR1_KEY, enhanceAlgoOf("bicubic"))
     }
 
     @Test
@@ -144,8 +138,8 @@ class HiOptionLogicTest {
         SwitchMode.entries.forEach { assertTrue(hasHiOption(switchModeOptions(), it.name)) }
         ScaleMode.entries.forEach { assertTrue(hasHiOption(scaleModeOptions(), it.name)) }
 
-        listOf(CLARITY_KEY_AUTO, CLARITY_KEY_OFF, CLARITY_KEY_SUPER, "strong", "AUTO", "", "high").forEach {
-            assertTrue("clarity: $it", hasHiOption(clarityOptions(), clarityKeyOf(it)))
+        listOf(EnhanceMode.FSR1_KEY, EnhanceMode.ANIME4K_KEY, "", "bicubic").forEach {
+            assertTrue("enhance algo: $it", hasHiOption(enhanceAlgoOptions(), enhanceAlgoOf(it)))
         }
         listOf(
             SettingsKeys.SWITCH_TRANSITION_FADE,
@@ -170,7 +164,7 @@ class HiOptionLogicTest {
         val panels = listOf(
             "switch mode" to switchModeOptions(),
             "scale mode" to scaleModeOptions(),
-            "clarity" to clarityOptions(),
+            "enhance algo" to enhanceAlgoOptions(),
             "rotate direction" to rotateDirectionOptions(),
             "transition" to transitionOptions(),
             "theme mode" to themeModeOptions()
@@ -205,9 +199,11 @@ class HiOptionLogicTest {
         assertEquals(R.string.scale_mode_fill, hiOptionLabelRes(scaleModeOptions(), "FILL"))
         assertEquals(R.string.scale_mode_fit, hiOptionLabelRes(scaleModeOptions(), "FIT"))
         assertEquals(R.string.scale_mode_stretch, hiOptionLabelRes(scaleModeOptions(), "STRETCH"))
-        assertEquals(R.string.clarity_auto, hiOptionLabelRes(clarityOptions(), CLARITY_KEY_AUTO))
-        assertEquals(R.string.clarity_off, hiOptionLabelRes(clarityOptions(), CLARITY_KEY_OFF))
-        assertEquals(R.string.settings_quality_enhance, hiOptionLabelRes(clarityOptions(), CLARITY_KEY_SUPER))
+        assertEquals(R.string.settings_fsr1, hiOptionLabelRes(enhanceAlgoOptions(), EnhanceMode.FSR1_KEY))
+        assertEquals(
+            R.string.settings_anime4k,
+            hiOptionLabelRes(enhanceAlgoOptions(), EnhanceMode.ANIME4K_KEY)
+        )
         assertEquals(R.string.rotate_clockwise, hiOptionLabelRes(rotateDirectionOptions(), ROTATE_KEY_CW))
         assertEquals(
             R.string.rotate_counter_clockwise,
@@ -223,7 +219,7 @@ class HiOptionLogicTest {
         // 行右侧的"当前值"靠它取文案；取不到时调用方显示空字符串，而不是崩掉
         // （HiOptionPickerRow：`hiOptionLabelRes(...)?.let { stringResource(it) }.orEmpty()`）。
         assertNull(hiOptionLabelRes(switchModeOptions(), "FLIP"))
-        assertNull(hiOptionLabelRes(clarityOptions(), "high"))
+        assertNull(hiOptionLabelRes(enhanceAlgoOptions(), "bicubic"))
         assertNull(hiOptionLabelRes(emptyList(), "RANDOM"))
     }
 }

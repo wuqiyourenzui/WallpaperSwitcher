@@ -154,7 +154,8 @@ CPU 与闪存写入都随库大小线性上升，而且写 `app_settings` 会让
 | global_scale_mode | String | "FIT" | 缩放模式: FILL/FIT/STRETCH |
 | rotate_mismatch_enabled | Boolean | true | 自动旋转适配开关（填充/拉伸时方向不符的媒体旋转 90°） |
 | rotate_mismatch_cw | Boolean | true | 旋转方向：true = 顺时针 90°，false = 逆时针 90° |
-| clarity_mode | String | "auto" | 清晰度增强: auto/off/strong |
+| clarity_mode | String | "on" | 清晰度增强开关: 只有 "off" 是关（历史值 auto/super/strong/缺失都按开处理，老安装默认行为不变） |
+| enhance_algo | String | "fsr1" | 超分算法（清晰度增强打开时生效）: fsr1（EASU/RCAS）/ anime4k（Original x2） |
 | switch_fade_enabled | Boolean | true | 切换淡入动画开关 |
 | auto_scan_enabled | Boolean | false | 文件夹自动扫描开关 |
 | auto_scan_interval_ms | Long | 24h | 自动扫描间隔（下限 15 分钟） |
@@ -6660,6 +6661,48 @@ uiautomator 把清晰度切到「关闭」拍一张、再切到「画质增强�
 人眼对中频对比最敏感，这层"通透感"最显眼。glslang 在这一步抓出一处插错位置
 （视频 shader 少一处、图片 shader 重复且用了未声明变量），修正后两个 shader 重新
 校验通过。
+
+#### 4.9.158 清晰度增强改为开关 + 超分算法二选一
+
+用户要求："清晰度增强只有开启和关闭，开启 FSR1 EASU+RCAS / Anime4K 可选"。
+4.9.154 的「三选项 + 两个互斥算法开关」在界面上确实绕：算法开关的隐含前提是
+清晰度必须处于「画质增强（超分）」，用户很容易只打开算法开关却看不到任何变化。
+
+**设置形态**
+
+- 「清晰度增强」变成一个**开关**（默认开），下面缩进一级出现子行「超分算法」，
+  二选一：**FSR1 EASU/RCAS**（默认）或 **Anime4K**（Original x2 线稿算法）。
+  子行沿用 [HiOptionPickerRow] 的弹出面板形态，与「旋转方向」缩进一致。
+- 存储语义：`clarity_mode` 只有显式 `"off"` 是关，`"auto"` / `"super"` / 旧的
+  `"strong"` / 键缺失都按**开**处理（`ClarityMode.isEnabled`，开启统一用
+  4.9.157 加强后的锐化档 1.5）——老安装的默认行为一字不变。
+- 新键 `enhance_algo` = `"fsr1"` / `"anime4k"`。`EnhanceMode.fromKey`（未知 →
+  FSR1，通用素材更稳）与界面 `enhanceAlgoOf` 同一口径，行右侧永远不会显示一个
+  用户选不到的值。
+
+**旧键迁移（4.9.154 的两个互斥开关 → `enhance_algo`）**
+
+- 启动时 `migrateLegacyQualityEnhance` 把非 on/off 的清晰度值归一成 `"on"`；
+  `enhance_algo` 缺失时按旧开关推导（Anime4K 开 → `anime4k`，否则 `fsr1`），
+  然后删除 `fsr1_enhance_enabled` / `anime4k_enhance_enabled` / 4.9.151 的
+  `quality_enhance_enabled`。开发期装过中间版本的用户不会丢设置。
+- 引擎侧 `currentEnhanceMode()` 在 `enhance_algo` 还没写入时也回退读旧键，
+  迁移执行前重建的引擎同样走对算法；异常兜底从"内置双三次"改为 FSR1。
+- ViewModel API 同步更名：`setClarityMode` → `setClarityEnabled`，
+  `fsr1EnhanceEnabled` / `anime4kEnhanceEnabled` 两个 StateFlow →
+  `clarityEnabled` + `enhanceAlgo`。
+
+**文案（7 语言）**：删除 `clarity_auto` / `clarity_off` / `settings_quality_enhance` /
+`settings_fsr1_hint` / `settings_anime4k_hint`；新增 `settings_clarity_hint` /
+`settings_enhance_algo` / `settings_enhance_algo_hint`；`settings_fsr1` /
+`settings_anime4k` 现在作为两个算法选项的标签（"FSR1 EASU/RCAS 超分" /
+"Anime4K 超分"）。
+
+**验证**：503 条单测全绿（`ClarityModeTest`、`EnhanceModeTest`、`HiOptionLogicTest`
+改测新语义）、`:app:assembleDebug` ✓、已装机；真机数据库实测启动迁移后
+`clarity_mode=on`、`enhance_algo=fsr1`（设备此前的
+`fsr1_enhance_enabled=true` / `anime4k_enhance_enabled=false` 被换算；旧键的
+`deleteKey` 已执行，SQLite 页里残留的旧字节属正常的 checkpoint 行为）。
 
 ---
 

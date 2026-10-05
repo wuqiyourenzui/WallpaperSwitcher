@@ -114,7 +114,6 @@ fun SettingsScreen(
     val globalIntervalMs = settingsUiState.globalIntervalMs
     val globalSwitchMode = settingsUiState.globalSwitchMode
     val globalScaleMode = settingsUiState.globalScaleMode
-    val clarityMode = settingsUiState.clarityMode
     val switchFadeEnabled = settingsUiState.switchFadeEnabled
     val videoSoundEnabled = settingsUiState.videoSoundEnabled
     val rotateMismatchEnabled = settingsUiState.rotateMismatchEnabled

@@ -1,39 +1,31 @@
 package com.wallpaperswitcher.engine
 
 /**
- * 清晰度增强 modes (SettingsKeys.CLARITY_MODE).
+ * 清晰度增强 (SettingsKeys.CLARITY_MODE)：用户要求"只有开启和关闭"，算法在打开后
+ * 用 `enhance_algo` 二选一（FSR1 EASU/RCAS 或 Anime4K）。
  *
- * The panel's third option used to be 增强 ("strong", a stronger unsharp mask).
- * Per user request it is now 画质增强（超分）("super"): the normal auto clarity
- * (the super-resolution shader does the real work with its capped,
- * contrast-adaptive sharpening) PLUS the upscaling path. A stored legacy
- * "strong" value normalizes to "super", so an install that had 增强 selected
- * upgrades straight into the new feature - which is exactly the requested
- * replacement, not a loss of behaviour.
+ * 历史值的映射：只有 `"off"` 算关闭；`"auto"` / `"super"` / 旧的 `"strong"` /
+ * 键缺失都算开启（老安装的默认行为因此保留），开启时统一用超分管线的锐化档
+ * [ENHANCE_SCALE]。
  */
 object ClarityMode {
 
-    const val AUTO = "auto"
+    const val ON = "on"
     const val OFF = "off"
-    const val SUPER = "super"
 
-    /** Stored value of the removed 增强 option. */
-    private const val LEGACY_STRONG = "strong"
+    /** 开启时的锐化档（见 WallpaperRenderer.sharpnessFor）。 */
+    private const val ENHANCE_SCALE = 1.5f
 
-    /** Renderer sharpness scale: off = no unsharp, otherwise the auto curve. */
-    private const val AUTO_SCALE = 1.25f
-
+    /** 只有 `"off"` 是关；其余（含缺失/历史值）都是开。 */
     fun normalize(stored: String?): String = when (stored) {
         OFF -> OFF
-        SUPER, LEGACY_STRONG -> SUPER
-        else -> AUTO
+        else -> ON
     }
 
-    fun sharpnessScale(stored: String?): Float = when (normalize(stored)) {
-        OFF -> 0f
-        else -> AUTO_SCALE
-    }
+    fun isEnabled(stored: String?): Boolean = normalize(stored) == ON
 
-    /** True when the super-resolution path should be active. */
-    fun boostsQuality(stored: String?): Boolean = normalize(stored) == SUPER
+    fun sharpnessScale(stored: String?): Float = if (isEnabled(stored)) ENHANCE_SCALE else 0f
+
+    /** 开启时走超分增强分支（shader 里还会按放大倍数决定实际强度）。 */
+    fun boostsQuality(stored: String?): Boolean = isEnabled(stored)
 }

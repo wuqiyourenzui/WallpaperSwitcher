@@ -1028,12 +1028,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setClarityMode(mode: String) {
-        guardedWrite("保存清晰度设置失败") {
-            settingsDao.setString(SettingsKeys.CLARITY_MODE, mode)
-        }
-    }
-
     fun toggleRotateMismatch(enabled: Boolean) {
         guardedWrite("保存自动旋转设置失败") {
             settingsDao.setBool(SettingsKeys.ROTATE_MISMATCH_ENABLED, enabled)
@@ -1169,72 +1163,94 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
      */
     suspend fun migrateLegacyQualityEnhance() = withContext(Dispatchers.IO) {
         try {
-            val legacy = settingsDao.getBool(SettingsKeys.LEGACY_QUALITY_ENHANCE_ENABLED, false)
-            val clarity = com.wallpaperswitcher.engine.ClarityMode
-                .normalize(settingsDao.getString(SettingsKeys.CLARITY_MODE, "auto"))
-            if (legacy && clarity == com.wallpaperswitcher.engine.ClarityMode.AUTO) {
+            // 1) 清晰度：历史值 auto/super/strong/缺失 → 统一写成 "on"（保持开启）。
+            val storedClarity = settingsDao.getString(SettingsKeys.CLARITY_MODE, "")
+            if (storedClarity != com.wallpaperswitcher.engine.ClarityMode.ON &&
+                storedClarity != com.wallpaperswitcher.engine.ClarityMode.OFF
+            ) {
                 settingsDao.setString(
                     SettingsKeys.CLARITY_MODE,
-                    com.wallpaperswitcher.engine.ClarityMode.SUPER,
+                    com.wallpaperswitcher.engine.ClarityMode.normalize(storedClarity),
                 )
             }
+            // 2) 4.9.151 的独立开关（曾把 auto 提升为 super）：已并入清晰度开关。
             settingsDao.deleteKey(SettingsKeys.LEGACY_QUALITY_ENHANCE_ENABLED)
+            // 3) 4.9.154 的两个算法开关 → enhance_algo；只在缺失时推导，再删旧键。
+            if (settingsDao.getString(SettingsKeys.ENHANCE_ALGO, "").isBlank()) {
+                settingsDao.setString(
+                    SettingsKeys.ENHANCE_ALGO,
+                    com.wallpaperswitcher.engine.EnhanceMode.legacyKey(
+                        fsr1 = settingsDao.getBool(
+                            SettingsKeys.LEGACY_FSR1_ENHANCE_ENABLED,
+                            false,
+                        ),
+                        anime4k = settingsDao.getBool(
+                            SettingsKeys.LEGACY_ANIME4K_ENHANCE_ENABLED,
+                            false,
+                        ),
+                    ),
+                )
+            }
+            settingsDao.deleteKey(SettingsKeys.LEGACY_FSR1_ENHANCE_ENABLED)
+            settingsDao.deleteKey(SettingsKeys.LEGACY_ANIME4K_ENHANCE_ENABLED)
         } catch (e: Exception) {
             AppLog.w(TAG, "migrateLegacyQualityEnhance failed: ${e.javaClass.simpleName}")
         }
     }
 
-    // --- 放大算法（画质增强超分，两个开关互斥）---
+    // --- 清晰度增强（开/关）+ 超分算法二选一 ---
 
-    /** FSR1 EASU/RCAS 开关（与 Anime4K 互斥）。 */
-    val fsr1EnhanceEnabled: StateFlow<Boolean> =
-        settingsDao.getValueFlow(SettingsKeys.FSR1_ENHANCE_ENABLED)
-            .map { it?.toBooleanStrictOrNull() ?: false }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+    /** 清晰度增强开关：只有显式 "off" 是关，历史值/缺失都算开启。 */
+    val clarityEnabled: StateFlow<Boolean> =
+        settingsDao.getValueFlow(SettingsKeys.CLARITY_MODE)
+            .map { com.wallpaperswitcher.engine.ClarityMode.isEnabled(it) }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
 
-    /** Anime4K（Original x2）开关（与 FSR1 互斥）。 */
-    val anime4kEnhanceEnabled: StateFlow<Boolean> =
-        settingsDao.getValueFlow(SettingsKeys.ANIME4K_ENHANCE_ENABLED)
-            .map { it?.toBooleanStrictOrNull() ?: false }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
-
-    fun setFsr1EnhanceEnabled(enabled: Boolean) {
-        guardedWrite("保存超分算法失败") {
-            settingsDao.setBool(SettingsKeys.FSR1_ENHANCE_ENABLED, enabled)
-            if (enabled) settingsDao.setBool(SettingsKeys.ANIME4K_ENHANCE_ENABLED, false)
-            // 打开算法开关就自动把清晰度切到「画质增强（超分）」：否则开关看起来
-            // 毫无作用（算法的门槛就是这个模式），这是用户反馈"不明显"的主因。
-            if (enabled) {
-                settingsDao.setString(
-                    SettingsKeys.CLARITY_MODE,
-                    com.wallpaperswitcher.engine.ClarityMode.SUPER,
-                )
+    /** 超分算法："fsr1" / "anime4k"（未知值归一到 fsr1）。 */
+    val enhanceAlgo: StateFlow<String> =
+        settingsDao.getValueFlow(SettingsKeys.ENHANCE_ALGO)
+            .map { key ->
+                if (key == com.wallpaperswitcher.engine.EnhanceMode.ANIME4K_KEY) {
+                    com.wallpaperswitcher.engine.EnhanceMode.ANIME4K_KEY
+                } else {
+                    com.wallpaperswitcher.engine.EnhanceMode.FSR1_KEY
+                }
             }
+            .stateIn(
+                viewModelScope,
+                SharingStarted.WhileSubscribed(5000),
+                com.wallpaperswitcher.engine.EnhanceMode.FSR1_KEY,
+            )
+
+    fun setClarityEnabled(enabled: Boolean) {
+        guardedWrite("保存清晰度设置失败") {
+            settingsDao.setString(
+                SettingsKeys.CLARITY_MODE,
+                if (enabled) com.wallpaperswitcher.engine.ClarityMode.ON
+                else com.wallpaperswitcher.engine.ClarityMode.OFF,
+            )
+        }
+    }
+
+    fun setEnhanceAlgo(key: String) {
+        guardedWrite("保存超分算法失败") {
+            val safe = if (key == com.wallpaperswitcher.engine.EnhanceMode.ANIME4K_KEY) {
+                com.wallpaperswitcher.engine.EnhanceMode.ANIME4K_KEY
+            } else {
+                com.wallpaperswitcher.engine.EnhanceMode.FSR1_KEY
+            }
+            settingsDao.setString(SettingsKeys.ENHANCE_ALGO, safe)
             pushEnhanceMode()
         }
     }
 
-    fun setAnime4kEnhanceEnabled(enabled: Boolean) {
-        guardedWrite("保存超分算法失败") {
-            settingsDao.setBool(SettingsKeys.ANIME4K_ENHANCE_ENABLED, enabled)
-            if (enabled) settingsDao.setBool(SettingsKeys.FSR1_ENHANCE_ENABLED, false)
-            if (enabled) {
-                settingsDao.setString(
-                    SettingsKeys.CLARITY_MODE,
-                    com.wallpaperswitcher.engine.ClarityMode.SUPER,
-                )
-            }
-            pushEnhanceMode()
-        }
-    }
-
-    /** 读出两个互斥开关并推给运行中的引擎（见 engine.EnhanceMode）。 */
+    /** 把当前算法推给运行中的引擎（见 engine.EnhanceMode）。 */
     private suspend fun pushEnhanceMode() {
-        val mode = com.wallpaperswitcher.engine.EnhanceMode.of(
-            fsr1 = settingsDao.getBool(SettingsKeys.FSR1_ENHANCE_ENABLED, false),
-            anime4k = settingsDao.getBool(SettingsKeys.ANIME4K_ENHANCE_ENABLED, false),
+        val key = settingsDao.getString(SettingsKeys.ENHANCE_ALGO, "")
+        LiveWallpaperService.applyEnhanceModeFromSettings(
+            getApplication(),
+            com.wallpaperswitcher.engine.EnhanceMode.fromKey(key),
         )
-        LiveWallpaperService.applyEnhanceModeFromSettings(getApplication(), mode)
     }
 
     /** 向导用：打开系统动态壁纸选择器；false = 两个入口都打不开。 */

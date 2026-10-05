@@ -4301,16 +4301,25 @@ class LiveWallpaperService : WallpaperService() {
             renderer?.setEnhanceMode(if (isPreview) EnhanceMode.BUILT_IN else currentEnhanceMode())
         }
 
-        /** 当前放大算法：读两个互斥开关（见 [EnhanceMode]）。 */
+        /**
+         * 当前超分算法：`enhance_algo`；键还没写入时回退到 4.9.154 的两个旧开关
+         * （迁移在 App 启动时执行，这里只是保证迁移前重建的引擎也走对算法）。
+         */
         private suspend fun currentEnhanceMode(): Int = try {
-            EnhanceMode.of(
-                fsr1 = db.settingsDao()
-                    .getBool(SettingsKeys.FSR1_ENHANCE_ENABLED, false),
-                anime4k = db.settingsDao()
-                    .getBool(SettingsKeys.ANIME4K_ENHANCE_ENABLED, false),
-            )
+            val dao = db.settingsDao()
+            val stored = dao.getString(SettingsKeys.ENHANCE_ALGO, "")
+            if (stored.isNotBlank()) {
+                EnhanceMode.fromKey(stored)
+            } else {
+                EnhanceMode.fromKey(
+                    EnhanceMode.legacyKey(
+                        fsr1 = dao.getBool(SettingsKeys.LEGACY_FSR1_ENHANCE_ENABLED, false),
+                        anime4k = dao.getBool(SettingsKeys.LEGACY_ANIME4K_ENHANCE_ENABLED, false),
+                    )
+                )
+            }
         } catch (_: Exception) {
-            EnhanceMode.BUILT_IN
+            EnhanceMode.FSR1
         }
 
         /**

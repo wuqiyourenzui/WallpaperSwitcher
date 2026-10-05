@@ -60,7 +60,7 @@ import com.wallpaperswitcher.viewmodel.WallpaperViewModel
  *
  * 每个选项都是图 1 的形态：行右侧显示**当前值**，点一下从下方弹出选项面板
  * （[HiOptionPickerRow]）。选项表和当前值归一化见本文件底部
- * （[switchModeOptions] / [clarityKeyOf] 等）。
+ * （[switchModeOptions] / [enhanceAlgoOptions] 等）。
  */
 @OptIn(
     androidx.compose.material3.ExperimentalMaterial3Api::class,
@@ -75,12 +75,11 @@ fun WallpaperSettingsScreen(
     val state by viewModel.settingsUiState.collectAsStateWithLifecycle()
     val globalSwitchMode = state.globalSwitchMode
     val globalScaleMode = state.globalScaleMode
-    val clarityMode = state.clarityMode
     val rotateMismatchEnabled = state.rotateMismatchEnabled
     val rotateMismatchClockwise = state.rotateMismatchClockwise
     val kenBurnsEnabled = state.kenBurnsEnabled
-    val fsr1EnhanceEnabled by viewModel.fsr1EnhanceEnabled.collectAsStateWithLifecycle()
-    val anime4kEnhanceEnabled by viewModel.anime4kEnhanceEnabled.collectAsStateWithLifecycle()
+    val clarityEnabled by viewModel.clarityEnabled.collectAsStateWithLifecycle()
+    val enhanceAlgo by viewModel.enhanceAlgo.collectAsStateWithLifecycle()
 
     SettingsPageScaffold(onBack = onBack, modifier = modifier) {
         SettingsSection(title = stringResource(R.string.settings_page_wallpaper)) {
@@ -113,34 +112,26 @@ fun WallpaperSettingsScreen(
 
                 // Clarity enhancement for low-res media (default "auto" keeps the
                 // current behavior; the option lets users tune it on-device).
-                HiOptionPickerRow(
-                    title = stringResource(R.string.settings_clarity),
+                // 清晰度增强：只有开/关；打开后下面出现算法二选一（FSR1 / Anime4K）。
+                SettingsSwitchItem(
                     icon = Icons.Outlined.HighQuality,
-                    options = clarityOptions(),
-                    selectedKey = clarityKeyOf(clarityMode),
-                    onSelect = { viewModel.setClarityMode(it) },
+                    title = stringResource(R.string.settings_clarity),
+                    subtitle = stringResource(R.string.settings_clarity_hint),
+                    checked = clarityEnabled,
+                    onCheckedChange = { viewModel.setClarityEnabled(it) }
                 )
 
-                Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                // 放大算法（互斥）：只在「画质增强（超分）」模式下生效。
-                SettingsSwitchItem(
-                    icon = Icons.Outlined.AutoAwesome,
-                    title = stringResource(R.string.settings_fsr1),
-                    subtitle = stringResource(R.string.settings_fsr1_hint),
-                    checked = fsr1EnhanceEnabled,
-                    onCheckedChange = { viewModel.setFsr1EnhanceEnabled(it) }
-                )
-
-                Divider(modifier = Modifier.padding(horizontal = 16.dp))
-
-                SettingsSwitchItem(
-                    icon = Icons.Outlined.Movie,
-                    title = stringResource(R.string.settings_anime4k),
-                    subtitle = stringResource(R.string.settings_anime4k_hint),
-                    checked = anime4kEnhanceEnabled,
-                    onCheckedChange = { viewModel.setAnime4kEnhanceEnabled(it) }
-                )
+                if (clarityEnabled) {
+                    HiOptionPickerRow(
+                        title = stringResource(R.string.settings_enhance_algo),
+                        subtitle = stringResource(R.string.settings_enhance_algo_hint),
+                        options = enhanceAlgoOptions(),
+                        selectedKey = enhanceAlgoOf(enhanceAlgo),
+                        onSelect = { viewModel.setEnhanceAlgo(it) },
+                        // 子行：缩进一级，明确挂在开关下面（和旋转方向同一形态）。
+                        modifier = Modifier.padding(start = 16.dp, bottom = 12.dp),
+                    )
+                }
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
@@ -217,28 +208,21 @@ internal fun scaleModeOptions(): List<HiOptionSpec> = ScaleMode.entries.map { mo
 internal fun scaleModeOf(key: String): ScaleMode? =
     ScaleMode.entries.firstOrNull { it.name == key }
 
-// 清晰度存的不是枚举而是字符串（SettingsKeys.CLARITY_MODE：auto/off/super）。
-internal const val CLARITY_KEY_AUTO = "auto"
-internal const val CLARITY_KEY_OFF = "off"
-/** 画质增强（超分）: replaces the removed 增强 ("strong") option. */
-internal const val CLARITY_KEY_SUPER = "super"
+// 超分算法：key 就是设置里存的值（SettingsKeys.ENHANCE_ALGO / engine.EnhanceMode）。
 
-/** 清晰度面板：顺序 = 默认值在前。 */
-internal fun clarityOptions(): List<HiOptionSpec> = listOf(
-    HiOptionSpec(CLARITY_KEY_AUTO, R.string.clarity_auto),
-    HiOptionSpec(CLARITY_KEY_OFF, R.string.clarity_off),
-    HiOptionSpec(CLARITY_KEY_SUPER, R.string.settings_quality_enhance),
+/** 超分算法面板：FSR1 在前（默认值）。 */
+internal fun enhanceAlgoOptions(): List<HiOptionSpec> = listOf(
+    HiOptionSpec(com.wallpaperswitcher.engine.EnhanceMode.FSR1_KEY, R.string.settings_fsr1),
+    HiOptionSpec(com.wallpaperswitcher.engine.EnhanceMode.ANIME4K_KEY, R.string.settings_anime4k),
 )
 
-/**
- * 存的清晰度 → 面板认得的 key。
- *
- * 归一化交给渲染端同一份实现（[com.wallpaperswitcher.engine.ClarityMode]）：
- * 旧版本的「增强」("strong") 现在是「画质增强（超分）」("super")，未知值等同于
- * "自动"。面板与渲染端必须说同样的话，否则行右侧会显示一个用户选不到的值。
- */
-internal fun clarityKeyOf(stored: String): String =
-    com.wallpaperswitcher.engine.ClarityMode.normalize(stored)
+/** 存的算法 → 面板认得的 key；未知值归一到 FSR1（与 EnhanceMode.fromKey 同口径）。 */
+internal fun enhanceAlgoOf(stored: String): String =
+    if (stored == com.wallpaperswitcher.engine.EnhanceMode.ANIME4K_KEY) {
+        com.wallpaperswitcher.engine.EnhanceMode.ANIME4K_KEY
+    } else {
+        com.wallpaperswitcher.engine.EnhanceMode.FSR1_KEY
+    }
 
 // 旋转方向在设置里存的是布尔（SettingsKeys.ROTATE_MISMATCH_CW），面板需要两个 key。
 internal const val ROTATE_KEY_CW = "cw"

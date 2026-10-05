@@ -103,11 +103,16 @@ object SettingsKeys {
      */
     const val LEGACY_QUALITY_ENHANCE_ENABLED = "quality_enhance_enabled"
     /**
-     * 画质增强的放大算法（互斥开关，只在「清晰度增强 = 画质增强（超分）」下生效）：
-     * FSR1 EASU/RCAS 与 Anime4K（Original 线稿算法）。
+     * 超分算法二选一（清晰度增强打开时生效）："fsr1"（EASU/RCAS）或 "anime4k"
+     * （Original 线稿算法）。见 [com.wallpaperswitcher.engine.EnhanceMode]。
      */
-    const val FSR1_ENHANCE_ENABLED = "fsr1_enhance_enabled"
-    const val ANIME4K_ENHANCE_ENABLED = "anime4k_enhance_enabled"
+    const val ENHANCE_ALGO = "enhance_algo"
+    /**
+     * 4.9.154 的两个互斥开关，已被 [ENHANCE_ALGO] 取代；只留给一次性迁移读取并
+     * 删除（迁移见 WallpaperViewModel.migrateLegacyQualityEnhance）。
+     */
+    const val LEGACY_FSR1_ENHANCE_ENABLED = "fsr1_enhance_enabled"
+    const val LEGACY_ANIME4K_ENHANCE_ENABLED = "anime4k_enhance_enabled"
     // --- 订阅下载策略 (see engine.RssDownloadPolicy) ---
     /** 仅 Wi-Fi 下载: block subscription image downloads on metered networks. */
     const val RSS_WIFI_ONLY = "rss_wifi_only"
@@ -126,7 +131,7 @@ object SettingsKeys {
     const val TIMER_LAST_SWITCH_WALL_MS = "timer_last_switch_wall_ms"
     const val GLOBAL_SWITCH_MODE = "global_switch_mode"
     const val GLOBAL_SCALE_MODE = "global_scale_mode"
-    // Low-res media clarity enhancement: "auto" (default) | "off" | "strong"
+    // 清晰度增强（开/关）: "on"（默认；历史值 auto/super/strong 都按开处理）| "off"。
     const val CLARITY_MODE = "clarity_mode"
     // FILL/STRETCH: rotate media whose orientation mismatches the screen 90° so
     // more of it shows (instead of a thin perpendicular strip). On by default.
