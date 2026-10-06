@@ -5,21 +5,10 @@ import androidx.room.ForeignKey
 import androidx.room.PrimaryKey
 
 /**
- * 在线壁纸源: Bing 每日图 / 指定 URL / WebDAV 目录.
+ * 在线壁纸源: Bing 每日图 / 指定 URL / WebDAV 目录（功能已下线，见技术文档 §4.9.93）。
  *
- * A source downloads new media on its own schedule ([intervalMinutes], executed
- * by [com.wallpaperswitcher.worker.OnlineSourceWorker]) and inserts it into
- * [groupId]'s rotation. Everything is app-private:
- *
- *  - the downloaded files live under `filesDir/online/<sourceId>/`, never in the
- *    shared gallery, so nothing the user did not ask for shows up in Photos;
- *  - the WebDAV password is stored as AES/GCM ciphertext
- *    ([passwordCipher], see OnlineSecretStore), never as plain text;
- *  - the network is only used for the endpoints the user configured, and the
- *    runtime log records host/status only - never a URL query or a credential.
- *
- * `groupId = 0` means "自动分组": the sync resolves (or creates) the shared
- * 在线壁纸 group, so a source works without any group setup.
+ * 数据表与已下载的文件保留，避免升级时误删用户已有壁纸；调度、同步与密码
+ * 读写逻辑随功能一并删除，历史 [passwordCipher] 密文不再被任何代码读取。
  */
 @Entity(tableName = "online_sources")
 data class OnlineSource(
@@ -75,6 +64,11 @@ data class OnlineSource(
         const val TYPE_WEBDAV = "WEBDAV"
         /** 美人图 (meirentu.club): a listing page whose albums are scraped. */
         const val TYPE_MEIRENTU = "MEIRENTU"
+        /** 设置里的内置在线壁纸源（见 engine.OnlineBuiltins）。 */
+        const val TYPE_NASA_APOD = "NASA_APOD"
+        const val TYPE_WIKIMEDIA = "WIKIMEDIA"
+        const val TYPE_NETBIAN = "NETBIAN"
+        const val TYPE_IOLIU = "IOLIU"
 
         /** Bing changes once a day, so the default is one fetch per day. */
         const val DEFAULT_INTERVAL_MINUTES = 24 * 60

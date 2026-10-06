@@ -33,18 +33,13 @@ import com.wallpaperswitcher.engine.GroupRules
 @Composable
 fun GroupRhythmSection(
     group: WallpaperGroup,
-    onIntervalChange: (Long) -> Unit,
     onWindowChange: (Int, Int) -> Unit,
     onDaysChange: (Int) -> Unit,
     onMediaChange: (String) -> Unit,
 ) {
-    var showInterval by remember { mutableStateOf(false) }
     var showWindow by remember { mutableStateOf(false) }
     var showMedia by remember { mutableStateOf(false) }
 
-    val followGlobal = stringResource(R.string.group_option_follow_global)
-    val intervalText = if (group.intervalMs <= 0L) followGlobal
-    else formatInterval(group.intervalMs)
     val windowText = if (group.activeFromMinute !in 0..1439 ||
         group.activeToMinute !in 0..1439
     ) {
@@ -113,16 +108,6 @@ fun GroupRhythmSection(
         )
     }
 
-    if (showInterval) {
-        GroupIntervalDialog(
-            currentMs = group.intervalMs,
-            onDismiss = { showInterval = false },
-            onSelect = {
-                showInterval = false
-                onIntervalChange(it)
-            }
-        )
-    }
     if (showWindow) {
         GroupWindowDialog(
             fromMinute = group.activeFromMinute,
@@ -192,126 +177,6 @@ fun GroupMediaDialog(
 }
 
 /**
- * 分组独立间隔: 跟随全局 (0), one of the standard intervals, or an arbitrary
- * number of seconds typed by the user (same custom input as 切换间隔 in
- * Settings). No upper bound: a group can rotate every month or every year just
- * as well as every minute. The engine clamps anything below 10s to 10s
- * ([SwitchSchedule.MIN_INTERVAL_MS]), so that is the only limit offered.
- */
-@Composable
-fun GroupIntervalDialog(
-    currentMs: Long,
-    onDismiss: () -> Unit,
-    onSelect: (Long) -> Unit
-) {
-    val options = listOf(
-        0L to stringResource(R.string.group_option_follow_global),
-        30_000L to stringResource(R.string.duration_30s),
-        60_000L to stringResource(R.string.duration_1m),
-        300_000L to stringResource(R.string.duration_5m),
-        900_000L to stringResource(R.string.duration_15m),
-        1800_000L to stringResource(R.string.duration_30m),
-        3600_000L to stringResource(R.string.duration_1h),
-        7200_000L to stringResource(R.string.duration_2h),
-        21600_000L to stringResource(R.string.duration_6h),
-        43200_000L to stringResource(R.string.duration_12h),
-        86400_000L to stringResource(R.string.duration_24h)
-    )
-    // Prefill the custom field when the group already carries a value that is
-    // not one of the presets, so "custom" reads as the current setting.
-    var customSeconds by remember {
-        mutableStateOf(
-            if (currentMs > 0L && options.none { it.first == currentMs }) {
-                (currentMs / 1000L).toString()
-            } else {
-                ""
-            }
-        )
-    }
-    val customValue = customSeconds.toLongOrNull()
-    // Only the 10s floor: longer values are the point of "自定义" (a month /
-    // a year is a legitimate rhythm for a wallpaper group). A number too long
-    // for Long parses as null and simply leaves 确定 disabled.
-    val customValid = customValue != null && customValue >= MIN_GROUP_INTERVAL_SECONDS
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.group_interval_label)) },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 420.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                options.forEach { (ms, label) ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .selectableRow { onSelect(ms) }
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        RadioButton(selected = currentMs == ms, onClick = { onSelect(ms) })
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(label, style = MaterialTheme.typography.bodyLarge)
-                    }
-                }
-                Divider(modifier = Modifier.padding(vertical = 8.dp))
-                // 自定义秒数：和设置里的「切换间隔」同一套做法（只收 ASCII 数字，
-                // 越界时确定按钮保持禁用）。
-                Text(
-                    stringResource(R.string.interval_custom),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedTextField(
-                        value = customSeconds,
-                        onValueChange = { input ->
-                            // ASCII digits only: isDigit() also accepts
-                            // non-ASCII digits, which toLongOrNull() rejects.
-                            customSeconds = input.filter { c -> c in '0'..'9' }
-                        },
-                        label = { Text(stringResource(R.string.interval_seconds_label)) },
-                        placeholder = { Text(stringResource(R.string.interval_seconds_hint)) },
-                        singleLine = true,
-                        isError = customSeconds.isNotEmpty() && !customValid,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    FilledTonalButton(
-                        enabled = customValid,
-                        onClick = {
-                            val seconds = customValue ?: return@FilledTonalButton
-                            onSelect(seconds * 1000L)
-                        }
-                    ) { Text(stringResource(R.string.action_ok)) }
-                }
-                Text(
-                    // Only the floor: everything above 10s is allowed.
-                    stringResource(R.string.interval_min_10s),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
-        }
-    )
-}
-
-/** 自定义分组间隔的下限，与引擎的 10 秒最小间隔一致（不设上限）。 */
-private const val MIN_GROUP_INTERVAL_SECONDS = 10L
-
-
-/**
  * 时间规则 dialog: a `HH:mm` window (or 全天). The two fields are validated with
  * [GroupRules.parseMinuteOfDay]; the confirm button stays disabled until both
  * parse, so a typo can never write a broken window.
@@ -349,9 +214,11 @@ fun GroupWindowDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(modifier = Modifier.height(4.dp))
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                // 等宽铺满整行：7 个星期 chip 以前左对齐挤在左边，右边留一大片
+                // 空白（平板/大屏尤其明显）。等宽之后一眼就能看出"这是一周七天"。
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     (0..6).forEach { index ->
                         val on = (days shr index) and 1 == 1
@@ -363,7 +230,9 @@ fun GroupWindowDialog(
                                 days = next and GroupRules.ALL_DAYS
                             },
                             label = { Text(weekdayShortLabel(index)) },
-                            modifier = Modifier.height(32.dp)
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(32.dp)
                         )
                     }
                 }

@@ -3,6 +3,7 @@ package com.wallpaperswitcher.engine.legado
 import com.wallpaperswitcher.data.RssSource
 import com.wallpaperswitcher.engine.Json
 import com.wallpaperswitcher.engine.RssHttp
+import com.wallpaperswitcher.util.AppLog
 import org.mozilla.javascript.BaseFunction
 import org.mozilla.javascript.ClassShutter
 import org.mozilla.javascript.Context
@@ -10,6 +11,7 @@ import org.mozilla.javascript.Scriptable
 import org.mozilla.javascript.ScriptableObject
 import java.io.File
 import java.security.MessageDigest
+import java.util.LinkedHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -35,12 +37,27 @@ import java.util.concurrent.ConcurrentHashMap
  */
 internal object LegadoJsSource {
 
+    /** 最多缓存几份 jsLib 源码（每份可达 4MB，见 [libCache]）。 */
+    private const val LIB_CACHE_MAX = 6
+
     /** 同一份 rawJson 只跑一次（脚本解析 + 下载都很贵）。 */
     private val rulesCache = ConcurrentHashMap<Long, Entry>()
     private class Entry(val fingerprint: Int, val rules: LegadoRss.Rules)
 
-    /** 下载过的 jsLib 源码：URL → JS。 */
-    private val libCache = ConcurrentHashMap<String, String>()
+    /**
+     * 下载过的 jsLib 源码：URL → JS。
+     *
+     * 有界 LRU（几份就够用）：一份 jsLib 可达 4MB（见 [runSourceScript] 的
+     * 下载分支），而这是一个进程级单例、壁纸服务会长期保活进程 —— 无界
+     * Map 会随源编辑/换源一路增长。淘汰后只是重新下载/读缓存。
+     */
+    private val libCache = java.util.Collections.synchronizedMap(
+        object : LinkedHashMap<String, String>(LIB_CACHE_MAX, 0.75f, true) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<String, String>?
+            ): Boolean = size > LIB_CACHE_MAX
+        }
+    )
 
     /**
      * 源里声明了 jsLib、又没有静态规则 —— 阅读的 JS 源形态。
@@ -86,7 +103,10 @@ internal object LegadoJsSource {
     ): Map<String, Any?>? {
         val library = loadLibrary(jsLib) ?: return null
         val script = sourceScript(fields)
-        val context = Context.enter()
+        // Timed context: a source script that never returns (or that calls back
+        // into a rule doing so) used to pin this thread for good - see
+        // LegadoJsRuntime.
+        val context = LegadoJsRuntime.enter()
         return try {
             context.optimizationLevel = -1
             context.setClassShutter(PackageShutter)
@@ -112,10 +132,6 @@ internal object LegadoJsSource {
             if (System.getenv("WS_JS_DEBUG") != null) {
                 val payload = context.evaluateString(scope, "String(getJs())", "debugPayload", 1, null)
                 val text = Context.toString(payload)
-                try {
-                    java.io.File(System.getProperty("java.io.tmpdir"), "wsjs_payload.js").writeText(text)
-                } catch (_: Throwable) {
-                }
                 System.err.println("[wsjs] payload = " + text.take(900))
                 System.err.println("[wsjs] script result = " + Context.toString(evaluated))
                 System.err.println("[wsjs] ruleArticles = " + fields["ruleArticles"])
@@ -123,6 +139,9 @@ internal object LegadoJsSource {
             }
             fields
         } catch (t: Throwable) {
+            if (LegadoJsRuntime.isTimeout(t)) {
+                AppLog.w("LegadoJsSource", "source script aborted: ${LegadoJsRuntime.timeoutMs}ms rule timeout")
+            }
             if (System.getenv("WS_JS_DEBUG") != null) t.printStackTrace()
             // 脚本、网络、类白名单哪一步失败都按「拿不到规则」处理：
             // 上层会报「该源依赖阅读的 JS 库」之类的明确原因，而不是解析异常。

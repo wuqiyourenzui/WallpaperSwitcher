@@ -3,14 +3,10 @@ package com.wallpaperswitcher.engine.legado
 import com.jayway.jsonpath.JsonPath
 import com.wallpaperswitcher.engine.Json
 import com.wallpaperswitcher.engine.OnlineSourceRules
-import com.wallpaperswitcher.util.AppLog
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.select.Elements
-import org.mozilla.javascript.Context
 import org.mozilla.javascript.Scriptable
-import org.mozilla.javascript.ScriptableObject
-import org.mozilla.javascript.Undefined
 
 /**
  * 阅读 (Legado) 订阅源规则引擎的核心实现（P1：规则语法 + CSS/JSON/XPath）。

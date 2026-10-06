@@ -119,10 +119,15 @@
 | READ_MEDIA_IMAGES | 读取图片（Android 13+） |
 | READ_MEDIA_VIDEO | 读取视频（Android 13+） |
 | READ_EXTERNAL_STORAGE | 读取存储（Android 12 及以下） |
+| READ_MEDIA_VISUAL_USER_SELECTED | Android 14+「选择部分照片」授权 |
 | FOREGROUND_SERVICE | 后台前台服务 |
+| FOREGROUND_SERVICE_SPECIAL_USE | 前台服务类型（Android 14+ 要求） |
+| SYSTEM_ALERT_WINDOW | 悬浮切换按钮（需在系统设置中授权） |
 | POST_NOTIFICATIONS | 通知（Android 13+） |
 | RECEIVE_BOOT_COMPLETED | 开机自启动 |
 | SET_WALLPAPER | 设置壁纸 |
+| INTERNET | 订阅源抓取与媒体下载 |
+| ACCESS_NETWORK_STATE | 网络状态判断（仅 Wi-Fi 下载等策略） |
 
 ## 使用指南
 

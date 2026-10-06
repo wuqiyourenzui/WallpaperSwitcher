@@ -12,7 +12,7 @@ import androidx.room.migration.Migration
         GroupSchedule::class, RecentShown::class, OnlineSource::class, OnlineItem::class,
         RssSource::class, RssArticle::class
     ],
-    version = 14,
+    version = 15,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -316,6 +316,29 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Index the queries the windowed media grid and the favourites /
+         * metadata paths hit on every page: paging sorts by
+         * (groupId, addedAt, id), metadata back-fill and star toggles match on
+         * uri, and the favourites screen groups by uri / filters isFavorite.
+         */
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_wallpaper_images_groupId_addedAt_id` " +
+                        "ON `wallpaper_images` (`groupId`, `addedAt`, `id`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_wallpaper_images_uri` " +
+                        "ON `wallpaper_images` (`uri`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_wallpaper_images_isFavorite` " +
+                        "ON `wallpaper_images` (`isFavorite`)"
+                )
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -327,7 +350,7 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                         MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
                         MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
-                        MIGRATION_13_14
+                        MIGRATION_13_14, MIGRATION_14_15
                     )
                     .build()
                     .also { INSTANCE = it }

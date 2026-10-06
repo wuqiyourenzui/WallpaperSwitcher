@@ -153,7 +153,8 @@ object SettingsKeys {
     const val SWITCH_TRANSITION_FADE = "fade"
     const val SWITCH_TRANSITION_SLIDE = "slide"
     const val SWITCH_TRANSITION_ZOOM = "zoom"
-    const val SWITCH_TRANSITION_NONE = "none"    /**
+    const val SWITCH_TRANSITION_NONE = "none"
+    /**
      * 默认过渡动画：无。用户要求"取消过渡动画"后，只有主动在设置里选回来
      * 才会有过渡；旧版本升级上来的设备如果已经存了 fade/slide/zoom，仍然按
      * 存的值播放（这是用户自己的选择）。

@@ -230,10 +230,16 @@ class SwitchPickingTest {
                 optionEnabled = true, videoPlaying = true, holdPending = true
             )
         )
-        // Even if isVideoPlaying blinks false between passes, a waiting hold
-        // must keep swallowing the ticks until onVideoPassCompleted runs it.
+    }
+
+    @Test
+    fun staleHoldIsReleasedOnceNoVideoIsOnScreen() {
+        // The emulator deadlock: the held clip failed to start / was replaced,
+        // so onVideoPassCompleted never ran and every later tick was dropped
+        // forever ("still held" spam, timed switching dead). A hold with no
+        // video on screen is stale and must be released by the tick itself.
         assertEquals(
-            SwitchPicking.VideoEndHold.DROP_TICK,
+            SwitchPicking.VideoEndHold.SWITCH_NOW,
             SwitchPicking.videoEndHold(
                 optionEnabled = true, videoPlaying = false, holdPending = true
             )

@@ -29,13 +29,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.wallpaperswitcher.R
 import com.wallpaperswitcher.data.RssArticle
 import com.wallpaperswitcher.engine.legado.LegadoRss
 import com.wallpaperswitcher.ui.theme.HiLoadingHint
-import com.wallpaperswitcher.ui.theme.hiCardColor
 import com.wallpaperswitcher.util.AppLog
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 

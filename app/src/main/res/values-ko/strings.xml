@@ -46,7 +46,6 @@
     <string name="button_color_pink">분홍</string>
     <string name="button_color_white">흰색</string>
     <string name="button_color_black">검정</string>
-    <string name="settings_wallpaper_title">배경 화면 설정</string>
     <string name="settings_switch_mode">전환 모드</string>
     <string name="switch_mode_random">무작위</string>
     <string name="switch_mode_sequential">순차</string>
@@ -68,9 +67,6 @@
     <string name="settings_rotate_direction">회전 방향</string>
     <string name="rotate_clockwise">시계 방향</string>
     <string name="rotate_counter_clockwise">반시계 방향</string>
-    <string name="settings_switch_methods">전환 방식</string>
-    <string name="settings_section_methods">전환 방식</string>
-    <string name="settings_section_methods_hint">언제 전환할지</string>
     <string name="settings_timed_switch">예약 전환</string>
     <string name="settings_timed_switch_hint">설정한 간격마다 배경 화면을 자동으로 전환합니다</string>
     <string name="settings_switch_interval">전환 간격</string>
@@ -81,14 +77,11 @@
     <string name="settings_double_tap_hint">화면을 두 번 탭해 전환(라이브 배경 화면 필요)</string>
     <string name="settings_floating_button">플로팅 전환 버튼</string>
     <string name="settings_floating_button_hint">버튼을 한 번 탭하면 전환(일부 런처는 두 번 탭을 전달하지 않음)</string>
-    <string name="settings_switch_fade">전환 애니메이션</string>
-    <string name="settings_switch_fade_hint">전환할 때 페이드 인으로 표시</string>
     <string name="settings_video_sound">동영상 배경 화면 소리</string>
     <string name="settings_video_sound_hint">홈 화면이 보일 때만 소리 재생</string>
     <string name="settings_lock_timer">잠금 화면 예약 전환</string>
     <string name="settings_lock_timer_hint">아래 간격으로 잠금 화면 배경만 따로 변경합니다</string>
     <string name="settings_lock_interval">잠금 화면 전환 간격</string>
-    <string name="settings_section_scan">폴더 자동 검사</string>
     <string name="settings_auto_scan">폴더 자동 검사</string>
     <string name="settings_auto_scan_hint">가져온 폴더의 새 미디어를 주기적으로 그룹에 추가</string>
     <string name="settings_scan_interval">검사 간격</string>
@@ -105,7 +98,6 @@
     <string name="action_choose_image">이미지 선택</string>
     <string name="action_replace_image">이미지 변경</string>
     <string name="action_clear_image">이미지 삭제</string>
-    <string name="settings_section_appearance">모양</string>
     <string name="settings_theme_mode">테마 모드</string>
     <string name="settings_theme_color">테마 색상</string>
     <string name="theme_color_system">시스템 설정 따르기</string>
@@ -179,7 +171,9 @@
     <string name="selection_none">전체 해제</string>
     <string name="selection_count">%1$d/%2$d 선택됨</string>
     <string name="dialog_delete_groups_title">그룹 삭제</string>
-    <string name="dialog_delete_groups_message">선택한 그룹 %1$d개를 삭제할까요? 그룹의 미디어 기록도 함께 삭제됩니다(휴대폰의 사진/동영상 파일은 삭제되지 않습니다).</string>
+    <plurals name="dialog_delete_groups_message">
+        <item quantity="other">선택한 그룹 %1$d개를 삭제할까요? 그룹의 미디어 기록도 함께 제거됩니다(휴대폰의 사진/동영상 파일은 삭제되지 않습니다).</item>
+    </plurals>
     <string name="empty_groups_title">아직 배경 화면 그룹이 없습니다</string>
     <string name="empty_groups_hint">“새 그룹”을 눌러 배경 화면을 추가하세요</string>
     <string name="dialog_new_group_title">새 배경 화면 그룹</string>
@@ -291,7 +285,6 @@
     <string name="hint_motion_needs_engine">동영상/GIF에는 라이브 배경 화면이 필요합니다. 시스템 라이브 배경 화면 설정에서 이 앱을 선택하세요</string>
     <string name="home_permission_warning">“사진 및 동영상” 권한이 없어 가져온 사진/동영상을 읽을 수 없습니다. 권한을 허용한 뒤 다시 시도하세요</string>
     <string name="action_grant_permission">권한 허용</string>
-    <string name="settings_logs_privacy_note">로그에 기기 모델과 폴더 이름이 포함됩니다. 공유에 주의하세요</string>
     <plurals name="home_groups_count">
         <item quantity="other">그룹 %1$d개</item>
     </plurals>
@@ -304,9 +297,6 @@
     <plurals name="folder_count">
         <item quantity="other">폴더 %1$d개</item>
     </plurals>
-    <!-- 그룹별 개별 리듬 (간격 / 모드 / 시간대) -->
-    <string name="group_option_follow_global">전역 설정 따르기</string>
-    <string name="group_interval_label">간격</string>
     <string name="group_window_label">시간대</string>
     <string name="group_window_all_day">하루 종일</string>
     <string name="group_window_from">시작</string>
@@ -332,8 +322,6 @@
     <string name="tile_switch_label">배경화면 전환</string>
     <string name="tile_pause_label">전환 일시중지</string>
     <string name="tile_resume_label">전환 재개</string>
-    <string name="tile_paused_toast">배경화면 전환을 일시중지했습니다</string>
-    <string name="tile_resumed_toast">배경화면 전환을 재개했습니다</string>
     <string name="widget_switch">전환</string>
     <string name="widget_pause">일시중지</string>
     <string name="widget_resume">재개</string>
@@ -348,7 +336,6 @@
     <string name="settings_config_backup">설정 내보내기 / 가져오기</string>
     <string name="settings_export_config">설정 내보내기</string>
     <string name="settings_import_config">설정 가져오기</string>
-    <string name="settings_config_hint">그룹, 간격, 모드와 전역 설정을 내보냅니다 (사진/동영상 파일은 포함되지 않음)</string>
     <string name="toast_config_exported">설정을 내보냈습니다</string>
     <string name="toast_config_export_failed">내보내기 실패: %1$s</string>
     <string name="toast_config_imported">그룹 %1$d개, 구독 %2$d개를 가져왔습니다</string>
@@ -377,93 +364,28 @@
     <string name="day_fri">금</string>
     <string name="day_sat">토</string>
     <string name="day_sun">일</string>
-    <!-- 다크 모드 연동 -->
-    <string name="group_theme_label">테마</string>
-    <string name="group_theme_any">제한 없음</string>
-    <string name="group_theme_hint">휴대폰의 다크·라이트 모드에 따라 이 그룹을 전환에 포함할지 결정합니다</string>
     <!-- 동영상 끝까지 / 즐겨찾기 / 최근 중복 -->
     <string name="settings_video_play_to_end">동영상 끝까지 재생</string>
     <string name="settings_video_play_to_end_hint">예약 전환은 동영상이 끝난 뒤 넘어갑니다(수동 전환은 예외)</string>
-    <string name="settings_favorite_boost">즐겨찾기 우선</string>
-    <string name="settings_favorite_boost_hint">무작위·셔플에서 즐겨찾기한 이미지가 더 자주 표시됩니다</string>
-    <string name="settings_recent_no_repeat">최근 중복 방지</string>
-    <string name="settings_recent_no_repeat_hint">무작위 모드에서 최근에 표시한 이미지를 곧바로 반복하지 않습니다</string>
-    <string name="recent_no_repeat_off">사용 안 함</string>
     <string name="media_favorite_add">즐겨찾기 추가</string>
     <string name="media_favorite_remove">즐겨찾기 해제</string>
-    <string name="media_favorite_badge">즐겨찾기</string>
-    <!-- 그룹 필터／순서 -->
-    <string name="group_filter_label">필터</string>
-    <string name="group_filter_all">전체</string>
-    <string name="group_filter_image">이미지만</string>
-    <string name="group_filter_motion">동영상／GIF만</string>
-    <string name="group_filter_favorite">즐겨찾기만</string>
-    <string name="group_sort_label">순서</string>
-    <string name="group_sort_added">추가 순서</string>
-    <string name="group_sort_newest">최신순</string>
-    <!-- 위젯 -->
-    <string name="widget_next_in">다음 전환</string>
     <string name="widget_current_unknown">알 수 없음</string>
     <!-- 실행 상태 -->
     <!-- 온라인 배경화면 소스 (Bing 일일 / URL / WebDAV) -->
     <string name="online_auto_group_name">온라인 배경화면</string>
-    <string name="settings_section_online">온라인 배경화면 소스</string>
-    <string name="settings_online_sources">온라인 배경화면 소스</string>
-    <string name="settings_online_sources_desc">Bing 일일 이미지 / URL / WebDAV를 주기적으로 그룹에 가져옵니다</string>
-    <string name="title_online_sources">온라인 배경화면 소스</string>
-    <string name="online_add">소스 추가</string>
-    <string name="online_empty">온라인 배경화면 소스가 없습니다. 오른쪽 아래에서 추가하세요.</string>
-    <string name="online_type_bing">Bing 일일 이미지</string>
-    <string name="online_type_url">지정 URL</string>
-    <string name="online_type_meirentu">메이런투 (meirentu.club)</string>
-    <string name="online_type_webdav">WebDAV 폴더</string>
-    <string name="online_dialog_add_title">온라인 배경화면 소스 추가</string>
-    <string name="online_dialog_edit_title">온라인 배경화면 소스 편집</string>
-    <string name="online_label_name">이름 (선택)</string>
-    <string name="online_label_target_group">가져올 그룹</string>
     <string name="online_group_auto">\"온라인 배경화면\" 자동 생성</string>
-    <string name="online_label_interval">업데이트 간격</string>
-    <string name="online_label_url">이미지 URL</string>
-    <string name="online_label_webdav_url">WebDAV 주소</string>
-    <string name="online_label_webdav_path">하위 폴더 (선택)</string>
-    <string name="online_label_username">사용자 이름 (선택)</string>
-    <string name="online_label_password">비밀번호 (선택)</string>
-    <string name="online_password_keep">비워 두면 변경하지 않습니다</string>
-    <string name="online_label_keep_count">보관 개수</string>
-    <string name="online_keep_count_desc">초과분은 오래된 이미지부터 자동 삭제, 0 = 제한 없음</string>
-    <string name="online_keep_unlimited">제한 없음</string>
-    <string name="online_wifi_only">Wi-Fi에서만 업데이트</string>
-    <string name="online_charging_only">충전 중에만 업데이트</string>
-    <string name="online_privacy_note">입력한 주소만 접속합니다. 계정 정보는 기기에서 암호화되어 저장됩니다. 공용 주소는 HTTPS를 사용해야 합니다.</string>
-    <string name="online_action_refresh">지금 업데이트</string>
     <string name="online_never_updated">업데이트 없음</string>
-    <string name="online_last_update">마지막 업데이트</string>
-    <string name="online_status_ok">업데이트됨: 새로 %1$d장</string>
     <string name="online_status_ok_none">업데이트됨: 새 이미지 없음</string>
+    <string name="online_status_ok_added">업데이트됨: 새 이미지 %1$d장</string>
+    <string name="settings_online_sources">온라인 배경화면 소스</string>
+    <string name="settings_online_sources_desc">Bing 데일리, NASA APOD, Wikimedia 등 내장 소스</string>
+    <string name="settings_online_sources_hint">켜면 “온라인 배경화면” 그룹으로 자동 다운로드됩니다(Wi-Fi에서 매일 업데이트)</string>
+    <string name="settings_online_refresh_now">지금 업데이트</string>
+    <string name="settings_online_source_started">“%1$s” 켜짐 — 다운로드 중…</string>
+    <string name="settings_online_source_none">먼저 온라인 배경화면 소스를 켜세요</string>
+    <string name="settings_online_source_refreshing">온라인 배경화면 업데이트를 시작했습니다</string>
     <string name="online_status_error">업데이트 실패: %1$s</string>
-    <string name="online_delete_title">온라인 배경화면 소스 삭제</string>
-    <string name="online_delete_message">다운로드한 이미지와 파일도 함께 삭제됩니다. \"%1$s\"을(를) 삭제할까요?</string>
-    <string name="online_saved">저장됨</string>
-    <string name="online_refresh_started">업데이트를 시작했습니다</string>
-    <string name="online_url_hint">https://example.com/latest.jpg</string>
-    <string name="online_webdav_hint">https://nas.example.com/dav/photos</string>
-    <string name="online_meirentu_hint">https://meirentu.club/</string>
-    <string name="online_meirentu_note">목록 페이지에서 최신 앨범의 앞 2페이지를 가져옵니다 (실행당 최대 8장)</string>
-    <string name="online_meirentu_select">이미지 선택</string>
-    <string name="online_meirentu_selected">%1$d장 선택됨</string>
-    <string name="online_meirentu_auto_mode">최신 앨범 자동 가져오기</string>
-    <string name="online_meirentu_manual_mode">선택한 %1$d장만</string>
-    <string name="online_meirentu_clear">선택 지우기</string>
-    <string name="online_meirentu_pages">앨범당 페이지 수</string>
-    <string name="online_max_per_run">실행당 최대</string>
-    <string name="online_picker_title">메이런투 이미지 선택</string>
-    <string name="online_picker_albums">앨범</string>
-    <string name="online_picker_load_more">더 불러오기</string>
-    <string name="online_picker_no_more">더 없음</string>
-    <string name="online_picker_select_page">이 페이지 모두 선택</string>
     <string name="online_picker_loading">불러오는 중…</string>
-    <string name="online_picker_failed">불러오기 실패: %1$s</string>
-    <string name="online_picker_done">완료</string>
     <!-- 읽기 구독 (Legado 호환) -->
     <string name="title_subscriptions">구독</string>
     <string name="nav_subscriptions">구독</string>
@@ -473,7 +395,6 @@
     <string name="rss_delete_title">구독 소스 삭제</string>
     <string name="rss_delete_message">\"%1$s\" 및 가져온 기사를 삭제할까요?</string>
     <string name="rss_last_update">마지막 업데이트</string>
-    <string name="rss_open">읽기</string>
     <string name="rss_name">이름 (선택)</string>
     <string name="rss_url">피드 URL (RSS/Atom)</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
@@ -490,21 +411,17 @@
     <string name="rss_edit_add_field">필드 추가</string>
     <string name="settings_rss_download_dir">구독 이미지 다운로드 폴더</string>
     <string name="settings_rss_download_dir_default">앱 전용 폴더(기본, 갤러리에 표시되지 않음)</string>
-    <string name="settings_rss_download_dir_reset">기본값으로</string>
     <string name="settings_rss_download_dir_saved">폴더가 변경되었습니다. 새로 가져온 이미지가 이곳에 저장됩니다</string>
     <string name="settings_rss_download_dir_reset_done">앱 전용 폴더로 복원했습니다</string>
     <string name="rss_article">기사</string>
-    <string name="rss_open_original">원문 열기</string>
     <string name="rss_open_in_browser">브라우저에서 열기</string>
     <string name="rss_status_ok">업데이트됨: 새로 %1$d개</string>
     <string name="rss_browse_source">웹 페이지형 소스 · 탭하면 브라우저로 열림</string>
     <string name="rss_saved">저장됨</string>
     <string name="rss_refresh_done">새로 고침됨: 새로 %1$d개</string>
     <string name="rss_refresh_failed">새로 고침 실패: %1$s</string>
-    <string name="rss_refresh_started">모든 구독을 새로 고치는 중</string>
     <string name="rss_import_failed">가져오기 실패, 내용 형식을 확인하세요</string>
     <string name="rss_import_done">%1$d개 소스를 가져오고 %2$d개를 업데이트했습니다 (%3$d개 건너뜀)</string>
-    <string name="rss_refresh_all">모두 새로 고침</string>
     <string name="rss_article_images">기사 이미지 (%1$d)</string>
     <string name="rss_select_all">전체 선택</string>
     <string name="rss_clear_selection">지우기</string>
@@ -579,21 +496,11 @@
     <string name="rss_edit_saved">저장됨</string>
     <string name="rss_edit_save_failed">저장 실패</string>
     <string name="rss_proxy">프록시</string>
-    <string name="rss_proxy_hint">일부 사이트는 프록시가 필요합니다. 비워 두면 직접 연결(예 127.0.0.1:7890, socks5:// 지원)</string>
-    <string name="rss_proxy_value">프록시 주소(host:port)</string>
-    <string name="rss_proxy_clear">지우기</string>
-    <string name="rss_proxy_saved">프록시 저장됨</string>
-    <string name="rss_proxy_cleared">직접 연결로 변경됨</string>
     <string name="rss_load_more">더 불러오기</string>
     <string name="rss_no_more">더 이상 없음</string>
-    <string name="rss_images_loading">이미지 불러오는 중…</string>
-    <string name="rss_categories">카테고리</string>
-    <string name="rss_web_mode">브라우저 모드</string>
     <string name="rss_web_collected">%1$d장 수집됨</string>
     <string name="rss_web_use">이 이미지 사용</string>
-    <string name="rss_add_video_group">동영상을 그룹에 추가</string>
     <string name="rss_reload">다시 불러오기</string>
-    <string name="rss_play_external">시스템 플레이어</string>
     <string name="rss_video_title">동영상</string>
     <string name="rss_video_loading">동영상 불러오는 중…</string>
     <string name="rss_video_failed">지금은 동영상을 재생할 수 없습니다(링크 만료 가능)</string>
@@ -611,11 +518,7 @@
     <string name="favorites_empty">아직 즐겨찾기가 없습니다. 크게 보기에서 두 번 탭해 보세요</string>
     <string name="recent_title">최근 표시</string>
     <string name="recent_empty">아직 기록이 없습니다. 배경을 몇 장 바꾸면 여기에 나타납니다</string>
-    <string name="recent_slot_home">홈</string>
-    <string name="recent_slot_lock">잠금 화면</string>
     <string name="recent_push">지금 다시 표시</string>
-    <string name="recent_pushed">다시 표시됨</string>
-    <string name="preview_nothing">미리볼 다음 배경이 없습니다</string>
     <string name="browse_entry">크게 보기</string>
     <string name="storage_title">저장공간 및 데이터</string>
     <string name="storage_total">앱 사용량 %1$s</string>
@@ -677,22 +580,9 @@
     <string name="wizard_done">완료</string>
     <string name="wizard_skip">나중에</string>
     <string name="settings_page_setup_desc">3단계로 초기 설정과 자체 점검</string>
-    <string name="option_panel_title">선택</string>
-    <string name="option_default">기본</string>
-    <string name="color_picker_title">색상 선택</string>
-    <string name="color_hex">색상 값</string>
     <string name="live_wallpaper_permission_title">\"라이브 배경 화면 서비스\"를 켜야 합니다</string>
     <string name="live_wallpaper_permission_message">시스템이 이 앱의 \"라이브 배경 화면 서비스\"를 허용하지 않아 라이브 배경 화면 화면이 곧바로 닫혀 설정할 수 없습니다. 권한 관리 → 기타 권한에서 \"라이브 배경 화면 서비스\"를 켠 뒤 다시 시도해 주세요.</string>
     <string name="action_open_permission">설정 열기</string>
     <string name="toast_picker_unavailable">시스템 라이브 배경 화면 화면을 열 수 없습니다</string>
 </resources>
-
-
-
-
-
-
-
-
-
 

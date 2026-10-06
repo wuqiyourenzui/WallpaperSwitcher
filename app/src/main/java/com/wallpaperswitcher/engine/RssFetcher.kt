@@ -2,11 +2,8 @@ package com.wallpaperswitcher.engine
 
 import com.wallpaperswitcher.data.RssSource
 import com.wallpaperswitcher.util.AppLog
-import java.io.IOException
-import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -53,19 +50,19 @@ internal object RssFetcher {
             // 脚本报错、或用到白名单之外的类）—— 报明确原因，而不是
             // 「返回内容无法解析」。
             if (com.wallpaperswitcher.engine.legado.LegadoRss.requiresJsRuntime(source)) {
-                throw OnlineFetcher.FetchException("unsupported_js")
+                throw FetchException("unsupported_js")
             }
             when (OnlineSourceRules.endpointPolicy(source.url, allowCleartext = true)) {
                 OnlineSourceRules.EndpointPolicy.NEEDS_HTTPS ->
-                    throw OnlineFetcher.FetchException("https_required")
+                    throw FetchException("https_required")
                 OnlineSourceRules.EndpointPolicy.INVALID ->
-                    throw OnlineFetcher.FetchException("bad_url")
+                    throw FetchException("bad_url")
                 OnlineSourceRules.EndpointPolicy.OK -> Unit
             }
             val builder = try {
                 Request.Builder().url(source.url)
             } catch (t: Throwable) {
-                throw OnlineFetcher.FetchException("bad_url", cause = t)
+                throw FetchException("bad_url", cause = t)
             }
             builder.header("User-Agent", USER_AGENT)
             builder.header("Accept", "application/rss+xml, application/atom+xml, application/json, */*")
@@ -79,14 +76,14 @@ internal object RssFetcher {
                 val status = response.code
                 AppLog.d(TAG, "RSS ${response.request.url.host} -> $status")
                 if (!response.isSuccessful) {
-                    throw OnlineFetcher.FetchException(httpReason(status), status)
+                    throw FetchException(HttpFailureReason.of(status), status)
                 }
                 val body = response.peekBody(MAX_BODY_BYTES).string()
-                if (body.isBlank()) throw OnlineFetcher.FetchException("empty", status)
+                if (body.isBlank()) throw FetchException("empty", status)
                 com.wallpaperswitcher.engine.legado.LegadoRss
                     .checkLoginScript(source, null, body, source.url)
                 val articles = FeedParser.parse(body)
-                if (articles.isEmpty()) throw OnlineFetcher.FetchException("parse", status)
+                if (articles.isEmpty()) throw FetchException("parse", status)
                 com.wallpaperswitcher.engine.legado.LegadoRss.PageResult(articles, null)
             }
         }
@@ -98,19 +95,21 @@ internal object RssFetcher {
     suspend fun fetchText(url: String): String = withContext(Dispatchers.IO) {
         when (OnlineSourceRules.endpointPolicy(url, allowCleartext = true)) {
             OnlineSourceRules.EndpointPolicy.NEEDS_HTTPS ->
-                throw OnlineFetcher.FetchException("https_required")
+                throw FetchException("https_required")
             OnlineSourceRules.EndpointPolicy.INVALID ->
-                throw OnlineFetcher.FetchException("bad_url")
+                throw FetchException("bad_url")
             OnlineSourceRules.EndpointPolicy.OK -> Unit
         }
         val request = try {
             Request.Builder().url(url).header("User-Agent", USER_AGENT).get().build()
         } catch (t: Throwable) {
-            throw OnlineFetcher.FetchException("bad_url", cause = t)
+            throw FetchException("bad_url", cause = t)
         }
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                throw OnlineFetcher.FetchException(httpReason(response.code), response.code)
+                throw FetchException(
+                    HttpFailureReason.of(response.code), response.code
+                )
             }
             response.peekBody(4L * 1024 * 1024).string()
         }
@@ -128,23 +127,5 @@ internal object RssFetcher {
             .toList()
     }
 
-    private fun httpReason(status: Int): String = when (status) {
-        401 -> "auth"
-        403 -> "forbidden"
-        404 -> "not_found"
-        429 -> "rate_limited"
-        in 500..599 -> "server"
-        else -> "http_$status"
-    }
-
-    fun classify(t: Throwable): String = when (t) {
-        is OnlineFetcher.FetchException -> t.reason
-        // Distinguish "the site did not answer in time" from a hard network
-        // failure: the UI wording differs and users kept seeing "网络不可用"
-        // for plain timeouts.
-        is java.net.SocketTimeoutException -> "timeout"
-        is java.io.InterruptedIOException -> "timeout"
-        is IOException -> "network"
-        else -> "unknown"
-    }
+    fun classify(t: Throwable): String = HttpFailureReason.classify(t)
 }

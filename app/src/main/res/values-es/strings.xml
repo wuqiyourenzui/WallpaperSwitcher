@@ -46,7 +46,6 @@
     <string name="button_color_pink">Rosa</string>
     <string name="button_color_white">Blanco</string>
     <string name="button_color_black">Negro</string>
-    <string name="settings_wallpaper_title">Ajustes de fondo</string>
     <string name="settings_switch_mode">Modo de cambio</string>
     <string name="switch_mode_random">Aleatorio</string>
     <string name="switch_mode_sequential">En orden</string>
@@ -68,9 +67,6 @@
     <string name="settings_rotate_direction">Sentido de giro</string>
     <string name="rotate_clockwise">Horario</string>
     <string name="rotate_counter_clockwise">Antihorario</string>
-    <string name="settings_switch_methods">Formas de cambiar</string>
-    <string name="settings_section_methods">Formas de cambiar</string>
-    <string name="settings_section_methods_hint">Cuándo se cambia el fondo</string>
     <string name="settings_timed_switch">Cambio por temporizador</string>
     <string name="settings_timed_switch_hint">Cambia el fondo automáticamente según el intervalo</string>
     <string name="settings_switch_interval">Intervalo de cambio</string>
@@ -81,14 +77,11 @@
     <string name="settings_double_tap_hint">Toca dos veces la pantalla para cambiar (requiere fondo animado)</string>
     <string name="settings_floating_button">Botón flotante de cambio</string>
     <string name="settings_floating_button_hint">Un toque en el botón cambia el fondo (algunos lanzadores no envían el doble toque)</string>
-    <string name="settings_switch_fade">Animación de transición</string>
-    <string name="settings_switch_fade_hint">Fundido de entrada al cambiar de fondo</string>
     <string name="settings_video_sound">Sonido del fondo de vídeo</string>
     <string name="settings_video_sound_hint">Sonido solo cuando se ve Inicio</string>
     <string name="settings_lock_timer">Cambio por temporizador en bloqueo</string>
     <string name="settings_lock_timer_hint">Cambia solo el fondo de bloqueo con el intervalo de abajo</string>
     <string name="settings_lock_interval">Intervalo del fondo de bloqueo</string>
-    <string name="settings_section_scan">Escaneo automático de carpetas</string>
     <string name="settings_auto_scan">Escanear carpetas automáticamente</string>
     <string name="settings_auto_scan_hint">Añade periódicamente archivos nuevos de las carpetas importadas</string>
     <string name="settings_scan_interval">Intervalo de escaneo</string>
@@ -105,7 +98,6 @@
     <string name="action_choose_image">Elegir imagen</string>
     <string name="action_replace_image">Cambiar imagen</string>
     <string name="action_clear_image">Quitar imagen</string>
-    <string name="settings_section_appearance">Aspecto</string>
     <string name="settings_theme_mode">Modo del tema</string>
     <string name="settings_theme_color">Color del tema</string>
     <string name="theme_color_system">Seguir al sistema</string>
@@ -179,7 +171,10 @@
     <string name="selection_none">Deseleccionar todo</string>
     <string name="selection_count">%1$d/%2$d seleccionados</string>
     <string name="dialog_delete_groups_title">Eliminar grupos</string>
-    <string name="dialog_delete_groups_message">¿Eliminar los %1$d grupos seleccionados? También se quitarán sus registros de contenido (los archivos de tu teléfono no se borran).</string>
+    <plurals name="dialog_delete_groups_message">
+        <item quantity="one">¿Eliminar el grupo seleccionado (%1$d)? También se quitarán sus entradas de medios (los archivos de foto/vídeo del teléfono no se eliminan).</item>
+        <item quantity="other">¿Eliminar los grupos seleccionados (%1$d)? También se quitarán sus entradas de medios (los archivos de foto/vídeo del teléfono no se eliminan).</item>
+    </plurals>
     <string name="empty_groups_title">Aún no hay grupos de fondos</string>
     <string name="empty_groups_hint">Toca “Grupo nuevo” para empezar a añadir fondos</string>
     <string name="dialog_new_group_title">Nuevo grupo de fondos</string>
@@ -291,7 +286,6 @@
     <string name="hint_motion_needs_engine">Vídeo/GIF necesitan un fondo animado: elige esta app en los ajustes del sistema</string>
     <string name="home_permission_warning">Sin el permiso «Fotos y vídeos» no se pueden leer los archivos importados. Concédelo e inténtalo de nuevo</string>
     <string name="action_grant_permission">Conceder</string>
-    <string name="settings_logs_privacy_note">El registro incluye modelo y nombres de carpetas; compártelo con cuidado</string>
     <plurals name="home_groups_count">
         <item quantity="one">%1$d grupo</item>
         <item quantity="other">%1$d grupos</item>
@@ -308,9 +302,6 @@
         <item quantity="one">%1$d carpeta</item>
         <item quantity="other">%1$d carpetas</item>
     </plurals>
-    <!-- Ritmo por grupo (intervalo / modo / franja horaria) -->
-    <string name="group_option_follow_global">Seguir global</string>
-    <string name="group_interval_label">Intervalo</string>
     <string name="group_window_label">Franja horaria</string>
     <string name="group_window_all_day">Todo el día</string>
     <string name="group_window_from">Inicio</string>
@@ -336,8 +327,6 @@
     <string name="tile_switch_label">Cambiar fondo</string>
     <string name="tile_pause_label">Pausar cambio</string>
     <string name="tile_resume_label">Reanudar cambio</string>
-    <string name="tile_paused_toast">Cambio de fondo en pausa</string>
-    <string name="tile_resumed_toast">Cambio de fondo reanudado</string>
     <string name="widget_switch">Cambiar</string>
     <string name="widget_pause">Pausar</string>
     <string name="widget_resume">Reanudar</string>
@@ -352,7 +341,6 @@
     <string name="settings_config_backup">Exportar / importar configuración</string>
     <string name="settings_export_config">Exportar configuración</string>
     <string name="settings_import_config">Importar configuración</string>
-    <string name="settings_config_hint">Exporta grupos, intervalos, modos y ajustes globales (sin archivos de medios)</string>
     <string name="toast_config_exported">Configuración exportada</string>
     <string name="toast_config_export_failed">Error al exportar: %1$s</string>
     <string name="toast_config_imported">Se importaron %1$d grupos y %2$d suscripciones</string>
@@ -381,93 +369,28 @@
     <string name="day_fri">V</string>
     <string name="day_sat">S</string>
     <string name="day_sun">D</string>
-    <!-- Seguir el modo oscuro -->
-    <string name="group_theme_label">Tema</string>
-    <string name="group_theme_any">Cualquiera</string>
-    <string name="group_theme_hint">Sigue el modo claro/oscuro del teléfono para decidir si este grupo entra en la rotación</string>
     <!-- Terminar vídeos / favoritos / repeticiones recientes -->
     <string name="settings_video_play_to_end">Terminar los vídeos</string>
     <string name="settings_video_play_to_end_hint">El cambio programado espera a que acabe el vídeo (los toques manuales no)</string>
-    <string name="settings_favorite_boost">Priorizar favoritos</string>
-    <string name="settings_favorite_boost_hint">Los favoritos aparecen con más frecuencia en aleatorio / barajar</string>
-    <string name="settings_recent_no_repeat">Evitar repeticiones recientes</string>
-    <string name="settings_recent_no_repeat_hint">En modo aleatorio no repite de inmediato las últimas imágenes</string>
-    <string name="recent_no_repeat_off">Desactivado</string>
     <string name="media_favorite_add">Añadir a favoritos</string>
     <string name="media_favorite_remove">Quitar de favoritos</string>
-    <string name="media_favorite_badge">Favorito</string>
-    <!-- Filtro / orden del grupo -->
-    <string name="group_filter_label">Filtro</string>
-    <string name="group_filter_all">Todo</string>
-    <string name="group_filter_image">Solo imágenes</string>
-    <string name="group_filter_motion">Solo vídeos / GIF</string>
-    <string name="group_filter_favorite">Solo favoritos</string>
-    <string name="group_sort_label">Orden</string>
-    <string name="group_sort_added">Orden de añadido</string>
-    <string name="group_sort_newest">Más recientes primero</string>
-    <!-- Widget -->
-    <string name="widget_next_in">Próximo cambio</string>
     <string name="widget_current_unknown">Desconocido</string>
     <!-- Estado de ejecución -->
     <!-- Fuentes de fondos en línea (Bing / URL / WebDAV) -->
     <string name="online_auto_group_name">Fondos en línea</string>
-    <string name="settings_section_online">Fuentes en línea</string>
-    <string name="settings_online_sources">Fuentes en línea</string>
-    <string name="settings_online_sources_desc">Bing diario / URL / WebDAV, descargados a un grupo periódicamente</string>
-    <string name="title_online_sources">Fuentes en línea</string>
-    <string name="online_add">Añadir fuente</string>
-    <string name="online_empty">Aún no hay fuentes en línea. Pulsa el botón de abajo para añadir una.</string>
-    <string name="online_type_bing">Imagen diaria de Bing</string>
-    <string name="online_type_url">URL directa</string>
-    <string name="online_type_meirentu">Meirentu (meirentu.club)</string>
-    <string name="online_type_webdav">Carpeta WebDAV</string>
-    <string name="online_dialog_add_title">Añadir fuente en línea</string>
-    <string name="online_dialog_edit_title">Editar fuente en línea</string>
-    <string name="online_label_name">Nombre (opcional)</string>
-    <string name="online_label_target_group">Descargar en el grupo</string>
     <string name="online_group_auto">Crear «Fondos en línea» automáticamente</string>
-    <string name="online_label_interval">Intervalo de actualización</string>
-    <string name="online_label_url">URL de la imagen</string>
-    <string name="online_label_webdav_url">Dirección WebDAV</string>
-    <string name="online_label_webdav_path">Subcarpeta (opcional)</string>
-    <string name="online_label_username">Usuario (opcional)</string>
-    <string name="online_label_password">Contraseña (opcional)</string>
-    <string name="online_password_keep">Déjalo vacío para no cambiarla</string>
-    <string name="online_label_keep_count">Conservar como máximo</string>
-    <string name="online_keep_count_desc">Las imágenes antiguas se eliminan automáticamente; 0 = sin límite</string>
-    <string name="online_keep_unlimited">Sin límite</string>
-    <string name="online_wifi_only">Solo con Wi-Fi</string>
-    <string name="online_charging_only">Solo al cargar</string>
-    <string name="online_privacy_note">Solo se accede a las direcciones que introduzcas; las credenciales se cifran en el dispositivo; las direcciones públicas deben usar HTTPS.</string>
-    <string name="online_action_refresh">Actualizar ahora</string>
     <string name="online_never_updated">Sin actualizar</string>
-    <string name="online_last_update">Última actualización</string>
-    <string name="online_status_ok">Actualizado: %1$d nuevas</string>
     <string name="online_status_ok_none">Actualizado: nada nuevo</string>
+    <string name="online_status_ok_added">Actualizado: %1$d nuevas</string>
+    <string name="settings_online_sources">Fuentes de fondos en línea</string>
+    <string name="settings_online_sources_desc">Fuentes integradas: Bing diario, NASA APOD, Wikimedia y más</string>
+    <string name="settings_online_sources_hint">Descarga en el grupo «Fondos en línea» y se actualiza a diario por Wi-Fi</string>
+    <string name="settings_online_refresh_now">Actualizar ahora</string>
+    <string name="settings_online_source_started">«%1$s» activado: descargando…</string>
+    <string name="settings_online_source_none">Activa primero una fuente de fondos en línea</string>
+    <string name="settings_online_source_refreshing">Actualización de fondos en línea iniciada</string>
     <string name="online_status_error">Error al actualizar: %1$s</string>
-    <string name="online_delete_title">Eliminar fuente en línea</string>
-    <string name="online_delete_message">También se eliminarán las imágenes y los archivos descargados. ¿Eliminar «%1$s»?</string>
-    <string name="online_saved">Guardado</string>
-    <string name="online_refresh_started">Actualización iniciada</string>
-    <string name="online_url_hint">https://example.com/latest.jpg</string>
-    <string name="online_webdav_hint">https://nas.example.com/dav/photos</string>
-    <string name="online_meirentu_hint">https://meirentu.club/</string>
-    <string name="online_meirentu_note">Descarga las 2 primeras páginas de los álbumes más recientes (máx. 8 imágenes por ejecución)</string>
-    <string name="online_meirentu_select">Seleccionar imágenes</string>
-    <string name="online_meirentu_selected">%1$d seleccionadas</string>
-    <string name="online_meirentu_auto_mode">Extraer automáticamente los álbumes más recientes</string>
-    <string name="online_meirentu_manual_mode">Solo las %1$d imágenes seleccionadas</string>
-    <string name="online_meirentu_clear">Borrar selección</string>
-    <string name="online_meirentu_pages">Páginas por álbum</string>
-    <string name="online_max_per_run">Máximo por ejecución</string>
-    <string name="online_picker_title">Elegir imágenes de Meirentu</string>
-    <string name="online_picker_albums">Álbum</string>
-    <string name="online_picker_load_more">Cargar más</string>
-    <string name="online_picker_no_more">No hay más</string>
-    <string name="online_picker_select_page">Seleccionar página</string>
     <string name="online_picker_loading">Cargando…</string>
-    <string name="online_picker_failed">Error al cargar: %1$s</string>
-    <string name="online_picker_done">Listo</string>
     <!-- Suscripciones (compatible con Legado) -->
     <string name="title_subscriptions">Suscripciones</string>
     <string name="nav_subscriptions">Suscripciones</string>
@@ -477,7 +400,6 @@
     <string name="rss_delete_title">Eliminar suscripción</string>
     <string name="rss_delete_message">¿Eliminar «%1$s» y sus artículos descargados?</string>
     <string name="rss_last_update">Última actualización</string>
-    <string name="rss_open">Leer</string>
     <string name="rss_name">Nombre (opcional)</string>
     <string name="rss_url">URL del feed (RSS/Atom)</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
@@ -494,21 +416,17 @@
     <string name="rss_edit_add_field">Añadir campo</string>
     <string name="settings_rss_download_dir">Carpeta de descargas de suscripciones</string>
     <string name="settings_rss_download_dir_default">Carpeta privada de la app (predeterminada, oculta en la galería)</string>
-    <string name="settings_rss_download_dir_reset">Usar predeterminada</string>
     <string name="settings_rss_download_dir_saved">Carpeta cambiada: las nuevas importaciones irán allí</string>
     <string name="settings_rss_download_dir_reset_done">De vuelta a la carpeta privada</string>
     <string name="rss_article">Artículo</string>
-    <string name="rss_open_original">Abrir original</string>
     <string name="rss_open_in_browser">Abrir en el navegador</string>
     <string name="rss_status_ok">Actualizado: %1$d nuevos</string>
     <string name="rss_browse_source">Fuente web · toca para abrir en el navegador</string>
     <string name="rss_saved">Guardado</string>
     <string name="rss_refresh_done">Actualizado: %1$d nuevos</string>
     <string name="rss_refresh_failed">Error al actualizar: %1$s</string>
-    <string name="rss_refresh_started">Actualizando todas las suscripciones</string>
     <string name="rss_import_failed">Error al importar, revisa el formato</string>
     <string name="rss_import_done">Importadas %1$d fuentes, actualizadas %2$d (%3$d omitidas)</string>
-    <string name="rss_refresh_all">Actualizar todo</string>
     <string name="rss_article_images">Imágenes del artículo (%1$d)</string>
     <string name="rss_select_all">Seleccionar todo</string>
     <string name="rss_clear_selection">Borrar</string>
@@ -583,21 +501,11 @@
     <string name="rss_edit_saved">Guardado</string>
     <string name="rss_edit_save_failed">No se pudo guardar</string>
     <string name="rss_proxy">Proxy</string>
-    <string name="rss_proxy_hint">Algunos sitios necesitan un proxy. Déjalo vacío para conexión directa (p. ej. 127.0.0.1:7890, también socks5://).</string>
-    <string name="rss_proxy_value">Dirección del proxy (host:puerto)</string>
-    <string name="rss_proxy_clear">Borrar</string>
-    <string name="rss_proxy_saved">Proxy guardado</string>
-    <string name="rss_proxy_cleared">Conexión directa restaurada</string>
     <string name="rss_load_more">Cargar más</string>
     <string name="rss_no_more">No hay más</string>
-    <string name="rss_images_loading">Cargando imágenes…</string>
-    <string name="rss_categories">Categorías</string>
-    <string name="rss_web_mode">Modo navegador</string>
     <string name="rss_web_collected">%1$d imágenes recopiladas</string>
     <string name="rss_web_use">Usar estas imágenes</string>
-    <string name="rss_add_video_group">Añadir vídeo al grupo</string>
     <string name="rss_reload">Recargar</string>
-    <string name="rss_play_external">Reproductor del sistema</string>
     <string name="rss_video_title">Vídeo</string>
     <string name="rss_video_loading">Cargando vídeo…</string>
     <string name="rss_video_failed">El vídeo no se puede reproducir ahora (el enlace puede haber caducado)</string>
@@ -615,11 +523,7 @@
     <string name="favorites_empty">Aún no hay favoritos: doble toque en Explorar</string>
     <string name="recent_title">Mostrados hace poco</string>
     <string name="recent_empty">Aún nada: cambia algunos fondos y aparecerán aquí</string>
-    <string name="recent_slot_home">Inicio</string>
-    <string name="recent_slot_lock">Bloqueo</string>
     <string name="recent_push">Mostrar otra vez</string>
-    <string name="recent_pushed">Mostrado de nuevo</string>
-    <string name="preview_nothing">Nada que previsualizar</string>
     <string name="browse_entry">Explorar</string>
     <string name="storage_title">Almacenamiento y datos</string>
     <string name="storage_total">La app usa %1$s</string>
@@ -681,22 +585,9 @@
     <string name="wizard_done">Listo</string>
     <string name="wizard_skip">Ahora no</string>
     <string name="settings_page_setup_desc">Tres pasos para la configuración inicial y la comprobación</string>
-    <string name="option_panel_title">Elegir</string>
-    <string name="option_default">Predeterminado</string>
-    <string name="color_picker_title">Elegir color</string>
-    <string name="color_hex">Hex</string>
     <string name="live_wallpaper_permission_title">Activa «Servicio de fondo dinámico»</string>
     <string name="live_wallpaper_permission_message">El sistema no permite que esta aplicación use el «Servicio de fondo dinámico», así que la pantalla de fondos dinámicos se cierra al instante y no se puede aplicar. Actívalo en Permisos → Otros permisos y vuelve a intentarlo.</string>
     <string name="action_open_permission">Abrir ajustes</string>
     <string name="toast_picker_unavailable">No se puede abrir la pantalla de fondos dinámicos</string>
 </resources>
-
-
-
-
-
-
-
-
-
 

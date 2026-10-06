@@ -124,17 +124,34 @@ class FeedParserTest {
 
     @Test
     fun imageUrlFallsBackToSrcsetBeforePlainSrc() {
-        // srcset 取站点自己标的第一个（列表/选择器都用它做展示尺寸）。
+        // 原图优先：srcset 取**最大**的一项（列表里的 URL 就是下载地址）。
         assertEquals(
-            "https://x/small.jpg",
+            "https://x/large.jpg",
             FeedParser.firstImageUrl(
                 """<img src="https://x/thumb.jpg" srcset="https://x/small.jpg 300w, https://x/large.jpg 1200w">"""
             )
         )
         assertEquals(
-            "https://x/a.jpg",
+            "https://x/b.jpg",
             FeedParser.firstImageUrl(
                 """<img src="https://x/thumb.jpg" data-srcset="https://x/a.jpg 480w, https://x/b.jpg 960w">"""
+            )
+        )
+    }
+
+    @Test
+    fun srcsetWithoutDescriptorsTakesTheLastEntry() {
+        // 没有描述符时按约定"最后一个更大"，取最后一项。
+        assertEquals(
+            "https://x/2x.jpg",
+            FeedParser.firstImageUrl(
+                """<img src="https://x/t.jpg" srcset="https://x/1x.jpg 1x, https://x/2x.jpg 2x">"""
+            )
+        )
+        assertEquals(
+            "https://x/full.jpg",
+            FeedParser.firstImageUrl(
+                """<img src="https://x/t.jpg" srcset="https://x/small.jpg, https://x/full.jpg">"""
             )
         )
     }
@@ -143,5 +160,19 @@ class FeedParserTest {
     fun malformedFeedYieldsNothing() {
         assertTrue(FeedParser.parse("<rss").isEmpty())
         assertTrue(FeedParser.parse("{oops").isEmpty())
+    }
+
+    @Test
+    fun doctypeEntitiesAreRejected() {
+        // XXE: a feed comes from the network and must never read a local file.
+        // disallow-doctype-decl turns this document into a parse error.
+        val xml = """
+            <?xml version="1.0"?>
+            <!DOCTYPE rss [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
+            <rss version="2.0"><channel>
+              <item><title>&xxe;</title><link>https://example.com/1</link></item>
+            </channel></rss>
+        """.trimIndent()
+        assertTrue(FeedParser.parse(xml).isEmpty())
     }
 }

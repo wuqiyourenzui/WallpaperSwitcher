@@ -14,8 +14,18 @@ import java.util.concurrent.ConcurrentHashMap
  */
 internal object LegadoJs {
 
-    /** 阅读 caches compiled scripts; re-compiling per rule evaluation dominates. */
-    private val scriptCache = ConcurrentHashMap<String, Script>()
+    /**
+     * 阅读 caches compiled scripts; re-compiling per rule evaluation dominates.
+     *
+     * Bounded LRU: one entry per distinct rule text and the key embeds the whole
+     * jsLib (up to 4MB for a JS source), so an unbounded map grew for the whole
+     * life of the process - which for this app includes the live-wallpaper
+     * service.
+     */
+    private val scriptCache = object : LinkedHashMap<String, Script>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Script>?): Boolean =
+            size > SCRIPT_CACHE_MAX
+    }
 
     /** One base scope per `jsLib` (standard objects + the library evaluated once). */
     private val scopeCache = ConcurrentHashMap<String, Scriptable>()
@@ -47,7 +57,7 @@ internal object LegadoJs {
     ): Result {
         if (script.isBlank()) return Result(null, null)
         return try {
-            val context = Context.enter()
+            val context = LegadoJsRuntime.enter()
             try {
                 context.optimizationLevel = -1
                 val base = sharedScope(context, jsLib)
@@ -68,8 +78,10 @@ internal object LegadoJs {
                 ScriptableObject.putProperty(scope, "java", Context.javaToJS(helpers, scope))
                 ScriptableObject.putProperty(scope, "source", Context.javaToJS(helpers, scope))
                 val source = if (jsLib.isNullOrBlank()) script else "$jsLib\n$script"
-                val compiled = scriptCache.getOrPut(source) {
-                    context.compileString(source, "legado", 1, null)
+                val compiled = synchronized(scriptCache) {
+                    scriptCache.getOrPut(source) {
+                        context.compileString(source, "legado", 1, null)
+                    }
                 }
                 val evaluated = compiled.exec(context, scope)
                 val completion = Context.jsToJava(evaluated, Any::class.java)
@@ -92,7 +104,13 @@ internal object LegadoJs {
                 Context.exit()
             }
         } catch (t: Throwable) {
-            AppLog.w("LegadoJs", "js failed: ${t.javaClass.simpleName}")
+            if (LegadoJsRuntime.isTimeout(t)) {
+                // Say it loudly: a rule that never returns is a source defect, and
+                // silently reporting "no value" hid it completely.
+                AppLog.w("LegadoJs", "js aborted: ${LegadoJsRuntime.timeoutMs}ms rule timeout")
+            } else {
+                AppLog.w("LegadoJs", "js failed: ${t.javaClass.simpleName}")
+            }
             Result(null, cleanError(t))
         }
     }
@@ -131,4 +149,10 @@ internal object LegadoJs {
         val raw = t.message ?: t.javaClass.simpleName
         return raw.replace(Regex("""\s*\(legado#\d+\)$"""), "").take(200)
     }
+
+    /**
+     * Compiled-script cache bound (see [scriptCache]): one entry per distinct rule
+     * text, with the whole jsLib embedded in the key.
+     */
+    private const val SCRIPT_CACHE_MAX = 256
 }

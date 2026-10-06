@@ -46,7 +46,6 @@
     <string name="button_color_pink">ピンク</string>
     <string name="button_color_white">白</string>
     <string name="button_color_black">黒</string>
-    <string name="settings_wallpaper_title">壁紙設定</string>
     <string name="settings_switch_mode">切り替えモード</string>
     <string name="switch_mode_random">ランダム</string>
     <string name="switch_mode_sequential">順番</string>
@@ -68,9 +67,6 @@
     <string name="settings_rotate_direction">回転方向</string>
     <string name="rotate_clockwise">時計回り</string>
     <string name="rotate_counter_clockwise">反時計回り</string>
-    <string name="settings_switch_methods">切り替え方法</string>
-    <string name="settings_section_methods">切り替え方法</string>
-    <string name="settings_section_methods_hint">いつ切り替えるか</string>
     <string name="settings_timed_switch">タイマー切り替え</string>
     <string name="settings_timed_switch_hint">設定した間隔で壁紙を自動的に切り替えます</string>
     <string name="settings_switch_interval">切り替え間隔</string>
@@ -81,14 +77,11 @@
     <string name="settings_double_tap_hint">画面をダブルタップして切り替え（ライブ壁紙が必要）</string>
     <string name="settings_floating_button">フローティング切り替えボタン</string>
     <string name="settings_floating_button_hint">ボタンを1回タップで切り替え（一部のランチャーはダブルタップを渡しません）</string>
-    <string name="settings_switch_fade">切り替えアニメーション</string>
-    <string name="settings_switch_fade_hint">切り替え時にフェードインします</string>
     <string name="settings_video_sound">動画壁紙の音声</string>
     <string name="settings_video_sound_hint">ホーム画面が見えているときだけ音声を再生</string>
     <string name="settings_lock_timer">ロック画面のタイマー切り替え</string>
     <string name="settings_lock_timer_hint">下の間隔でロック画面の壁紙だけを切り替えます</string>
     <string name="settings_lock_interval">ロック画面の切り替え間隔</string>
-    <string name="settings_section_scan">フォルダの自動スキャン</string>
     <string name="settings_auto_scan">フォルダを自動スキャン</string>
     <string name="settings_auto_scan_hint">取り込み済みフォルダの新しい写真/動画を定期的に追加</string>
     <string name="settings_scan_interval">スキャン間隔</string>
@@ -105,7 +98,6 @@
     <string name="action_choose_image">画像を選択</string>
     <string name="action_replace_image">画像を変更</string>
     <string name="action_clear_image">画像を削除</string>
-    <string name="settings_section_appearance">外観</string>
     <string name="settings_theme_mode">テーマモード</string>
     <string name="settings_theme_color">テーマカラー</string>
     <string name="theme_color_system">システムに従う</string>
@@ -179,7 +171,9 @@
     <string name="selection_none">すべて解除</string>
     <string name="selection_count">%1$d/%2$d 選択中</string>
     <string name="dialog_delete_groups_title">グループを削除</string>
-    <string name="dialog_delete_groups_message">選択した %1$d 個のグループを削除しますか？グループ内のメディア記録も削除されます（端末の写真/動画ファイルは削除されません）。</string>
+    <plurals name="dialog_delete_groups_message">
+        <item quantity="other">選択した %1$d 個のグループを削除しますか？グループ内のメディア記録も一緒に削除されます（端末内の写真/動画ファイルは削除されません）。</item>
+    </plurals>
     <string name="empty_groups_title">壁紙グループがまだありません</string>
     <string name="empty_groups_hint">「新しいグループ」から壁紙を追加しましょう</string>
     <string name="dialog_new_group_title">新しい壁紙グループ</string>
@@ -291,7 +285,6 @@
     <string name="hint_motion_needs_engine">動画/GIF にはライブ壁紙が必要です。システムのライブ壁紙設定でこのアプリを選んでください</string>
     <string name="home_permission_warning">「写真と動画」の権限がないため、取り込んだ写真/動画を読み取れません。許可してから再試行してください</string>
     <string name="action_grant_permission">許可する</string>
-    <string name="settings_logs_privacy_note">ログには端末の機種名とフォルダ名が含まれます。共有にご注意ください</string>
     <plurals name="home_groups_count">
         <item quantity="other">%1$d 個のグループ</item>
     </plurals>
@@ -304,9 +297,6 @@
     <plurals name="folder_count">
         <item quantity="other">%1$d 個のフォルダ</item>
     </plurals>
-    <!-- グループ独立のリズム（間隔 / モード / 時間帯） -->
-    <string name="group_option_follow_global">グローバルに従う</string>
-    <string name="group_interval_label">間隔</string>
     <string name="group_window_label">時間帯</string>
     <string name="group_window_all_day">終日</string>
     <string name="group_window_from">開始</string>
@@ -332,8 +322,6 @@
     <string name="tile_switch_label">壁紙を切り替え</string>
     <string name="tile_pause_label">切り替えを一時停止</string>
     <string name="tile_resume_label">切り替えを再開</string>
-    <string name="tile_paused_toast">壁紙の切り替えを一時停止しました</string>
-    <string name="tile_resumed_toast">壁紙の切り替えを再開しました</string>
     <string name="widget_switch">切り替え</string>
     <string name="widget_pause">一時停止</string>
     <string name="widget_resume">再開</string>
@@ -348,7 +336,6 @@
     <string name="settings_config_backup">設定のエクスポート / インポート</string>
     <string name="settings_export_config">設定をエクスポート</string>
     <string name="settings_import_config">設定をインポート</string>
-    <string name="settings_config_hint">グループ・間隔・モード・全体設定を書き出します（画像/動画は含みません）</string>
     <string name="toast_config_exported">設定をエクスポートしました</string>
     <string name="toast_config_export_failed">エクスポートに失敗: %1$s</string>
     <string name="toast_config_imported">グループ %1$d 件、購読 %2$d 件をインポートしました</string>
@@ -377,93 +364,28 @@
     <string name="day_fri">金</string>
     <string name="day_sat">土</string>
     <string name="day_sun">日</string>
-    <!-- ダークモード連動 -->
-    <string name="group_theme_label">テーマ</string>
-    <string name="group_theme_any">指定なし</string>
-    <string name="group_theme_hint">スマホのダーク／ライトモードに応じて、このグループを切り替えに含めるか決めます</string>
     <!-- 動画を最後まで / お気に入り / 最近の重複 -->
     <string name="settings_video_play_to_end">動画を最後まで再生</string>
     <string name="settings_video_play_to_end_hint">タイマー切り替えは動画の再生終了を待ちます（手動は対象外）</string>
-    <string name="settings_favorite_boost">お気に入り優先</string>
-    <string name="settings_favorite_boost_hint">ランダム／シャッフルでお気に入りの画像がより頻繁に表示されます</string>
-    <string name="settings_recent_no_repeat">最近の重複を避ける</string>
-    <string name="settings_recent_no_repeat_hint">ランダム時に最近表示した画像をすぐ繰り返しません</string>
-    <string name="recent_no_repeat_off">オフ</string>
     <string name="media_favorite_add">お気に入りに追加</string>
     <string name="media_favorite_remove">お気に入りから外す</string>
-    <string name="media_favorite_badge">お気に入り</string>
-    <!-- グループのフィルター／順序 -->
-    <string name="group_filter_label">フィルター</string>
-    <string name="group_filter_all">すべて</string>
-    <string name="group_filter_image">画像のみ</string>
-    <string name="group_filter_motion">動画／GIF のみ</string>
-    <string name="group_filter_favorite">お気に入りのみ</string>
-    <string name="group_sort_label">順序</string>
-    <string name="group_sort_added">追加順</string>
-    <string name="group_sort_newest">新しい順</string>
-    <!-- ウィジェット -->
-    <string name="widget_next_in">次回の切り替え</string>
     <string name="widget_current_unknown">不明</string>
     <!-- 実行状態 -->
     <!-- オンライン壁紙ソース (Bing デイリー / URL / WebDAV) -->
     <string name="online_auto_group_name">オンライン壁紙</string>
-    <string name="settings_section_online">オンライン壁紙ソース</string>
-    <string name="settings_online_sources">オンライン壁紙ソース</string>
-    <string name="settings_online_sources_desc">Bing デイリー / URL / WebDAV を定期的にグループへ取得</string>
-    <string name="title_online_sources">オンライン壁紙ソース</string>
-    <string name="online_add">ソースを追加</string>
-    <string name="online_empty">オンライン壁紙ソースがありません。右下から追加してください。</string>
-    <string name="online_type_bing">Bing デイリー画像</string>
-    <string name="online_type_url">指定 URL</string>
-    <string name="online_type_meirentu">美人図 (meirentu.club)</string>
-    <string name="online_type_webdav">WebDAV フォルダ</string>
-    <string name="online_dialog_add_title">オンライン壁紙ソースを追加</string>
-    <string name="online_dialog_edit_title">オンライン壁紙ソースを編集</string>
-    <string name="online_label_name">名前（任意）</string>
-    <string name="online_label_target_group">取得先グループ</string>
     <string name="online_group_auto">「オンライン壁紙」を自動作成</string>
-    <string name="online_label_interval">更新間隔</string>
-    <string name="online_label_url">画像 URL</string>
-    <string name="online_label_webdav_url">WebDAV アドレス</string>
-    <string name="online_label_webdav_path">サブフォルダ（任意）</string>
-    <string name="online_label_username">ユーザー名（任意）</string>
-    <string name="online_label_password">パスワード（任意）</string>
-    <string name="online_password_keep">空欄のままにすると変更しません</string>
-    <string name="online_label_keep_count">保持数</string>
-    <string name="online_keep_count_desc">超えた分は古い画像から自動削除、0 は無制限</string>
-    <string name="online_keep_unlimited">無制限</string>
-    <string name="online_wifi_only">Wi-Fi 接続時のみ更新</string>
-    <string name="online_charging_only">充電中のみ更新</string>
-    <string name="online_privacy_note">接続先は入力したアドレスのみ。認証情報は端末内で暗号化して保存。公開アドレスは HTTPS 必須です。</string>
-    <string name="online_action_refresh">今すぐ更新</string>
     <string name="online_never_updated">未更新</string>
-    <string name="online_last_update">前回の更新</string>
-    <string name="online_status_ok">更新完了：新規 %1$d 枚</string>
     <string name="online_status_ok_none">更新完了：新しい画像はありません</string>
+    <string name="online_status_ok_added">更新完了：新規 %1$d 枚</string>
+    <string name="settings_online_sources">オンライン壁紙ソース</string>
+    <string name="settings_online_sources_desc">Bing デイリー、NASA APOD、Wikimedia などの内蔵ソース</string>
+    <string name="settings_online_sources_hint">有効にすると「オンライン壁紙」グループに自動ダウンロード（Wi-Fi で毎日更新）</string>
+    <string name="settings_online_refresh_now">今すぐ更新</string>
+    <string name="settings_online_source_started">「%1$s」を有効にしました。ダウンロード中…</string>
+    <string name="settings_online_source_none">先にオンライン壁紙ソースを有効にしてください</string>
+    <string name="settings_online_source_refreshing">オンライン壁紙の更新を開始しました</string>
     <string name="online_status_error">更新失敗：%1$s</string>
-    <string name="online_delete_title">オンライン壁紙ソースを削除</string>
-    <string name="online_delete_message">ダウンロード済みの画像とファイルも削除されます。「%1$s」を削除しますか？</string>
-    <string name="online_saved">保存しました</string>
-    <string name="online_refresh_started">更新を開始しました</string>
-    <string name="online_url_hint">https://example.com/latest.jpg</string>
-    <string name="online_webdav_hint">https://nas.example.com/dav/photos</string>
-    <string name="online_meirentu_hint">https://meirentu.club/</string>
-    <string name="online_meirentu_note">一覧ページの最新アルバムの先頭 2 ページを取得（1 回最大 8 枚）</string>
-    <string name="online_meirentu_select">画像を選択</string>
-    <string name="online_meirentu_selected">%1$d 枚選択</string>
-    <string name="online_meirentu_auto_mode">最新アルバムを自動取得</string>
-    <string name="online_meirentu_manual_mode">選択した %1$d 枚のみ</string>
-    <string name="online_meirentu_clear">選択をクリア</string>
-    <string name="online_meirentu_pages">アルバムごとのページ数</string>
-    <string name="online_max_per_run">1 回の最大数</string>
-    <string name="online_picker_title">美人図の画像を選択</string>
-    <string name="online_picker_albums">アルバム</string>
-    <string name="online_picker_load_more">もっと読み込む</string>
-    <string name="online_picker_no_more">これ以上ありません</string>
-    <string name="online_picker_select_page">このページを全選択</string>
     <string name="online_picker_loading">読み込み中…</string>
-    <string name="online_picker_failed">読み込み失敗：%1$s</string>
-    <string name="online_picker_done">完了</string>
     <!-- 購読フィード (Legado 互換) -->
     <string name="title_subscriptions">購読</string>
     <string name="nav_subscriptions">購読</string>
@@ -473,7 +395,6 @@
     <string name="rss_delete_title">購読ソースを削除</string>
     <string name="rss_delete_message">「%1$s」と取得済みの記事を削除しますか？</string>
     <string name="rss_last_update">前回の更新</string>
-    <string name="rss_open">読む</string>
     <string name="rss_name">名前（任意）</string>
     <string name="rss_url">フィード URL（RSS/Atom）</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
@@ -490,21 +411,17 @@
     <string name="rss_edit_add_field">フィールドを追加</string>
     <string name="settings_rss_download_dir">購読画像の保存先フォルダ</string>
     <string name="settings_rss_download_dir_default">アプリ専用フォルダ（既定・ギャラリーに表示されません）</string>
-    <string name="settings_rss_download_dir_reset">既定に戻す</string>
     <string name="settings_rss_download_dir_saved">保存先を変更しました。新しく取り込んだ画像はこのフォルダに入ります</string>
     <string name="settings_rss_download_dir_reset_done">アプリ専用フォルダに戻しました</string>
     <string name="rss_article">記事</string>
-    <string name="rss_open_original">元の記事を開く</string>
     <string name="rss_open_in_browser">ブラウザで開く</string>
     <string name="rss_status_ok">更新完了：新規 %1$d 件</string>
     <string name="rss_browse_source">Web ページ型ソース · タップでブラウザ表示</string>
     <string name="rss_saved">保存しました</string>
     <string name="rss_refresh_done">更新完了：新規 %1$d 件</string>
     <string name="rss_refresh_failed">更新失敗：%1$s</string>
-    <string name="rss_refresh_started">すべての購読を更新中</string>
     <string name="rss_import_failed">インポートに失敗しました。内容を確認してください</string>
     <string name="rss_import_done">%1$d 件のソースをインポートし、%2$d 件を更新しました（%3$d 件スキップ）</string>
-    <string name="rss_refresh_all">すべて更新</string>
     <string name="rss_article_images">記事の画像（%1$d）</string>
     <string name="rss_select_all">すべて選択</string>
     <string name="rss_clear_selection">クリア</string>
@@ -579,21 +496,11 @@
     <string name="rss_edit_saved">保存しました</string>
     <string name="rss_edit_save_failed">保存に失敗しました</string>
     <string name="rss_proxy">プロキシ</string>
-    <string name="rss_proxy_hint">一部のサイトはプロキシが必要です。空欄なら直接接続（例 127.0.0.1:7890、socks5:// も可）</string>
-    <string name="rss_proxy_value">プロキシアドレス（host:port）</string>
-    <string name="rss_proxy_clear">クリア</string>
-    <string name="rss_proxy_saved">プロキシを保存しました</string>
-    <string name="rss_proxy_cleared">直接接続に戻しました</string>
     <string name="rss_load_more">もっと読み込む</string>
     <string name="rss_no_more">これ以上ありません</string>
-    <string name="rss_images_loading">画像を読み込み中…</string>
-    <string name="rss_categories">カテゴリ</string>
-    <string name="rss_web_mode">ブラウザモード</string>
     <string name="rss_web_collected">%1$d 件収集</string>
     <string name="rss_web_use">この画像を使う</string>
-    <string name="rss_add_video_group">動画をグループに追加</string>
     <string name="rss_reload">再読み込み</string>
-    <string name="rss_play_external">外部プレーヤー</string>
     <string name="rss_video_title">動画</string>
     <string name="rss_video_loading">動画を取得中…</string>
     <string name="rss_video_failed">現在この動画を再生できません（リンクが無効の可能性）</string>
@@ -611,11 +518,7 @@
     <string name="favorites_empty">まだお気に入りがありません。大画面ブラウズでダブルタップしてみてください</string>
     <string name="recent_title">最近表示したもの</string>
     <string name="recent_empty">まだ記録がありません。何枚か切り替えるとここに並びます</string>
-    <string name="recent_slot_home">ホーム</string>
-    <string name="recent_slot_lock">ロック画面</string>
     <string name="recent_push">今すぐもう一度表示</string>
-    <string name="recent_pushed">再表示しました</string>
-    <string name="preview_nothing">プレビューできる次の1枚がありません</string>
     <string name="browse_entry">ブラウズ</string>
     <string name="storage_title">ストレージと通信</string>
     <string name="storage_total">アプリの使用量 %1$s</string>
@@ -677,22 +580,9 @@
     <string name="wizard_done">完了</string>
     <string name="wizard_skip">あとで</string>
     <string name="settings_page_setup_desc">3 ステップで初期設定とセルフチェック</string>
-    <string name="option_panel_title">選択</string>
-    <string name="option_default">デフォルト</string>
-    <string name="color_picker_title">色を選択</string>
-    <string name="color_hex">色値</string>
     <string name="live_wallpaper_permission_title">「ライブ壁紙サービス」を有効にしてください</string>
     <string name="live_wallpaper_permission_message">システムがこのアプリの「ライブ壁紙サービス」を許可していないため、ライブ壁紙の画面がすぐ閉じて設定できません。「権限管理 → その他の権限」で「ライブ壁紙サービス」を有効にしてから、もう一度お試しください。</string>
     <string name="action_open_permission">設定を開く</string>
     <string name="toast_picker_unavailable">システムのライブ壁紙画面を開けません</string>
 </resources>
-
-
-
-
-
-
-
-
-
 

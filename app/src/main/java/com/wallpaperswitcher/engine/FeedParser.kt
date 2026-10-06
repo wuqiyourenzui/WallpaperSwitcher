@@ -48,17 +48,7 @@ object FeedParser {
         val doc = try {
             val factory = DocumentBuilderFactory.newInstance().apply {
                 isNamespaceAware = true
-                try {
-                    isExpandEntityReferences = false
-                } catch (_: Throwable) {
-                }
-                try {
-                    isXIncludeAware = false
-                } catch (_: Throwable) {
-                }
-                setFeatureQuietly("http://apache.org/xml/features/disallow-doctype-decl", true)
-                setFeatureQuietly("http://xml.org/sax/features/external-general-entities", false)
-                setFeatureQuietly("http://xml.org/sax/features/external-parameter-entities", false)
+                hardenForUntrustedXml()
             }
             factory.newDocumentBuilder().parse(InputSource(StringReader(xml)))
         } catch (_: Throwable) {
@@ -239,7 +229,9 @@ object FeedParser {
      * attribute came FIRST in the tag, so a placeholder `src` won and the
      * library ended up with blurry thumbnails. The scan now collects every
      * candidate and ranks them: data-* attributes first (in the order above),
-     * then a srcset's first entry (the site's preferred size), then plain src.
+     * then the LARGEST srcset entry (see [OriginalImageUrl.largestFromSrcset] -
+     * the list doubles as the download source, so a display-sized pick would
+     * land in the group), then plain src.
      */
     private fun imageUrlOfTag(tag: String): String? {
         var dataUrl: String? = null
@@ -256,9 +248,11 @@ object FeedParser {
                 "src" -> if (plainSrc == null) {
                     plainSrc = raw.substringBefore(',').substringBefore(' ').trim()
                 }
+                // 原图优先: 取 srcset 里**最大**的一项，而不是第一项 ——
+                // 列表/选择器上的 URL 同时也是"加入分组"要下载的那个地址，
+                // 站点把 srcset 从小到大排列，取第一项就等于下缩略图。
                 "srcset", "data-srcset" -> if (srcsetUrl == null) {
-                    srcsetUrl = raw.split(',').firstOrNull()
-                        ?.trim()?.substringBefore(' ')?.takeIf { it.isNotEmpty() }
+                    srcsetUrl = OriginalImageUrl.largestFromSrcset(raw)
                 }
                 else -> {
                     val rank = DATA_ATTR_RANK[name] ?: DATA_ATTR_RANK.size
@@ -318,13 +312,6 @@ object FeedParser {
     private fun localName(element: Element): String =
         element.localName ?: element.nodeName.substringAfterLast(':')
 
-    private fun DocumentBuilderFactory.setFeatureQuietly(name: String, value: Boolean) {
-        try {
-            setFeature(name, value)
-        } catch (_: Exception) {
-        }
-    }
-
     private val DATE_FORMATS = listOf(
         DateTimeFormatter.RFC_1123_DATE_TIME,
         DateTimeFormatter.ISO_OFFSET_DATE_TIME,
@@ -336,7 +323,7 @@ object FeedParser {
     private val IMG_TAG = Regex("""<img[^>]*>""", RegexOption.IGNORE_CASE)
 
     private val IMG_ATTR = Regex(
-        """(data-original|data-src|data-lazy-src|data-echo|data-url|data-srcset|srcset|src)\s*=\s*(?:"([^"]+)"|'([^']+)')""",
+        """(data-original|data-src|data-lazy-src|data-echo|data-url|data-actualsrc|data-srcset|srcset|src)\s*=\s*(?:"([^"]+)"|'([^']+)')""",
         RegexOption.IGNORE_CASE
     )
 
@@ -347,6 +334,7 @@ object FeedParser {
         "data-lazy-src" to 2,
         "data-echo" to 3,
         "data-url" to 4,
+        "data-actualsrc" to 5,
     )
 
     private val Css_BG = Regex(

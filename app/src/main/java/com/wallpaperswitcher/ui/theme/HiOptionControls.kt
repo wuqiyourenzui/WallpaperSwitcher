@@ -383,7 +383,10 @@ private fun HiOptionDropdown(
                 shape = RoundedCornerShape(16.dp),
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shadowElevation = 8.dp,
-                modifier = Modifier.widthIn(min = 196.dp),
+                // 宽度按内容自适应（只设上限）：弹层与行右对齐后，短选项（填充/
+                // 适应/拉伸）不再被 196dp 的最小宽度撑开、在选项右边留一大块空白；
+                // 长选项（如“FSR1 EASU/RCAS 超分”）仍由 max 兜住不会超出屏幕。
+                modifier = Modifier.widthIn(max = 300.dp),
             ) {
                 Column(
                     modifier = Modifier

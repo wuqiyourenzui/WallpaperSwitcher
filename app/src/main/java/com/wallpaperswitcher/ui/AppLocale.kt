@@ -67,12 +67,15 @@ object AppLocale {
         }
 
     /** Mirrors the Room setting so [wrap] can read it before the DB exists. */
+    @Suppress("ApplySharedPref") // commit() is required - see the comment below.
     fun store(context: Context, tag: String) {
         try {
             // commit(), not apply(): the caller recreates the Activity right
             // after this, and attachBaseContext would otherwise still read the
             // previous tag (measured: the language looked "unchanged" until the
             // next launch). One tiny write, so blocking here is fine.
+            // (Lint's ApplySharedPref suggestion is deliberate noise here: apply()
+            // would write asynchronously and reintroduce that bug.)
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
                 .edit().putString(KEY_TAG, tag).commit()
         } catch (_: Exception) {

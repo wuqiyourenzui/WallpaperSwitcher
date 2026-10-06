@@ -120,8 +120,8 @@ fun SwitchMethodsScreen(
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
                 // 锁屏定时切换：与桌面的定时完全独立（双屏思路），只从「应用位置」
-                // 含锁屏的分组里取图，并且有自己的间隔。它紧跟桌面定时开关，放在
-                // 同一张卡片里 —— 用户要求"锁屏定时切换移到定时切换下方"。
+                // 含锁屏的分组里取图，并且只切换图片（视频/GIF 会冻结成首帧，
+                // 所以在锁屏槽位被跳过）——和自己的间隔一起放在同一张卡片里。
                 SettingsSwitchItem(
                     icon = Icons.Outlined.Timer,
                     title = stringResource(R.string.settings_lock_timer),

@@ -46,7 +46,6 @@
     <string name="button_color_pink">Розовый</string>
     <string name="button_color_white">Белый</string>
     <string name="button_color_black">Чёрный</string>
-    <string name="settings_wallpaper_title">Настройки обоев</string>
     <string name="settings_switch_mode">Режим смены</string>
     <string name="switch_mode_random">Случайно</string>
     <string name="switch_mode_sequential">По порядку</string>
@@ -68,9 +67,6 @@
     <string name="settings_rotate_direction">Направление поворота</string>
     <string name="rotate_clockwise">По часовой</string>
     <string name="rotate_counter_clockwise">Против часовой</string>
-    <string name="settings_switch_methods">Способы смены</string>
-    <string name="settings_section_methods">Способы смены</string>
-    <string name="settings_section_methods_hint">Когда менять обои</string>
     <string name="settings_timed_switch">Смена по таймеру</string>
     <string name="settings_timed_switch_hint">Автоматически менять обои с заданным интервалом</string>
     <string name="settings_switch_interval">Интервал смены</string>
@@ -81,14 +77,11 @@
     <string name="settings_double_tap_hint">Двойное касание экрана меняет обои (нужны живые обои)</string>
     <string name="settings_floating_button">Плавающая кнопка смены</string>
     <string name="settings_floating_button_hint">Одно касание кнопки меняет обои (некоторые лаунчеры не передают двойное касание)</string>
-    <string name="settings_switch_fade">Анимация перехода</string>
-    <string name="settings_switch_fade_hint">Плавное появление при смене обоев</string>
     <string name="settings_video_sound">Звук видеообоев</string>
     <string name="settings_video_sound_hint">Звук только когда виден рабочий стол</string>
     <string name="settings_lock_timer">Смена на блокировке по таймеру</string>
     <string name="settings_lock_timer_hint">Менять только обои экрана блокировки с интервалом ниже</string>
     <string name="settings_lock_interval">Интервал для экрана блокировки</string>
-    <string name="settings_section_scan">Автопроверка папок</string>
     <string name="settings_auto_scan">Автоматически проверять папки</string>
     <string name="settings_auto_scan_hint">Периодически добавлять новые файлы из импортированных папок</string>
     <string name="settings_scan_interval">Интервал проверки</string>
@@ -105,7 +98,6 @@
     <string name="action_choose_image">Выбрать картинку</string>
     <string name="action_replace_image">Заменить картинку</string>
     <string name="action_clear_image">Убрать картинку</string>
-    <string name="settings_section_appearance">Внешний вид</string>
     <string name="settings_theme_mode">Режим темы</string>
     <string name="settings_theme_color">Цвет темы</string>
     <string name="theme_color_system">Как в системе</string>
@@ -179,7 +171,12 @@
     <string name="selection_none">Снять выбор</string>
     <string name="selection_count">Выбрано %1$d/%2$d</string>
     <string name="dialog_delete_groups_title">Удаление групп</string>
-    <string name="dialog_delete_groups_message">Удалить выбранные группы (%1$d)? Записи о файлах тоже будут удалены (сами файлы на телефоне останутся).</string>
+    <plurals name="dialog_delete_groups_message">
+        <item quantity="one">Удалить выбранную группу (%1$d)? Записи о файлах тоже будут удалены (сами файлы на телефоне останутся).</item>
+        <item quantity="few">Удалить выбранные группы (%1$d)? Записи о файлах тоже будут удалены (сами файлы на телефоне останутся).</item>
+        <item quantity="many">Удалить выбранные группы (%1$d)? Записи о файлах тоже будут удалены (сами файлы на телефоне останутся).</item>
+        <item quantity="other">Удалить выбранные группы (%1$d)? Записи о файлах тоже будут удалены (сами файлы на телефоне останутся).</item>
+    </plurals>
     <string name="empty_groups_title">Групп обоев пока нет</string>
     <string name="empty_groups_hint">Нажмите «Новая группа», чтобы добавить обои</string>
     <string name="dialog_new_group_title">Новая группа обоев</string>
@@ -291,7 +288,6 @@
     <string name="hint_motion_needs_engine">Видео и GIF требуют живых обоев — выберите это приложение в системных настройках</string>
     <string name="home_permission_warning">Без разрешения «Фото и видео» импортированные файлы не читаются. Разрешите доступ и повторите</string>
     <string name="action_grant_permission">Разрешить</string>
-    <string name="settings_logs_privacy_note">Журнал содержит модель устройства и имена папок — делитесь осторожно</string>
     <plurals name="home_groups_count">
         <item quantity="one">%1$d группа</item>
         <item quantity="few">%1$d группы</item>
@@ -316,9 +312,6 @@
         <item quantity="many">%1$d папок</item>
         <item quantity="other">%1$d папки</item>
     </plurals>
-    <!-- Индивидуальный ритм группы (интервал / режим / время) -->
-    <string name="group_option_follow_global">Как в общих</string>
-    <string name="group_interval_label">Интервал</string>
     <string name="group_window_label">Время</string>
     <string name="group_window_all_day">Весь день</string>
     <string name="group_window_from">С</string>
@@ -344,8 +337,6 @@
     <string name="tile_switch_label">Сменить обои</string>
     <string name="tile_pause_label">Пауза смены</string>
     <string name="tile_resume_label">Возобновить смену</string>
-    <string name="tile_paused_toast">Смена обоев приостановлена</string>
-    <string name="tile_resumed_toast">Смена обоев возобновлена</string>
     <string name="widget_switch">Сменить</string>
     <string name="widget_pause">Пауза</string>
     <string name="widget_resume">Продолжить</string>
@@ -360,7 +351,6 @@
     <string name="settings_config_backup">Экспорт / импорт настроек</string>
     <string name="settings_export_config">Экспорт настроек</string>
     <string name="settings_import_config">Импорт настроек</string>
-    <string name="settings_config_hint">Экспортирует группы, интервалы, режимы и общие настройки (без медиафайлов)</string>
     <string name="toast_config_exported">Настройки экспортированы</string>
     <string name="toast_config_export_failed">Ошибка экспорта: %1$s</string>
     <string name="toast_config_imported">Импортировано групп: %1$d, подписок: %2$d</string>
@@ -389,93 +379,28 @@
     <string name="day_fri">Пт</string>
     <string name="day_sat">Сб</string>
     <string name="day_sun">Вс</string>
-    <!-- Следовать тёмной теме -->
-    <string name="group_theme_label">Тема</string>
-    <string name="group_theme_any">Любая</string>
-    <string name="group_theme_hint">Следует светлому/тёмному режиму телефона, решая, участвует ли группа в ротации</string>
     <!-- До конца видео / избранное / без повторов -->
     <string name="settings_video_play_to_end">До конца видео</string>
     <string name="settings_video_play_to_end_hint">Смена по таймеру ждёт конца видео (ручная смена — нет)</string>
-    <string name="settings_favorite_boost">Избранное чаще</string>
-    <string name="settings_favorite_boost_hint">Избранные медиа появляются чаще в режимах «случайно» и «перемешивание»</string>
-    <string name="settings_recent_no_repeat">Без недавних повторов</string>
-    <string name="settings_recent_no_repeat_hint">В случайном режиме последние показанные изображения не повторяются сразу</string>
-    <string name="recent_no_repeat_off">Выкл.</string>
     <string name="media_favorite_add">В избранное</string>
     <string name="media_favorite_remove">Убрать из избранного</string>
-    <string name="media_favorite_badge">Избранное</string>
-    <!-- Фильтр / порядок группы -->
-    <string name="group_filter_label">Фильтр</string>
-    <string name="group_filter_all">Все</string>
-    <string name="group_filter_image">Только изображения</string>
-    <string name="group_filter_motion">Только видео / GIF</string>
-    <string name="group_filter_favorite">Только избранное</string>
-    <string name="group_sort_label">Порядок</string>
-    <string name="group_sort_added">По добавлению</string>
-    <string name="group_sort_newest">Сначала новые</string>
-    <!-- Виджет -->
-    <string name="widget_next_in">Следующее переключение</string>
     <string name="widget_current_unknown">Неизвестно</string>
     <!-- Состояние работы -->
     <!-- Онлайн-обои (Bing / URL / WebDAV) -->
     <string name="online_auto_group_name">Онлайн-обои</string>
-    <string name="settings_section_online">Онлайн-источники</string>
-    <string name="settings_online_sources">Онлайн-источники</string>
-    <string name="settings_online_sources_desc">Bing, URL или WebDAV: периодическая загрузка в группу</string>
-    <string name="title_online_sources">Онлайн-источники</string>
-    <string name="online_add">Добавить источник</string>
-    <string name="online_empty">Источников пока нет. Нажмите кнопку ниже, чтобы добавить.</string>
-    <string name="online_type_bing">Картинка дня Bing</string>
-    <string name="online_type_url">Прямой URL</string>
-    <string name="online_type_meirentu">Meirentu (meirentu.club)</string>
-    <string name="online_type_webdav">Папка WebDAV</string>
-    <string name="online_dialog_add_title">Новый онлайн-источник</string>
-    <string name="online_dialog_edit_title">Изменить онлайн-источник</string>
-    <string name="online_label_name">Название (необязательно)</string>
-    <string name="online_label_target_group">Загружать в группу</string>
     <string name="online_group_auto">Создать «Онлайн-обои» автоматически</string>
-    <string name="online_label_interval">Интервал обновления</string>
-    <string name="online_label_url">URL изображения</string>
-    <string name="online_label_webdav_url">Адрес WebDAV</string>
-    <string name="online_label_webdav_path">Подпапка (необязательно)</string>
-    <string name="online_label_username">Имя пользователя (необязательно)</string>
-    <string name="online_label_password">Пароль (необязательно)</string>
-    <string name="online_password_keep">Оставьте пустым, чтобы не менять</string>
-    <string name="online_label_keep_count">Хранить не более</string>
-    <string name="online_keep_count_desc">Старые изображения удаляются автоматически; 0 — без ограничений</string>
-    <string name="online_keep_unlimited">Без ограничений</string>
-    <string name="online_wifi_only">Только по Wi-Fi</string>
-    <string name="online_charging_only">Только при зарядке</string>
-    <string name="online_privacy_note">Приложение обращается только к указанным адресам; учётные данные шифруются на устройстве; для публичных адресов требуется HTTPS.</string>
-    <string name="online_action_refresh">Обновить сейчас</string>
     <string name="online_never_updated">Не обновлялось</string>
-    <string name="online_last_update">Последнее обновление</string>
-    <string name="online_status_ok">Обновлено: новых %1$d</string>
     <string name="online_status_ok_none">Обновлено: новых нет</string>
+    <string name="online_status_ok_added">Обновлено: %1$d новых</string>
+    <string name="settings_online_sources">Онлайн-источники обоев</string>
+    <string name="settings_online_sources_desc">Встроенные источники: Bing, NASA APOD, Wikimedia и др.</string>
+    <string name="settings_online_sources_hint">Скачивает в группу «Онлайн-обои» и обновляет раз в день по Wi-Fi</string>
+    <string name="settings_online_refresh_now">Обновить сейчас</string>
+    <string name="settings_online_source_started">«%1$s» включён — загрузка…</string>
+    <string name="settings_online_source_none">Сначала включите онлайн-источник обоев</string>
+    <string name="settings_online_source_refreshing">Обновление онлайн-обоев началось</string>
     <string name="online_status_error">Ошибка обновления: %1$s</string>
-    <string name="online_delete_title">Удалить онлайн-источник</string>
-    <string name="online_delete_message">Загруженные изображения и файлы тоже будут удалены. Удалить «%1$s»?</string>
-    <string name="online_saved">Сохранено</string>
-    <string name="online_refresh_started">Обновление запущено</string>
-    <string name="online_url_hint">https://example.com/latest.jpg</string>
-    <string name="online_webdav_hint">https://nas.example.com/dav/photos</string>
-    <string name="online_meirentu_hint">https://meirentu.club/</string>
-    <string name="online_meirentu_note">Загружает первые 2 страницы новых альбомов (до 8 изображений за раз)</string>
-    <string name="online_meirentu_select">Выбрать изображения</string>
-    <string name="online_meirentu_selected">Выбрано: %1$d</string>
-    <string name="online_meirentu_auto_mode">Автоматически брать новые альбомы</string>
-    <string name="online_meirentu_manual_mode">Только выбранные %1$d изображений</string>
-    <string name="online_meirentu_clear">Очистить выбор</string>
-    <string name="online_meirentu_pages">Страниц на альбом</string>
-    <string name="online_max_per_run">Максимум за раз</string>
-    <string name="online_picker_title">Выбор изображений Meirentu</string>
-    <string name="online_picker_albums">Альбом</string>
-    <string name="online_picker_load_more">Загрузить ещё</string>
-    <string name="online_picker_no_more">Больше нет</string>
-    <string name="online_picker_select_page">Выбрать страницу</string>
     <string name="online_picker_loading">Загрузка…</string>
-    <string name="online_picker_failed">Ошибка загрузки: %1$s</string>
-    <string name="online_picker_done">Готово</string>
     <!-- Подписки (совместимо с Legado) -->
     <string name="title_subscriptions">Подписки</string>
     <string name="nav_subscriptions">Подписки</string>
@@ -485,7 +410,6 @@
     <string name="rss_delete_title">Удалить подписку</string>
     <string name="rss_delete_message">Удалить «%1$s» и загруженные статьи?</string>
     <string name="rss_last_update">Последнее обновление</string>
-    <string name="rss_open">Читать</string>
     <string name="rss_name">Название (необязательно)</string>
     <string name="rss_url">URL ленты (RSS/Atom)</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
@@ -502,21 +426,17 @@
     <string name="rss_edit_add_field">Добавить поле</string>
     <string name="settings_rss_download_dir">Папка загрузок подписок</string>
     <string name="settings_rss_download_dir_default">Приватная папка приложения (по умолчанию, не видна в галерее)</string>
-    <string name="settings_rss_download_dir_reset">По умолчанию</string>
     <string name="settings_rss_download_dir_saved">Папка изменена: новые загрузки пойдут туда</string>
     <string name="settings_rss_download_dir_reset_done">Снова приватная папка приложения</string>
     <string name="rss_article">Статья</string>
-    <string name="rss_open_original">Открыть оригинал</string>
     <string name="rss_open_in_browser">Открыть в браузере</string>
     <string name="rss_status_ok">Обновлено: новых %1$d</string>
     <string name="rss_browse_source">Веб-источник · нажмите, чтобы открыть в браузере</string>
     <string name="rss_saved">Сохранено</string>
     <string name="rss_refresh_done">Обновлено: новых %1$d</string>
     <string name="rss_refresh_failed">Ошибка обновления: %1$s</string>
-    <string name="rss_refresh_started">Обновление всех подписок</string>
     <string name="rss_import_failed">Не удалось импортировать, проверьте формат</string>
     <string name="rss_import_done">Импортировано источников: %1$d, обновлено %2$d (пропущено %3$d)</string>
-    <string name="rss_refresh_all">Обновить все</string>
     <string name="rss_article_images">Изображения статьи (%1$d)</string>
     <string name="rss_select_all">Выбрать все</string>
     <string name="rss_clear_selection">Очистить</string>
@@ -591,21 +511,11 @@
     <string name="rss_edit_saved">Сохранено</string>
     <string name="rss_edit_save_failed">Не удалось сохранить</string>
     <string name="rss_proxy">Прокси</string>
-    <string name="rss_proxy_hint">Некоторым сайтам нужен прокси. Пусто — прямое подключение (напр. 127.0.0.1:7890, поддерживается socks5://)</string>
-    <string name="rss_proxy_value">Адрес прокси (host:port)</string>
-    <string name="rss_proxy_clear">Очистить</string>
-    <string name="rss_proxy_saved">Прокси сохранён</string>
-    <string name="rss_proxy_cleared">Прямое подключение восстановлено</string>
     <string name="rss_load_more">Загрузить ещё</string>
     <string name="rss_no_more">Больше нет</string>
-    <string name="rss_images_loading">Загрузка изображений…</string>
-    <string name="rss_categories">Категории</string>
-    <string name="rss_web_mode">Режим браузера</string>
     <string name="rss_web_collected">Найдено изображений: %1$d</string>
     <string name="rss_web_use">Использовать эти изображения</string>
-    <string name="rss_add_video_group">Добавить видео в группу</string>
     <string name="rss_reload">Обновить</string>
-    <string name="rss_play_external">Системный плеер</string>
     <string name="rss_video_title">Видео</string>
     <string name="rss_video_loading">Загрузка видео…</string>
     <string name="rss_video_failed">Сейчас видео не воспроизводится (ссылка могла устареть)</string>
@@ -623,11 +533,7 @@
     <string name="favorites_empty">Пока пусто — добавьте двойным тапом в «Обзоре»</string>
     <string name="recent_title">Недавние</string>
     <string name="recent_empty">Пока пусто — смените пару обоев, и они появятся здесь</string>
-    <string name="recent_slot_home">Главный</string>
-    <string name="recent_slot_lock">Блокировка</string>
     <string name="recent_push">Показать снова</string>
-    <string name="recent_pushed">Показано снова</string>
-    <string name="preview_nothing">Нечего показывать</string>
     <string name="browse_entry">Обзор</string>
     <string name="storage_title">Память и трафик</string>
     <string name="storage_total">Приложение занимает %1$s</string>
@@ -689,22 +595,9 @@
     <string name="wizard_done">Готово</string>
     <string name="wizard_skip">Позже</string>
     <string name="settings_page_setup_desc">Три шага для первичной настройки и самопроверки</string>
-    <string name="option_panel_title">Выбор</string>
-    <string name="option_default">По умолчанию</string>
-    <string name="color_picker_title">Выбор цвета</string>
-    <string name="color_hex">HEX</string>
     <string name="live_wallpaper_permission_title">Включите «Службу живых обоев»</string>
     <string name="live_wallpaper_permission_message">Система не разрешает этому приложению использовать «Службу живых обоев», поэтому экран живых обоев сразу закрывается и обои не устанавливаются. Включите её в разделе «Разрешения → Другие разрешения» и повторите попытку.</string>
     <string name="action_open_permission">Открыть настройки</string>
     <string name="toast_picker_unavailable">Не удаётся открыть системный экран живых обоев</string>
 </resources>
-
-
-
-
-
-
-
-
-
 

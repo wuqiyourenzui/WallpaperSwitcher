@@ -4,9 +4,6 @@ import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.RecentShown
 import com.wallpaperswitcher.data.SettingsDao
 import com.wallpaperswitcher.data.SettingsKeys
-import com.wallpaperswitcher.data.getBool
-import com.wallpaperswitcher.data.getLong
-import com.wallpaperswitcher.data.setLong
 
 /**
  * The two optional pick knobs, read the same way by every switch path (live

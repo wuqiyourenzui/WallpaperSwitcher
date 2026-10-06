@@ -44,8 +44,6 @@
     <string name="theme_mode_light">Light</string>
     <string name="theme_mode_dark">Dark</string>
 
-    <!-- Settings screen: wallpaper / switching -->
-    <string name="settings_wallpaper_title">Wallpaper</string>
     <string name="settings_switch_mode">Switch mode</string>
     <string name="switch_mode_random">Random</string>
     <string name="switch_mode_sequential">Sequential</string>
@@ -67,9 +65,6 @@
     <string name="settings_rotate_direction">Rotation direction</string>
     <string name="rotate_clockwise">Clockwise</string>
     <string name="rotate_counter_clockwise">Counter-clockwise</string>
-    <string name="settings_switch_methods">Switching</string>
-    <string name="settings_section_methods">Switching</string>
-    <string name="settings_section_methods_hint">What triggers a switch</string>
     <string name="settings_timed_switch">Timed switching</string>
     <string name="settings_timed_switch_hint">Switch the wallpaper automatically at the set interval</string>
     <string name="settings_switch_interval">Interval</string>
@@ -80,18 +75,14 @@
     <string name="settings_double_tap_hint">Double-tap the screen to switch (requires a live wallpaper)</string>
     <string name="settings_floating_button">Floating switch button</string>
     <string name="settings_floating_button_hint">One tap switches (some launchers do not forward double taps)</string>
-    <string name="settings_switch_fade">Switch transition</string>
-    <string name="settings_switch_fade_hint">Fade the new wallpaper in</string>
     <string name="settings_video_sound">Play video sound</string>
     <string name="settings_video_sound_hint">Play sound while the home screen is visible (muted elsewhere)</string>
 
     <!-- Settings screen: lock screen -->
     <string name="settings_lock_timer">Locked-screen timed switching</string>
-    <string name="settings_lock_timer_hint">Change the lock wallpaper on its own interval below</string>
+    <string name="settings_lock_timer_hint">Change the lock wallpaper on its own interval below (images only; when off, the lock screen follows the live wallpaper and can play videos)</string>
     <string name="settings_lock_interval">Lock switch interval</string>
 
-    <!-- Settings screen: folder scan -->
-    <string name="settings_section_scan">Folder auto-scan</string>
     <string name="settings_auto_scan">Auto-scan folders</string>
     <string name="settings_auto_scan_hint">Periodically add new media from imported folders</string>
     <string name="settings_scan_interval">Scan interval</string>
@@ -122,8 +113,6 @@
     <string name="button_color_white">White</string>
     <string name="button_color_black">Black</string>
 
-    <!-- Settings screen: appearance -->
-    <string name="settings_section_appearance">Appearance</string>
     <string name="settings_theme_mode">Theme mode</string>
     <string name="settings_theme_color">Theme colour</string>
     <string name="theme_color_system">System default</string>
@@ -203,7 +192,10 @@
     <string name="selection_none">Deselect all</string>
     <string name="selection_count">%1$d/%2$d selected</string>
     <string name="dialog_delete_groups_title">Delete groups</string>
-    <string name="dialog_delete_groups_message">Delete the selected %1$d groups? Their media entries will be removed too (the photo/video files on your phone are not deleted).</string>
+    <plurals name="dialog_delete_groups_message">
+        <item quantity="one">Delete the selected group? Its media entries will be removed too (the photo/video files on your phone are not deleted).</item>
+        <item quantity="other">Delete the selected %1$d groups? Their media entries will be removed too (the photo/video files on your phone are not deleted).</item>
+    </plurals>
     <string name="empty_groups_title">No wallpaper groups yet</string>
     <string name="empty_groups_hint">Tap “New group” to start adding wallpapers</string>
     <string name="dialog_new_group_title">New wallpaper group</string>
@@ -320,7 +312,6 @@
     <string name="hint_motion_needs_engine">Video/GIF need a live wallpaper — pick this app in the system live wallpaper settings</string>
     <string name="home_permission_warning">The imported photos/videos cannot be read without the “Photos and videos” permission. Grant it and try again.</string>
     <string name="action_grant_permission">Grant</string>
-    <string name="settings_logs_privacy_note">Logs include your device model and folder names — share carefully</string>
     <!-- Counts need plurals: a plain string renders "1 groups". -->
     <plurals name="home_groups_count">
         <item quantity="one">%1$d group</item>
@@ -338,9 +329,6 @@
         <item quantity="one">%1$d folder</item>
         <item quantity="other">%1$d folders</item>
     </plurals>
-    <!-- Per-group rhythm (interval / mode / time window) -->
-    <string name="group_option_follow_global">Follow global</string>
-    <string name="group_interval_label">Interval</string>
     <string name="group_window_label">Time window</string>
     <string name="group_window_all_day">All day</string>
     <string name="group_window_from">From</string>
@@ -366,8 +354,6 @@
     <string name="tile_switch_label">Switch wallpaper</string>
     <string name="tile_pause_label">Pause switching</string>
     <string name="tile_resume_label">Resume switching</string>
-    <string name="tile_paused_toast">Wallpaper switching paused</string>
-    <string name="tile_resumed_toast">Wallpaper switching resumed</string>
     <string name="widget_switch">Switch</string>
     <string name="widget_pause">Pause</string>
     <string name="widget_resume">Resume</string>
@@ -382,7 +368,6 @@
     <string name="settings_config_backup">Config export / import</string>
     <string name="settings_export_config">Export config</string>
     <string name="settings_import_config">Import config</string>
-    <string name="settings_config_hint">Exports groups, intervals, modes and global settings (media files are not included)</string>
     <string name="toast_config_exported">Config exported</string>
     <string name="toast_config_export_failed">Export failed: %1$s</string>
     <string name="toast_config_imported">Imported %1$d groups and %2$d subscriptions</string>
@@ -411,93 +396,28 @@
     <string name="day_fri">F</string>
     <string name="day_sat">S</string>
     <string name="day_sun">S</string>
-    <!-- Follow dark mode -->
-    <string name="group_theme_label">Theme</string>
-    <string name="group_theme_any">Any</string>
-    <string name="group_theme_hint">Follows the phone\'s light/dark mode to decide whether this group joins the rotation</string>
     <!-- Finish videos / favourites / recent repeats -->
     <string name="settings_video_play_to_end">Finish videos first</string>
     <string name="settings_video_play_to_end_hint">Timed switches wait for the video to finish; manual taps are not affected</string>
-    <string name="settings_favorite_boost">Favour favourites</string>
-    <string name="settings_favorite_boost_hint">Favourited media appears more often in random / shuffle</string>
-    <string name="settings_recent_no_repeat">Avoid recent repeats</string>
-    <string name="settings_recent_no_repeat_hint">Random mode will not immediately repeat the last few pictures</string>
-    <string name="recent_no_repeat_off">Off</string>
     <string name="media_favorite_add">Add to favourites</string>
     <string name="media_favorite_remove">Remove from favourites</string>
-    <string name="media_favorite_badge">Favourite</string>
-    <!-- Group filter / order -->
-    <string name="group_filter_label">Filter</string>
-    <string name="group_filter_all">All</string>
-    <string name="group_filter_image">Images only</string>
-    <string name="group_filter_motion">Videos / GIFs only</string>
-    <string name="group_filter_favorite">Favourites only</string>
-    <string name="group_sort_label">Order</string>
-    <string name="group_sort_added">Order added</string>
-    <string name="group_sort_newest">Newest first</string>
-    <!-- Widget -->
-    <string name="widget_next_in">Next switch</string>
     <string name="widget_current_unknown">Unknown</string>
     <!-- Runtime status -->
     <!-- Online wallpaper sources (Bing daily / direct URL / WebDAV) -->
     <string name="online_auto_group_name">Online wallpapers</string>
-    <string name="settings_section_online">Online sources</string>
-    <string name="settings_online_sources">Online sources</string>
-    <string name="settings_online_sources_desc">Bing daily / URL / WebDAV, fetched into a group on a schedule</string>
-    <string name="title_online_sources">Online sources</string>
-    <string name="online_add">Add source</string>
-    <string name="online_empty">No online source yet. Tap the button below to add one.</string>
-    <string name="online_type_bing">Bing daily image</string>
-    <string name="online_type_url">Direct URL</string>
-    <string name="online_type_meirentu">Meirentu (meirentu.club)</string>
-    <string name="online_type_webdav">WebDAV folder</string>
-    <string name="online_dialog_add_title">Add online source</string>
-    <string name="online_dialog_edit_title">Edit online source</string>
-    <string name="online_label_name">Name (optional)</string>
-    <string name="online_label_target_group">Fetch into group</string>
     <string name="online_group_auto">Auto-create \"Online wallpapers\"</string>
-    <string name="online_label_interval">Update interval</string>
-    <string name="online_label_url">Image URL</string>
-    <string name="online_label_webdav_url">WebDAV URL</string>
-    <string name="online_label_webdav_path">Subfolder (optional)</string>
-    <string name="online_label_username">Username (optional)</string>
-    <string name="online_label_password">Password (optional)</string>
-    <string name="online_password_keep">Leave empty to keep the current one</string>
-    <string name="online_label_keep_count">Keep at most</string>
-    <string name="online_keep_count_desc">Older images are deleted automatically; 0 = unlimited</string>
-    <string name="online_keep_unlimited">Unlimited</string>
-    <string name="online_wifi_only">Only on Wi-Fi</string>
-    <string name="online_charging_only">Only while charging</string>
-    <string name="online_privacy_note">Only the addresses you enter are contacted; credentials are encrypted on this device; public addresses must use HTTPS.</string>
-    <string name="online_action_refresh">Update now</string>
     <string name="online_never_updated">Never updated</string>
-    <string name="online_last_update">Last update</string>
-    <string name="online_status_ok">Updated: %1$d new</string>
     <string name="online_status_ok_none">Updated: nothing new</string>
+    <string name="online_status_ok_added">Updated: +%1$d</string>
+    <string name="settings_online_sources">Online wallpaper sources</string>
+    <string name="settings_online_sources_desc">Built-in sources: Bing daily, NASA APOD, Wikimedia and more</string>
+    <string name="settings_online_sources_hint">Downloads into the “Online wallpaper” group; refreshes daily on Wi-Fi</string>
+    <string name="settings_online_refresh_now">Refresh now</string>
+    <string name="settings_online_source_started">“%1$s” is on — downloading…</string>
+    <string name="settings_online_source_none">Turn on an online wallpaper source first</string>
+    <string name="settings_online_source_refreshing">Updating online wallpapers</string>
     <string name="online_status_error">Update failed: %1$s</string>
-    <string name="online_delete_title">Delete online source</string>
-    <string name="online_delete_message">This also deletes the downloaded images and files. Delete \"%1$s\"?</string>
-    <string name="online_saved">Saved</string>
-    <string name="online_refresh_started">Update started</string>
-    <string name="online_url_hint">https://example.com/latest.jpg</string>
-    <string name="online_webdav_hint">https://nas.example.com/dav/photos</string>
-    <string name="online_meirentu_hint">https://meirentu.club/</string>
-    <string name="online_meirentu_note">Scrapes the first 2 pages of the newest albums (up to 8 images per run)</string>
-    <string name="online_meirentu_select">Select images</string>
-    <string name="online_meirentu_selected">%1$d selected</string>
-    <string name="online_meirentu_auto_mode">Auto-scrape the newest albums</string>
-    <string name="online_meirentu_manual_mode">Only the %1$d selected images</string>
-    <string name="online_meirentu_clear">Clear selection</string>
-    <string name="online_meirentu_pages">Pages per album</string>
-    <string name="online_max_per_run">Max per run</string>
-    <string name="online_picker_title">Pick Meirentu images</string>
-    <string name="online_picker_albums">Album</string>
-    <string name="online_picker_load_more">Load more</string>
-    <string name="online_picker_no_more">No more</string>
-    <string name="online_picker_select_page">Select page</string>
     <string name="online_picker_loading">Loading…</string>
-    <string name="online_picker_failed">Load failed: %1$s</string>
-    <string name="online_picker_done">Done</string>
     <!-- Reading subscriptions (Legado-compatible) -->
     <string name="title_subscriptions">Subscriptions</string>
     <string name="nav_subscriptions">Subscriptions</string>
@@ -507,7 +427,6 @@
     <string name="rss_delete_title">Delete subscription</string>
     <string name="rss_delete_message">Delete \"%1$s\" and its downloaded articles?</string>
     <string name="rss_last_update">Last update</string>
-    <string name="rss_open">Read</string>
     <string name="rss_name">Name (optional)</string>
     <string name="rss_url">Feed URL (RSS/Atom)</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
@@ -524,21 +443,17 @@
     <string name="rss_edit_add_field">Add field</string>
     <string name="settings_rss_download_dir">Subscription download folder</string>
     <string name="settings_rss_download_dir_default">App-private folder (default, hidden from gallery)</string>
-    <string name="settings_rss_download_dir_reset">Use default</string>
     <string name="settings_rss_download_dir_saved">Folder updated: new imports go there</string>
     <string name="settings_rss_download_dir_reset_done">Back to the app-private folder</string>
     <string name="rss_article">Article</string>
-    <string name="rss_open_original">Open original</string>
     <string name="rss_open_in_browser">Open in browser</string>
     <string name="rss_status_ok">Updated: %1$d new</string>
     <string name="rss_browse_source">Web page source · tap to open in the browser</string>
     <string name="rss_saved">Saved</string>
     <string name="rss_refresh_done">Refreshed: %1$d new</string>
     <string name="rss_refresh_failed">Refresh failed: %1$s</string>
-    <string name="rss_refresh_started">Refreshing all subscriptions</string>
     <string name="rss_import_failed">Import failed, please check the content format</string>
     <string name="rss_import_done">Imported %1$d sources, updated %2$d (%3$d skipped)</string>
-    <string name="rss_refresh_all">Refresh all</string>
     <string name="rss_article_images">Article images (%1$d)</string>
     <string name="rss_select_all">Select all</string>
     <string name="rss_clear_selection">Clear</string>
@@ -613,21 +528,11 @@
     <string name="rss_edit_saved">Saved</string>
     <string name="rss_edit_save_failed">Save failed</string>
     <string name="rss_proxy">Proxy</string>
-    <string name="rss_proxy_hint">Some sites need a proxy. Leave it empty for a direct connection (e.g. 127.0.0.1:7890, socks5:// works too).</string>
-    <string name="rss_proxy_value">Proxy address (host:port)</string>
-    <string name="rss_proxy_clear">Clear</string>
-    <string name="rss_proxy_saved">Proxy saved</string>
-    <string name="rss_proxy_cleared">Direct connection restored</string>
     <string name="rss_load_more">Load more</string>
     <string name="rss_no_more">No more items</string>
-    <string name="rss_images_loading">Loading images…</string>
-    <string name="rss_categories">Categories</string>
-    <string name="rss_web_mode">Browser</string>
     <string name="rss_web_collected">%1$d images collected</string>
     <string name="rss_web_use">Use these images</string>
-    <string name="rss_add_video_group">Add video to group</string>
     <string name="rss_reload">Reload</string>
-    <string name="rss_play_external">System player</string>
     <string name="rss_video_title">Video</string>
     <string name="rss_video_loading">Loading video…</string>
     <string name="rss_video_failed">Video is not playable right now (the link may have expired)</string>
@@ -645,11 +550,7 @@
     <string name="favorites_empty">No favourites yet — double-tap one in Browse</string>
     <string name="recent_title">Recently shown</string>
     <string name="recent_empty">Nothing yet — switch a few wallpapers and they show up here</string>
-    <string name="recent_slot_home">Home</string>
-    <string name="recent_slot_lock">Lock screen</string>
     <string name="recent_push">Show again now</string>
-    <string name="recent_pushed">Shown again</string>
-    <string name="preview_nothing">Nothing to preview</string>
     <string name="browse_entry">Browse</string>
     <string name="storage_title">Storage &amp; data</string>
     <string name="storage_total">%1$s used by the app</string>
@@ -711,22 +612,9 @@
     <string name="wizard_done">Done</string>
     <string name="wizard_skip">Skip for now</string>
     <string name="settings_page_setup_desc">Three steps to finish the initial setup and self-check</string>
-    <string name="option_panel_title">Choose</string>
-    <string name="option_default">Default</string>
-    <string name="color_picker_title">Pick a colour</string>
-    <string name="color_hex">Hex</string>
     <string name="live_wallpaper_permission_title">Turn on “Live wallpaper service”</string>
     <string name="live_wallpaper_permission_message">The system does not allow this app to use the “Live wallpaper service”, so the system live-wallpaper screen closes the instant it opens and the wallpaper cannot be set. Turn it on under Permissions → Other permissions and try again.</string>
     <string name="action_open_permission">Open settings</string>
     <string name="toast_picker_unavailable">Cannot open the system live-wallpaper screen</string>
 </resources>
-
-
-
-
-
-
-
-
-
 

@@ -27,6 +27,8 @@
     <application
         android:name=".WallpaperSwitcherApp"
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:largeHeap="true"
@@ -37,10 +39,11 @@
         android:usesCleartextTraffic="true"
         tools:targetApi="34">
         <!--
-          usesCleartextTraffic is enabled for the LAN WebDAV case only: a NAS at
-          http://192.168.x.x cannot present a trusted certificate. The code
-          (OnlineSourceRules.endpointPolicy) rejects a public http:// endpoint,
-          so https stays mandatory for everything outside the user's network.
+          usesCleartextTraffic is required by 阅读 (Legado) subscription sources:
+          imported sources may point at plain-http endpoints or http-only image
+          CDNs, and the importer deliberately keeps Legado's behaviour. (The
+          removed online-wallpaper feature used to keep a stricter HTTPS-only
+          policy for its own endpoints.)
         -->
 
         <activity

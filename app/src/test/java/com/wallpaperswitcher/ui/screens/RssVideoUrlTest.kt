@@ -196,6 +196,59 @@ class RssVideoUrlTest {
         assertTrue(isPlaylistUrl(url))
     }
 
+    // ---------- 视频源选图网格的过滤（SubscriptionScreen） ----------
+
+    /**
+     * 视频源的选图网格只能出现「能播的流」：`.ts` / `.m4s` 是 HLS 分片、`_tpl_`
+     * 是站点海报（有视频后缀但是静态图），两者进来就是网格里的坏图和下载失败的
+     * 素材。
+     */
+    @Test
+    fun videoStreamFilterRejectsSegmentsAndPosters() {
+        // 真正的流：mp4 与 HLS 清单（带查询串的也要认，签名地址很常见）
+        assertTrue(looksLikeVideoStream("https://cdn.example.com/videos/70352.mp4"))
+        assertTrue(looksLikeVideoStream("https://cdn.example.com/hls/master.m3u8"))
+        assertTrue(
+            looksLikeVideoStream("https://cdn.example.com/v/1.m3u8?validfrom=1&validto=2"),
+        )
+        // HLS 分片不是可下载的流
+        assertFalse(looksLikeVideoStream("https://cdn.example.com/hls/seg-0001.ts"))
+        assertFalse(looksLikeVideoStream("https://cdn.example.com/hls/seg-0001.ts?t=2"))
+        assertFalse(looksLikeVideoStream("https://cdn.example.com/hls/seg-0001.m4s"))
+        // 海报占位图有视频后缀但是静态图
+        assertFalse(looksLikeVideoStream("https://cdn.example.com/thumbs/70352_TPL_.mp4"))
+        // 普通图片
+        assertFalse(looksLikeVideoStream("https://cdn.example.com/pics/1.jpg"))
+    }
+
+    /**
+     * 选图网格的那条过滤链：`type==2` 时先滤流、再用 `initialImages` 覆盖网格，
+     * 覆盖后**必须**再过滤一次 —— 否则 `.ts` / 海报会重新进网格（回归点）。
+     */
+    @Test
+    fun videoPickerGridNeverKeepsSegmentsOrPosters() {
+        val initialImages = listOf(
+            "https://cdn.example.com/videos/70352.mp4",
+            "https://cdn.example.com/hls/master.m3u8?validfrom=1",
+            "https://cdn.example.com/hls/seg-0001.ts",
+            "https://cdn.example.com/hls/seg-0002.m4s",
+            "https://cdn.example.com/thumbs/70352_TPL_.mp4",
+            "https://cdn.example.com/pics/cover.jpg",
+        )
+        // 与 SubscriptionScreen 里 `picked` 的 type==2 分支逐字一致。
+        val picked = initialImages.filter { looksLikeVideoStream(it) }
+        assertEquals(
+            listOf(
+                "https://cdn.example.com/videos/70352.mp4",
+                "https://cdn.example.com/hls/master.m3u8?validfrom=1",
+            ),
+            picked,
+        )
+        assertTrue(picked.none { it.substringBefore('?').endsWith(".ts") })
+        assertTrue(picked.none { it.substringBefore('?').endsWith(".m4s") })
+        assertTrue(picked.none { it.contains("_tpl_", ignoreCase = true) })
+    }
+
     // ---------- 仓库里的真实源文件 ----------
 
     /**

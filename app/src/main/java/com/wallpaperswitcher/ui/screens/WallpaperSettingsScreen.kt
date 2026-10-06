@@ -208,6 +208,7 @@ fun WallpaperSettingsScreen(
                     onCheckedChange = { viewModel.setVideoPlayToEnd(it) }
                 )
         }
+
     }
 }
 

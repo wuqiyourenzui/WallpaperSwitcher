@@ -97,6 +97,14 @@ com.wallpaperswitcher/
 | isEnabled | Boolean | 是否启用 (默认 true) |
 | createdAt | Long | 创建时间戳 |
 | type | String | 兼容字段（历史版本区分 IMAGE/VIDEO），当前分组已混合存放，不再参与切换逻辑 |
+| target | String | 应用位置: HOME / LOCK / BOTH（schema v4 起，见 4.9.1） |
+| intervalMs | Long | 分组自己的切换间隔（0 = 跟随全局，schema v7 起） |
+| switchMode | String | 历史字段: v7 短暂支持分组模式，v8 起清空且不再参与切换 |
+| activeFromMinute / activeToMinute | Int | 时间规则（分钟，-1 = 不限，schema v7 起） |
+| activeDays | Int | 星期规则位掩码（0 = 每天，schema v9 起） |
+| activeThemeMode | String | 主题模式规则字段（schema v9 起；当前版本保留字段，不参与选择） |
+| filterMode | String | 素材筛选: ""=全部 / "IMAGE"=仅图片 / "MOTION"=视频+GIF（schema v9 起） |
+| sortOrder | String | 顺序模式排序: ""=默认 / "NEWEST"=新的在前（schema v9 起） |
 
 #### wallpaper_images (壁纸图片表)
 
@@ -112,6 +120,7 @@ com.wallpaperswitcher/
 | addedAt | Long | 添加时间戳 |
 | width / height | Int | 媒体像素尺寸（0 = 未知）。扫描 MediaStore 时顺带取回，否则在首次解码后写回 |
 | rotationDegrees | Int | EXIF 旋转角度（0/90/180/270）。有了宽高+角度，解码只需 **1 次**媒体库读取 |
+| isFavorite | Boolean | 收藏（schema v9 起；RANDOM / SHUFFLE 下收藏有加权） |
 
 **外键约束**：`groupId` → `wallpaper_groups.id`，级联删除 (ON DELETE CASCADE)。
 **索引**：`groupId` 字段建立索引以加速查询。
@@ -123,17 +132,29 @@ com.wallpaperswitcher/
 | key | String (PK) | 设置键名 |
 | value | String | 设置值 (字符串存储) |
 
-#### shuffle_shown (洗牌牌堆表，schema v6 起)
+#### shuffle_shown (洗牌牌堆表，schema v6 起；v7 起按 (slot, groupId) 分组)
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
 | slot | String (PK) | `HOME` / `LOCK`（见 `WallpaperTarget.SLOT_*`） |
+| groupId | Long (PK) | 所属分组（schema v7 起） |
 | mediaId | Long (PK) | 本趟已展示过的媒体 ID |
 
 **为什么单独建表**：洗牌进度原本存在 `app_settings.shuffle_shown_ids`（逗号分隔的 ID 串）。
 牌堆随媒体库增长（3.8 万张约 230KB），而每次切换都要把这串**整体**读出、解析、重建再写回：
 CPU 与闪存写入都随库大小线性上升，而且写 `app_settings` 会让设置页的 20 路 Room Flow 全部失效重查。
 现在「已展示」= 一行记录（`INSERT OR IGNORE`，恒定大小），重开一趟 = 一次带索引的 `DELETE`。
+
+#### 其余表（schema v7–v14）
+
+| 表 | 起始版本 | 关键字段 | 用途 |
+|----|----------|----------|------|
+| group_schedule | v7 | groupId + slot (PK), lastSwitchAt, lastMediaId | 每个分组在每个槽位的调度锚点与上次媒体 |
+| recent_shown | v9 | slot + mediaId (PK), shownAt | RANDOM「最近 N 张不重复」历史 |
+| online_sources | v10 | id, type, name, groupId, url, webdavUrl/Path, username, passwordCipher, intervalMinutes, keepCount, … | 在线壁纸源（功能已于 §4.9.93 下线，表保留） |
+| online_items | v10 | sourceId + remoteKey (PK), contentHash, imageId, filePath | 在线源已下载项（同上，保留） |
+| rss_sources | v12 | id, name, url, type, enabled, rawJson, lastFetchAt/Result/ErrorAt | 阅读订阅源 |
+| rss_articles | v12 | sourceId + guid (PK), title, link, description, content, imageUrl, publishedAt, isRead, sort (v13), requestHeaders (v14) | 订阅文章缓存 |
 
 ### 3.2 设置键定义
 
@@ -145,8 +166,7 @@ CPU 与闪存写入都随库大小线性上升，而且写 `app_settings` 会让
 | floating_button_enabled | Boolean | false | 悬浮双击按钮是否开启 |
 | floating_button_color | String | "#1E88E5" | 悬浮按钮颜色 |
 | floating_button_alpha | Long | 10 | 悬浮按钮不透明度百分比 (5..100) |
-| last_image_id | Long | 0 | 最后显示的媒体 ID |
-| sequential_index | Long | 0 | 顺序模式当前索引 |
+| last_image_id | Long | 0 | 最后显示的媒体 ID（也作为桌面 SEQUENTIAL 的游标） |
 | global_interval_ms | Long | 60000 | 切换间隔 (毫秒，下限 10 秒) |
 | timer_last_switch_wall_ms | Long | 0 | 当前间隔的起点（上次定时切换 / 亮屏时刻的墙钟时间）。熄屏期间不计时：亮屏时会被前移到"现在"，进程被杀重启也能续算 |
 | global_switch_mode | String | "RANDOM" | 切换模式: RANDOM/SEQUENTIAL/SHUFFLE |
@@ -162,6 +182,13 @@ CPU 与闪存写入都随库大小线性上升，而且写 `app_settings` 会让
 | shuffle_all_count | Long | 0 | 洗牌模式媒体总数快照（引擎日志用；已展示集合见 `shuffle_shown` 表） |
 | theme_color | String | "" | 主题色 (空 = 跟随系统) |
 
+> 完整键表以 `data/SettingsKeys.kt` 为准（键名唯一来源）。本表之外还有：
+> `switch_transition`、`video_play_to_end`、`ken_burns_enabled`、`favorite_boost`、
+> `recent_no_repeat`、`pause_until` / `pause_started_at`、`theme_mode` / `app_locale`、
+> `rss_wifi_only` / `rss_daily_limit_mb` / `rss_orphan_ttl_days` / `rss_grid_view`、
+> `auto_scan_last_run_at` / `auto_scan_last_generation`、`manual_pick_*`、
+> `last_home_write_*` / `last_lock_write_*`、`pick_seq` 等。
+
 ### 3.3 数据库版本迁移
 
 - **版本 1 → 2**：`wallpaper_images` 表新增 `mediaType`、`isFromFolder`、`folderPath` 三个字段。
@@ -172,6 +199,20 @@ CPU 与闪存写入都随库大小线性上升，而且写 `app_settings` 会让
 - **版本 5 → 6**：新建 `shuffle_shown` 表（见 3.1），并删除遗留的 `shuffle_shown_ids` /
   `shuffle_shown_ids_lock`（两个切换路径都改用新表，留着只会让设置页继续观察死数据）。
   代价：升级后当前这趟洗牌牌堆从头开始（最多重复几张图），不丢任何媒体数据。
+- **版本 6 → 7**：`wallpaper_groups` 新增 `intervalMs`、`switchMode`、
+  `activeFromMinute`、`activeToMinute`；新建 `group_schedule`；`shuffle_shown`
+  重建为 `(slot, groupId, mediaId)`（见 3.1）。
+- **版本 7 → 8**：清空 `wallpaper_groups.switchMode`（分组级切换模式取消，模式统一由全局设置决定）。
+- **版本 8 → 9**：`wallpaper_groups` 新增 `activeDays`、`activeThemeMode`、`filterMode`、
+  `sortOrder`；`wallpaper_images` 新增 `isFavorite`；新建 `recent_shown`。
+- **版本 9 → 10**：新建 `online_sources`、`online_items`（在线壁纸源，功能已于 §4.9.93 下线，表保留）。
+- **版本 10 → 11**：`online_sources` 新增 `pagesPerAlbum`、`maxPerRun`、`selectedImages`。
+- **版本 11 → 12**：新建 `rss_sources`、`rss_articles`（含 `sourceId` 索引）。
+- **版本 12 → 13**：`rss_articles` 新增 `sort`（阅读分类）。
+- **版本 13 → 14**：`rss_articles` 新增 `requestHeaders`（链接选项里的请求头）。
+- **版本 14 → 15**：`wallpaper_images` 新增索引 `(groupId, addedAt, id)`、`uri`、
+  `isFavorite`——分组网格分页不再每次整组排序，元数据回填 / 收藏切换按 uri 查找不再全表扫描。
+- 当前 `AppDatabase.version = 15`。
 - 使用显式 `Migration` 对象迁移，无 `fallbackToDestructiveMigration`。
 
 ---
@@ -227,7 +268,7 @@ CPU 与闪存写入都随库大小线性上升，而且写 `app_settings` 会让
 | 模式 | 枚举值 | 算法 |
 |------|--------|------|
 | 随机 | `RANDOM` | 从启用分组中随机选取，排除当前显示的媒体 |
-| 顺序 | `SEQUENTIAL` | 按 id 顺序依次切换，使用 `sequential_index` 记录位置 |
+| 顺序 | `SEQUENTIAL` | 按 id 顺序依次切换，按槽位游标（`last_image_id` / `last_image_id_lock`）记录位置 |
 | 洗牌 | `SHUFFLE` | 随机不重复，全部显示完后重新洗牌，状态持久化到数据库 |
 
 **随机选取优化**：不使用 `ORDER BY RANDOM()`（大库全表排序慢），而是 `COUNT + 随机 OFFSET` 快速定位；OFFSET 落在被删行间隙时回退到 `ORDER BY RANDOM()` 变体。
@@ -4809,6 +4850,13 @@ WebView 阅读类字段（`style`/`enableJs`/`loadWithBaseUrl`/`injectJs`/`prelo
 **实测**（AOSP 14 模拟器）：设置页不再出现「在线壁纸源」入口，订阅页
 （全部刷新/代理/导入阅读订阅源）正常；**306 条单元测试全绿**。
 
+**附注（2026-10-06，内置源回归）**：按用户要求，在线壁纸源以**设置内的固定选项**
+回归，不再提供「添加任意 URL / WebDAV / 美人图」入口：设置 → 壁纸设置 →「在线壁纸源」
+内是 Bing 每日、NASA APOD、Wikimedia 每日图片、彼岸图网、必应壁纸（ioliu）五个开关，
+全部下载到自动创建的「在线壁纸」分组（target=BOTH），由 `OnlineSourceScheduler`
+按天（Wi-Fi）更新；旧版遗留的其它 `online_sources` 行不再排期，已下载内容保留。
+实机（25102RKBEC）验证：五个源共入库 24 张（Bing 3 / NASA 1 / Wikimedia 8 / 彼岸 7 / ioliu 5）。
+
 #### 4.9.94 订阅源分页：游标 + 滚动到底自动续载（对齐阅读的懒加载）
 
 **问题**：来源列表每次刷新固定只抓 `MAX_PAGES_PER_REFRESH = 3` 页，且没有任何
@@ -6888,6 +6936,280 @@ uiautomator 把清晰度切到「关闭」拍一张、再切到「画质增强�
 （中间没有别的行）。核对完已把该开关恢复为关闭，没有改动用户设置。
 
 530 条单测全绿、`:app:assembleDebug` ✓、崩溃扫描干净。
+
+#### 4.9.166 订阅源「加入分组」改为真正的原图（不再下展示尺寸/WebP 变体）
+
+用户要求："订阅源下到分组的图片应该是原图未经过处理的"。
+
+**根因**：选择器/浏览器收集到的 URL 就是"加入分组"要下载的地址，而浏览器路径
+（`RssWebArticleDialog` 的 `COLLECT_JS`）第一优先级取的是 `currentSrc` —— 那是
+浏览器**为当前屏幕/DPR 选中的展示尺寸**，`<picture>` 里还常常是 WebP 这种转码
+变体；`data-src` / `data-original` 这些"站点自己标的真实地址"排在它后面，等于
+永远用不上。静态解析路径（`FeedParser.imageUrlOfTag`）则取 `srcset` 的**第一项**，
+而 srcset 按约定从小到大排列，取第一项就是最小的那张。
+
+**修复**：
+
+- 新增 `OriginalImageUrl.largestFromSrcset`：按尺寸描述符取 `srcset` 里最大的一项
+  （`1200w > 2x(=2000) > 无描述符(=1x, 1000) > 480w`，同样大取后一项；整条属性是
+  `data:` URI 时直接放弃，避免把 base64 的逗号当分隔符）。`FeedParser` 的
+  `srcset` / `data-srcset` 改用它。
+- `COLLECT_JS` 每个 `<img>` 改为按 `data-original / data-src / data-lazy-src /
+  data-echo / data-url / data-actualsrc` → `srcset` 最大项 → `src` → `currentSrc`
+  取值；候选统一用 `new URL(u, document.baseURI)` 绝对化（相对地址以前会被桥的
+  http(s) 过滤直接丢掉）。`FeedParser` 的属性表同步加 `data-actualsrc`。
+- `OriginalImageUrl.upgrade` 补两种常见变体后缀：`_300x200`（下划线版）与
+  WP 裁剪版 `-1024x683-c`。
+
+**代价**：选择器网格与下载用同一份 URL（本来就是同一列表），srcset 站点现在
+展示/下载的都是最大那张 —— 流量比"展示尺寸"高，但网格里看到的即是将写入分组
+的文件，不会再出现"选的时候是高清、进组是缩略图"。
+
+**验证**：新增 `largestFromSrcset` 3 条 + WordPress 后缀 1 条，`FeedParser` 的
+srcset 用例改为断言取最大项、另加无描述符取最后一项。本地源端到端（主机
+`10.0.2.2` 提供 `<img srcset=300w/1200w>` + `<picture>` WebP 源 + 懒加载
+`data-src` 三种写法）：浏览器页底部显示**已收集 2 张**，网格里是 green
+(`big.png` 1200x800) 与 blue (`orig.png` 2560x1600) 两张 —— 旧实现会收 3 张
+（含 magenta 的 `proc.webp` 与 red 的 `small.png` 占位图）。同一份 `COLLECT_JS`
+抽出后在 Node 里用模拟 DOM 跑：新逻辑得到 `[big.png, orig.png]`，旧逻辑得到
+`[big.png, proc.webp, small.png]`。
+
+527 条单测全绿、`:app:assembleDebug` ✓。
+
+#### 4.9.167 订阅图片「加入分组」提速：失败快速回退 + 下载/校验/发布流水线
+
+用户要求："提高订阅图片加入分组的速度"。
+
+**三个串行/浪费点**：
+
+1. **重试不看错误类型**：`download` 失败一律重试 3 次，而"原图优先"的升级猜测
+   在很多站点会 404 —— 一张图白跑 3 个请求再去回退，再乘以整篇文章的图片数。
+2. **发布阶段串行**：下载全部完成后才开始逐张 bounds 解码 + 拷进用户选的 SAF
+   目录，几十张图时后半段纯排队，且完全不与下载重叠。
+3. **重复读盘算哈希**：文件落盘后再整读一遍算 SHA-256 决定文件名，最大 30MB
+   的视频要多读一次。
+
+**修复**：
+
+- `download()` 返回 `DownloadOutcome`（Ok / Permanent / Transient）：4xx（408/429
+  除外）、超大、未知媒体类型、坏 URL 都是永久失败 → 立即回退到页面 URL 或放弃；
+  只有 5xx / I/O / 空 body / 416 才用重试预算。
+- 下载 → 校验 → 发布合并进同一个并行任务（`DOWNLOAD_PARALLELISM` 4 → 6），
+  批次级去重与 `insertAll` 仍留在最后串行做（`existing` 集合只被并行读）。
+- SHA-256 改成边写边算（续传时先把磁盘上已有的前缀喂进摘要），去掉整文件重读。
+- `import done` 日志补耗时，便于在真机上看这一批实际花多久。
+
+**验证**（模拟器 + 本地源 8 张图，每张故意写成 `-300x200` 变体让升级猜测必然
+404，服务端每张延迟 200ms）：
+
+- `import done: added=8 failed=0 in 1124ms`；服务端计数显示每个 404 的升级地址
+  **只请求 1 次**（旧实现是 3 次），随后立刻回退到页面地址。
+- 8 张全部入库、尺寸 1600x1000、文件字节数与源文件一致（原样落盘，未重编码）。
+
+527 条单测全绿、`:app:assembleDebug` ✓。
+
+#### 4.9.168 取图与 shuffle 牌堆拆成 MediaPicker
+
+第 20 轮解构：`LiveWallpaperService` 3736 → **3537** 行，新增
+`wallpaper/MediaPicker.kt`（276 行）。
+
+**搬走的内容**（逻辑逐字搬移）：
+
+- `pickNextImage(...)`：屏幕级 RANDOM / SEQUENTIAL / SHUFFLE 三种取图
+  （SEQUENTIAL 的 wrap、SHUFFLE 的"未出过优先"）。
+- `enabledCountCached(...)` 与它的 3s TTL 缓存（原来同时被切换路径和预取路径
+  各查一遍 COUNT(*)）。
+- 屏幕级 shuffle 牌堆：`shuffleShownIds` / `shuffleAllCount` /
+  `pendingShuffleIds` 三个字段，牌堆重置（仅整轮出完才重置）、
+  `noteShuffleShown`（每切换一张落一行 `shuffle_shown`）与 `flush()`
+  （进程级 ioScope 上写盘 + 3 次有界重试）。
+
+引擎侧只保留调用点，`picker` 在 `onCreate` 打开数据库之后构造（`lateinit`，
+`onDestroy` 里按 `::picker.isInitialized` 保护后再 flush）。
+
+**验证**：527 条单测全绿、`:app:assembleDebug` ✓。模拟器（装机后实跑）：
+
+1. 分组作用域的 SEQUENTIAL 双击切换 → `Switch start/done`，无异常；
+2. 把切换模式改成 SHUFFLE、并把启用分组的时间规则临时挪到 00:00–00:01（强制
+   走屏幕级取图），双击：
+   `MediaPicker: Shuffle pick: deck=0/11 (saved=0) -> id=8` → `Switch to:
+   zz-test-fit.png (IMAGE) id=8`；紧接着预取又跑一次取图 →
+   `deck=1/11 (saved=11)` + `Prefetching next image: wstest1.png id=2 group=0`，
+   说明牌堆落盘 + 重新加载（`shuffle_shown` 2 行、`shuffle_all_count=11`）也生效。
+   验证后已把时间规则、切换模式、牌堆与 `hide_error_dialogs` 全部还原。
+
+#### 4.9.169 视频会话拆成 VideoSessionController
+
+第 21 轮解构：`LiveWallpaperService` 3537 → **3407** 行，新增
+`wallpaper/VideoSessionController.kt`（238 行）。
+
+**搬走的内容**（逻辑逐字搬移）：视频会话的四个状态（`videoMode` /
+`videoHealthJob` / `resumeVideoMediaId` / `resumeVideoPositionUs`）与
+`startVideo()` / `stopVideo()` / `startVideoHealthMonitor()` /
+`resumePositionFor()`。引擎侧原来 26 处 `videoMode` 读写、3 处
+`videoHealthJob?.cancel()` 全部改为控制器接口：`video.active` /
+`video.markActive()` / `video.markInactive()` / `video.stop()` /
+`video.start()` / `video.cancelHealthMonitor()` / `video.resumePositionFor()` /
+`video.rememberResume()`，共 39 个调用点。
+
+边界：控制器只回答"会话是否活着 + 该从哪一毫秒续播"，**失败后换哪一张**仍由引擎
+决定（`Host.onVideoStartFailed`）；看门狗的 10s/60s 轮询常量随控制器搬走，引擎
+里那份删掉（避免两份常量漂移）。
+
+**验证**：527 条单测全绿、`:app:assembleDebug` ✓。模拟器实跑（把 `ws_video.mp4`
+设为桌面媒体后）：
+
+1. 起播：`startVideo: file:///…/ws_video.mp4` → `Video started: 640x360 @ 1fps`；
+2. 熄屏 10s：`Video session released after 10s locked (power save)`（释放路径调用
+   `video.stop()` 并记住续播位置）；
+3. 亮屏回桌面：`Resuming video at 806ms (lock release)` → `startVideo` →
+   渲染器 `Video resumes at 806ms (kept position, not the start)`，播放继续
+   （`Video frame rendered` / loop restart），看门狗没有误报。
+
+验证后已把 `video_only` 分组恢复为禁用、`last_image_id` 还原、测试用的
+`hide_error_dialogs` 删除。
+
+#### 4.9.170 媒体失败恢复拆成 MediaFailureRecovery
+
+第 22 轮解构：`LiveWallpaperService` 3407 → **3290** 行，新增
+`wallpaper/MediaFailureRecovery.kt`（261 行）。
+
+**搬走的内容**（逻辑逐字搬移）：`failedMediaIds` 黑名单 + `recoveryFailCount`
+连续失败计数，以及三条失败分支（视频起不来 `onVideoStartFailed`、GIF 解码失败
+`onGifFailed`/`markSuccess`、图片解不开 `noteFailed`）和两个收尾动作
+（`dropMediaIfGone` 失效清理、`repairMisTypedMedia` 类型修复）。原来这三条分支
+各写一份"记账 + 判上限 + 请求恢复"，现在统一在
+`noteFailed`/`noteAppliedHealthy`/`markSuccess` 里；引擎侧 16 个调用点改成
+`recovery.isFailed(...)` 之类的接口。
+
+**验证**：527 条单测全绿、`:app:assembleDebug` ✓。模拟器实跑（造一个指向不存在
+文件的 IMAGE 行，放进只有一个分组的场景让下一次切换必然选中它）：
+
+1. `Switch to: gone.png (IMAGE) id=68` → `Failed to load bitmap for: gone.png`；
+2. `Switch requested: recovery target=null group=13` —— 恢复请求带着所属分组；
+3. `Dropped unreadable media gone.png id=68 (file is gone)` —— 失效行落库即被删，
+   DB 复查该行计数为 0；随后 `Switch start/done: recovery` 换到别的媒体。
+
+验证后已恢复分组启用状态、删除临时分组/夹具行（含上一轮测试遗留的孤儿行）并把
+`hide_error_dialogs` 还原。
+
+#### 4.9.171 预取决策与解码拆成 PrefetchController
+
+第 23 轮解构：`LiveWallpaperService` 3290 → **3184** 行，新增
+`wallpaper/PrefetchController.kt`（183 行）。
+
+**搬走的内容**（逻辑逐字搬移）：`maybePrefetchNext()` 的全部决策与解码 ——
+可见/亮屏门禁、定时切换不预取、非手动触发还要"距上次切换 ≤3s"的连点判定、
+按分组或屏幕级算出"下一次会选中的那张"（`GroupPick` / `MediaPicker`）、
+`IMAGE` 之外的媒体跳过、解码后写入共享缓存。缓存实例本身仍由引擎持有（切换
+路径要 `take()` / `clear()` / `discardIfModeMismatch()`），控制器只负责填；
+宿主只有 5 个回调（可见 / 亮屏 / 当前显示 id / 是否在黑名单 / 引擎是否已销毁）。
+
+**验证**：527 条单测全绿、`:app:assembleDebug` ✓。模拟器实跑（分组 4 顺序切换）：
+
+1. 切到 GIF 后预取静默跳过（`MediaTypes.isMotion` 分支）；
+2. 切到 `wstest2.png` 后：`Prefetching next image: zz-test-fit.png id=8 group=4` →
+   `Prefetch ready: zz-test-fit.png id=8`；
+3. 下一次切换命中缓存：`Switch to: zz-test-fit.png id=8` +
+   **`Using prefetched bitmap: zz-test-fit.png id=8`**，并紧接着预取再下一张
+   （`wstest1.png id=9`）—— 分组级预取与屏幕级预取走的是同一份搬走的代码。
+
+#### 4.9.172 切换主流程拆成 SwitchExecutor
+
+第 24 轮解构（最大的一刀）：`LiveWallpaperService` 3184 → **2756** 行，
+新增 `wallpaper/SwitchExecutor.kt`（591 行）。
+
+**搬走的内容**（逻辑逐字搬移）：`executeSwitch()` 全部 499 行 —— 熄屏门禁、
+「视频播完再切」的挂起判定、清晰度/微动效/自动旋转设置读取、分组作用域与
+`仅图片/仅视频` 过滤、全局模式、目标/分组/屏幕级三种取图（含预取缓存消费与
+模式失配丢弃）、失败媒体跳过循环、按类型落屏（视频 `video.start` / GIF
+`gif.play` / 图片解码 + `stopVideoAndRender`）、解码失败的类型修复与恢复记账、
+游标与「最近显示」记录、shuffle 牌堆落盘、淡入。
+
+**宿主面**（22 项，全部是引擎自己的渲染状态与三个动作）：`renderer()`、
+`currentBitmap()`/`setCurrentBitmap`、`scaleMode()`/`setScaleMode`、
+`autoRotateMismatch()`/`setAutoRotateMismatch`、
+`autoRotateClockwise()`/`setAutoRotateClockwise`、
+`lastDisplayedId()`/`setLastDisplayedId`、
+`setSuppressFadeUntilFirstFrame`/`setFadePendingForFirstFrame`、
+`pendingVideoEndSwitch`/`setPendingVideoEndSwitch`、
+`pendingVideoEndGroupId`/`setPendingVideoEndGroupId`、
+`applyClarityMode()`、`applyKenBurnsMode()`、`clearCurrentBitmap()`、
+`retireCurrentBitmap()`、`maybeFade()`。其余协作者（数据库、取图、位图加载器、
+GIF、预取缓存、失败恢复、视频会话、切换队列）都是构造参数。
+
+**验证**：527 条单测全绿、`:app:assembleDebug` ✓。模拟器实跑（双击连点 8 组）：
+
+1. 图片分支：`Switch to: zz-test-fit.png (IMAGE) id=11` →
+   `Transition requested: slide` → `Transition done: slide frames=4 duration=220ms`；
+2. GIF 分支：`Switch to: ws_smoke.gif (GIF) id=56` →
+   `GIF frame presented: 480x270 mode=FIT` → 过渡完成；
+3. 全程无异常/崩溃日志；验证后把临时启用的 `video_only` 分组恢复禁用、
+   删除测试用的 `hide_error_dialogs`。
+
+（验证期间模拟器本身在反复 ANR 后 shell 卡死并重启过一次，属于该模拟器的老问题：
+ANR 栈一直是框架渲染线程，没有一帧应用代码。）
+
+#### 4.9.173 选项 chip 行改成等宽铺满（不再在右边留一大片空白）
+
+用户反馈："设置多选的右边有大量空白"（一排选项 chip 左对齐，宽屏上右边空出
+大半行）。改的是所有"一排短标签 chip 撑不满整行"的地方：
+
+- 分组详情 ·「应用位置」（桌面 / 锁屏 / 两者）：三个 chip 等宽铺满该行；
+- 分组详情 · 排序（媒体多优先 / 名称排序 / 时间排序）：去掉横向滚动，三个 chip
+  等宽（三个短标签在手机上等宽也放得下，不需要滚动兜底）；
+- 分组详情 ·「时段」弹窗里的星期（一…日，本身就是多选）：7 个 chip 等宽铺满，
+  一眼能看出"这是一周"；
+- 订阅源编辑页 ·「类型」（网页 / 图片 / 视频）：同样等宽铺满。
+
+只对**短标签**的这几处生效：像「时段: 全天·每天」「素材: 图片和视频」那两个
+长文案 chip 保持原样 —— 等宽会把俄语/西语文案压成两行，那正是之前修过的
+「有些文字显示不全」。设置页的「切换模式 / 缩放模式…」是"当前值 + 箭头"的
+下拉行，不在这轮范围内。
+
+527 条单测全绿、`:app:assembleDebug` ✓、已装到真机待用户确认观感。
+
+#### 4.9.174 内置在线壁纸源：Wallhaven（原图直出）
+
+用户要求："https://wallhaven.cc/ 这个网站做出订阅源，可以获取到原图加入分组，
+作为软件的内置壁纸源"。
+
+**做法**：新增 `engine/BuiltinRssSources.kt`，把一条 Legado 形态的源 JSON 打包
+进代码，`Application.onCreate` 的 IO 协程里首次播种进 `rss_sources`
+（`builtin_rss_sources_seeded_v1` 标记，用户删掉后不会再被塞回来；播种走
+`RssSourceImport.decide`，同 URL 的既有源就地更新、不重复）。
+
+源定义（"Wallhaven 原图"，`type=1` 图片型）：
+
+- `sourceUrl` = 官方搜索 API：`https://wallhaven.cc/api/v1/search?sorting=random
+  &categories=111&purity=100&atleast=1920x1080` —— `purity=100` 是 SFW（免
+  API key，带 NSFW 的 purity 会 401），`sorting=random` 让每次刷新都是新的一批
+  （API 每页 24 张，不做翻页：随机排序翻页要带 seed，且末页会报错）；
+- `ruleArticles` = `$.data[*]`、`ruleTitle` = `$.resolution`、
+  **`ruleLink` / `ruleImage` = `$.path`** —— `path` 就是
+  `w.wallhaven.cc/full/…` 的原图地址（详情页里的 `#wallpaper` 也是同一张原图），
+  所以「加入分组」拉到的就是原图，不需要任何缩略图→原图的猜测。
+
+**验证**：新增 `BuiltinRssSourcesTest` 3 条 —— 源 JSON 能被导入器解析成
+SFW 图片源、用真实 API 响应片段跑规则引擎断言链接/封面落在 `full/` 而不是
+`th.wallhaven.cc` 缩略图、以及 `OriginalImageUrl.upgrade` 不会改动
+`full/` 地址。530 条单测全绿、`:app:assembleDebug` ✓。
+
+真机核对：装机后日志 `BuiltinSources: builtin sources seeded: added=1 of 1
+(existing=34)`，说明源已进列表且未重复。
+
+**附注（2026-10-06，按用户要求移除）**：Wallhaven 不再作为内置订阅源播种 ——
+删除 `engine/BuiltinRssSources.kt` 与启动时的 `ensureSeeded` 调用（连同
+`BuiltinRssSourcesTest`）。已安装设备里由旧版本写入的「Wallhaven 原图」行不会
+被代码删除（那是用户数据），需要时在订阅列表里点该源右上角 ⋮ → 删除。
+在线壁纸改由「设置 → 在线壁纸源」（见 §4.9.93 附注）提供。
+
+**网络前提**：wallhaven 的图片 CDN（`w.wallhaven.cc`）在国内直连被
+DNS 污染 + 阻断（本机实测：直连 status=000，本地 DNS 返回 162.125.2.3 /
+真实 Cloudflare IP 是 104.26.10.35）。走用户已有的本地代理
+（`127.0.0.1:7890`）时列表与**原图**都能取：`status=200 image/jpeg
+871654 bytes`（与 API 报的 file_size 一致）。所以这个源依赖设置里的
+「订阅源代理」；没有可用网络时表现为刷新失败，不会影响其他源。
 
 ---
 

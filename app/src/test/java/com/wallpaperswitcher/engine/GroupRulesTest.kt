@@ -179,4 +179,70 @@ class GroupRulesTest {
         monday.add(java.util.Calendar.DAY_OF_YEAR, 2)
         assertFalse(GroupRules.dayAllowed(weekendMask, monday.timeInMillis))
     }
+
+    // --- 时间规则 on the SCREEN-WIDE tick (see WallpaperSwitchService) ---
+
+    private fun at(hour: Int, minute: Int = 0): Long =
+        java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, hour)
+            set(java.util.Calendar.MINUTE, minute)
+            set(java.util.Calendar.SECOND, 0)
+        }.timeInMillis
+
+    @Test
+    fun onlyRealWindowsAndDayMasksCountAsTimeRules() {
+        // The default row (all day, every day) must NOT be treated as restricted:
+        // that is what keeps the screen-wide pick unchanged for every existing
+        // install.
+        assertFalse(GroupRules.hasTimeRules(WallpaperGroup(name = "g")))
+        assertFalse(GroupRules.hasTimeRules(WallpaperGroup(name = "g", activeFromMinute = -1, activeToMinute = -1)))
+        // A zero-length window is all day (see windowContains), so it is no rule.
+        assertFalse(GroupRules.hasTimeRules(WallpaperGroup(name = "g", activeFromMinute = 8 * 60, activeToMinute = 8 * 60)))
+        // Either bound alone still means "open" -> not a restriction.
+        assertFalse(GroupRules.hasTimeRules(WallpaperGroup(name = "g", activeFromMinute = 8 * 60, activeToMinute = -1)))
+        assertFalse(GroupRules.hasTimeRules(WallpaperGroup(name = "g", activeFromMinute = -1, activeToMinute = 18 * 60)))
+        // A real window, and a real day mask, both count.
+        assertTrue(GroupRules.hasTimeRules(WallpaperGroup(name = "g", activeFromMinute = 22 * 60, activeToMinute = 6 * 60)))
+        assertTrue(GroupRules.hasTimeRules(WallpaperGroup(name = "g", activeDays = 1 shl 0)))
+        // The full mask is "every day" -> not a restriction.
+        assertFalse(GroupRules.hasTimeRules(WallpaperGroup(name = "g", activeDays = GroupRules.ALL_DAYS)))
+    }
+
+    @Test
+    fun screenTickCandidatesDropGroupsOutsideTheirWindow() {
+        val night = WallpaperGroup(id = 1L, name = "night", activeFromMinute = 22 * 60, activeToMinute = 6 * 60)
+        val plain = WallpaperGroup(id = 2L, name = "plain")
+        val counts = mapOf(1L to 3, 2L to 5)
+        val slot = WallpaperTarget.SLOT_HOME
+
+        // 23:30: both may be shown.
+        assertEquals(
+            listOf(1L, 2L),
+            GroupRules.screenTickCandidates(listOf(night, plain), counts, slot, at(23, 30)).map { it.id }
+        )
+        // 12:00: the night group is out, so the tick must not be scoped to it.
+        assertEquals(
+            listOf(2L),
+            GroupRules.screenTickCandidates(listOf(night, plain), counts, slot, at(12)).map { it.id }
+        )
+        // 12:00 with ONLY the night group: nothing may switch -> the loop idles.
+        assertTrue(GroupRules.screenTickCandidates(listOf(night), counts, slot, at(12)).isEmpty())
+    }
+
+    @Test
+    fun screenTickCandidatesRequireMediaForThisSlotAndTarget() {
+        val homeOnly = WallpaperGroup(id = 1L, name = "home", target = "HOME")
+        val lockOnly = WallpaperGroup(id = 2L, name = "lock", target = "LOCK")
+        val mediaLess = WallpaperGroup(id = 3L, name = "empty")
+        val groups = listOf(homeOnly, lockOnly, mediaLess)
+        val counts = mapOf(1L to 2, 2L to 2, 3L to 0)
+        val home = GroupRules.screenTickCandidates(
+            groups, counts, WallpaperTarget.SLOT_HOME, at(12)
+        ).map { it.id }
+        val lock = GroupRules.screenTickCandidates(
+            groups, counts, WallpaperTarget.SLOT_LOCK, at(12)
+        ).map { it.id }
+        assertEquals(listOf(1L), home)
+        assertEquals(listOf(2L), lock)
+    }
 }

@@ -56,38 +56,20 @@ internal object NextPreview {
         val recentIds = PickOptions.recentIds(
             db, slot, PickOptions.recentWindow(db.settingsDao())
         )
-        // Same decision the service (and a manual tap) makes - see
-        // GroupSchedulePlan.nextHomeGroupId. 0 = the screen-wide pick.
-        val groupId = try {
-            GroupSchedulePlan.nextGroupId(db, slot, nowMs)
-        } catch (_: Exception) {
-            0L
-        }
-        if (groupId <= 0L) {
-            val lastId = try {
-                db.settingsDao().getLong(SettingsKeys.LAST_IMAGE_ID)
-            } catch (_: Exception) {
-                0L
-            }
-            return peekScreenWide(db, slot, globalMode, lastId, pickSeq, favoriteWeight, recentIds)
-        }
-        val group = try {
-            db.wallpaperGroupDao().getGroupById(groupId)
-        } catch (_: Exception) {
-            null
-        } ?: return null
-        val mode = globalMode
+        // The preview mirrors the switch itself: 随机 / 洗牌 draw from all
+        // enabled groups, 顺序 walks them group by group - the same
+        // screen-wide pick the timer and the taps now use (no per-tap group
+        // resolution any more, see MediaPick.eligibleGroups).
         val lastId = try {
-            db.groupScheduleDao().get(group.id, slot)?.lastMediaId ?: 0L
+            db.settingsDao().getLong(
+                if (slot == WallpaperTarget.SLOT_LOCK) SettingsKeys.LAST_IMAGE_ID_LOCK
+                else SettingsKeys.LAST_IMAGE_ID
+            )
         } catch (_: Exception) {
             0L
         }
-        return peekInGroup(
-            db, slot, group.id, mode, lastId, pickSeq,
-            filter = GroupRules.mediaFilter(group),
-            newestFirst = false,
-            favoriteWeight = favoriteWeight,
-            recentIds = recentIds,
+        return peekScreenWide(
+            db, slot, globalMode, lastId, pickSeq, favoriteWeight, recentIds, nowMs
         )
     }
 
@@ -110,23 +92,34 @@ internal object NextPreview {
         pickSeq: Long,
         favoriteWeight: Int,
         recentIds: Collection<Long>,
+        nowMs: Long = System.currentTimeMillis(),
     ): WallpaperImage? {
         val imageDao = db.wallpaperImageDao()
         return when (mode) {
-            SwitchMode.RANDOM -> MediaPick.random(
-                imageDao, slot, lastId, pickSeq = pickSeq,
-                favoriteWeight = favoriteWeight, recentIds = recentIds
-            )
+            SwitchMode.RANDOM -> {
+                val groups = MediaPick.eligibleGroups(db, slot, nowMs)
+                val rows = MediaPick.poolFor(
+                    imageDao, db.groupPickDao(), slot, groups, favoriteWeight
+                )
+                MediaPick.randomFromPool(imageDao, rows, lastId, pickSeq, recentIds)
+            }
             SwitchMode.SEQUENTIAL ->
-                if (imageDao.countByEnabledGroups(slot) == 0) null
-                else if (lastId > 0L) {
-                    imageDao.getSequentialImageFromEnabledGroupsAfter(slot, lastId)
-                        ?: imageDao.getFirstFromEnabledGroups(slot)
-                } else {
-                    imageDao.getFirstFromEnabledGroups(slot)
-                }
+                // 顺序切换：和实时引擎 / 静态模式一致 —— 从当前媒体开始
+                // 按分组逐个推进（见 [MediaPick.sequentialAcrossGroups]），
+                // 预览才能和下一次真正的切换指向同一张。
+                MediaPick.sequentialAcrossGroups(
+                    imageDao,
+                    db.groupPickDao(),
+                    slot,
+                    MediaPick.eligibleGroups(db, slot, nowMs),
+                    lastId,
+                )
             SwitchMode.SHUFFLE -> {
-                val total = imageDao.countByEnabledGroups(slot)
+                val groups = MediaPick.eligibleGroups(db, slot, nowMs)
+                val poolRows = MediaPick.poolFor(
+                    imageDao, db.groupPickDao(), slot, groups, favoriteWeight
+                )
+                val total = poolRows.size
                 if (total == 0) null else {
                     val shown = db.shuffleDao().getShownIds(slot).toMutableSet()
                     // A finished pass starts a new one in the real switch
@@ -136,17 +129,16 @@ internal object NextPreview {
                     if (SwitchPicking.shouldResetShuffleDeck(shown.size, total)) {
                         shown.clear()
                     }
-                    MediaPick.shuffleUnseen(
+                    MediaPick.shuffleUnseenFromPool(
                         imageDao = imageDao,
-                        slot = slot,
+                        poolRows = poolRows,
+                        favoriteIds = MediaPick.poolFavorites(slot, favoriteWeight),
                         shownIds = shown,
                         excludeId = lastId,
-                        knownCount = total,
                         pickSeq = pickSeq,
-                        favoriteWeight = favoriteWeight
-                    ) ?: MediaPick.random(
-                        imageDao, slot, lastId, pickSeq = pickSeq,
-                        favoriteWeight = favoriteWeight, recentIds = recentIds
+                        favoriteWeight = favoriteWeight,
+                    ) ?: MediaPick.randomFromPool(
+                        imageDao, poolRows, lastId, pickSeq, recentIds
                     )
                 }
             }

@@ -12,8 +12,8 @@ android {
         applicationId = "com.wallpaperswitcher"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     buildTypes {
@@ -59,6 +59,23 @@ android {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
+    }
+
+    lint {
+        // The whole project is checked in CI (`gradle lintDebug`); the findings
+        // that exist TODAY are frozen in lint-baseline.xml so the task passes and
+        // only NEW problems fail the build. Delete entries from the baseline as
+        // they are fixed - never regenerate it wholesale.
+        baseline = file("lint-baseline.xml")
+        // A lint failure must fail the build (otherwise the baseline is pointless).
+        abortOnError = true
+        // Warnings are reported but do not fail: the baseline covers them anyway,
+        // and a warning-only failure would make unrelated PRs red.
+        warningsAsErrors = false
+        checkDependencies = false
+        htmlReport = true
+        xmlReport = true
+        textReport = true
     }
 }
 

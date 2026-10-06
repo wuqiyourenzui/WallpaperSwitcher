@@ -3,7 +3,6 @@ package com.wallpaperswitcher.engine
 import android.content.Context
 import com.wallpaperswitcher.util.LogText
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.net.Uri
 import android.os.Build
@@ -41,10 +40,13 @@ object FirstFrame {
             val metrics = BitmapUtils.getScreenMetrics(context)
             val screenMax = maxOf(metrics.widthPixels, metrics.heightPixels)
             val cap = minOf(screenMax, 3200).coerceAtLeast(1920)
-            // API 27+ can scale DURING extraction. A 4K/8K video frame is ~33MB of
-            // ARGB at full size and is then thrown away by the downscale below, so
-            // ask for the small one when the coded size is known (a low-memory
-            // device could otherwise OOM on a single 8K frame).
+            // API 27 (O_MR1) introduced the scaled extraction: a 4K/8K video frame
+            // is ~33MB of ARGB at full size and is then thrown away by the
+            // downscale below, so ask for the small one when the coded size is
+            // known (a low-memory device could otherwise OOM on a single 8K
+            // frame). On API 26 the call does not exist at all, so the full-size
+            // frame is fetched and scaled below instead - keep the runtime guard
+            // even though the lint annotation below makes it look redundant.
             val codedW = retriever
                 .extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
                 ?.toIntOrNull() ?: 0
@@ -64,6 +66,7 @@ object FirstFrame {
             }
             // Same landmarks as before: the requested position, else the file's
             // first frame, else one second in (some containers have no frame at 0).
+            @androidx.annotation.RequiresApi(Build.VERSION_CODES.O_MR1)
             fun frameAt(timeUs: Long): Bitmap? = scaledRequest?.let { (w, h) ->
                 try {
                     retriever!!.getScaledFrameAtTime(

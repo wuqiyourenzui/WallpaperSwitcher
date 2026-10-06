@@ -1,5 +1,6 @@
 package com.wallpaperswitcher.engine
 
+import com.wallpaperswitcher.data.SettingsKeys
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -16,7 +17,11 @@ class ConfigBackupTest {
                 intervalMs = 300_000L,
                 switchMode = "SHUFFLE",
                 activeFromMinute = 22 * 60,
-                activeToMinute = 6 * 60
+                activeToMinute = 6 * 60,
+                activeDays = 0b0010011,
+                activeThemeMode = "DARK",
+                filterMode = "IMAGE",
+                sortOrder = "NEWEST"
             ),
             ConfigBackup.GroupConfig(name = "plain \"quotes\" and \\slashes\\")
         ),
@@ -116,6 +121,15 @@ class ConfigBackupTest {
     }
 
     @Test
+    fun wallpaperSettingsAddedLaterArePartOfTheConfig() {
+        // Regression: the enhancement algorithm used to be dropped by backups,
+        // silently reverting imported configs to FSR1.
+        assertTrue(SettingsKeys.ENHANCE_ALGO in ConfigBackup.EXPORTED_SETTINGS)
+        assertTrue(SettingsKeys.KEN_BURNS_ENABLED in ConfigBackup.EXPORTED_SETTINGS)
+        assertTrue(SettingsKeys.RSS_WIFI_ONLY in ConfigBackup.EXPORTED_SETTINGS)
+    }
+
+    @Test
     fun subscriptionsArePartOfTheConfig() {
         val config = ConfigBackup.Config(
             groups = emptyList(),
@@ -164,5 +178,21 @@ class ConfigBackupTest {
         val decoded = ConfigBackup.decode(text)
         assertEquals(1, decoded?.groups?.size)
         assertEquals(0, decoded?.sources?.size)
+    }
+
+    @Test
+    fun anOldVersionTwoFileKeepsTheDefaultsForTheNewGroupFields() {
+        // Files written before v3 have no activeDays / theme / filter / sort;
+        // they must import as "no rule" instead of failing.
+        val text = """
+            {"format": "${ConfigBackup.FORMAT}", "version": 2,
+             "groups": [{"name": "g", "filterMode": "IMAGE"}], "settings": {}}
+        """.trimIndent()
+        val group = ConfigBackup.decode(text)?.groups?.first()
+        assertEquals("g", group?.name)
+        assertEquals(0, group?.activeDays)
+        assertEquals("", group?.activeThemeMode)
+        assertEquals("IMAGE", group?.filterMode)
+        assertEquals("", group?.sortOrder)
     }
 }

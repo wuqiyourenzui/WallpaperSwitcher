@@ -39,6 +39,9 @@ class FakeWallpaperImageDao(
     var weightQueries: Int = 0
         private set
 
+    override suspend fun getIdsByFolder(folder: String): List<Long> =
+        images.filter { it.folderPath == folder }.map { it.id }
+
     /** Mirror of the DAO's slot filter, in the same ascending-id order. */
     private fun forSlot(slot: String): List<WallpaperImage> = images
         .asSequence()
@@ -67,9 +70,6 @@ class FakeWallpaperImageDao(
 
     override suspend fun getUrisByIds(ids: List<Long>): List<String> =
         images.filter { it.id in ids }.map { it.uri }
-
-    override suspend fun getIdsByFolder(folderPath: String): List<Long> =
-        images.filter { it.folderPath == folderPath }.map { it.id }
 
     override suspend fun getScannedFolderPaths(): List<ScannedFolderPath> =
         images.filter { it.isFromFolder && it.folderPath.isNotEmpty() }

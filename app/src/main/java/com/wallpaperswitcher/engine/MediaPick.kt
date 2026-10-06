@@ -4,6 +4,8 @@ import com.wallpaperswitcher.data.GroupPickDao
 import com.wallpaperswitcher.data.MediaWeight
 import com.wallpaperswitcher.data.WallpaperImage
 import com.wallpaperswitcher.data.WallpaperImageDao
+import com.wallpaperswitcher.data.WallpaperGroup
+import com.wallpaperswitcher.data.AppDatabase
 
 /**
  * Media selection shared by the two switch paths (the live wallpaper engine and
@@ -60,6 +62,7 @@ internal object MediaPick {
             enabledSetVersion++
             cachedFavoriteWeight = 0
             cache.clear()
+            weightsCache.clear()
         }
     }
 
@@ -116,6 +119,55 @@ internal object MediaPick {
     }
 
     /**
+     * Cached `weightsForSlot` rows for the weighted RANDOM path.
+     *
+     * It used to re-dump id+weight for the whole slot on every switch (and
+     * every prefetch) whenever 收藏优先 / 最近不重复 was on - on the 65k-media
+     * library that is a 65k-element query + allocation per pick. The cache is
+     * keyed exactly like [enabledIdsFor]: group/media version + enabled count +
+     * favoriteWeight. A favourite toggle bumps the version (the ViewModel
+     * calls [invalidateEnabledIds]), and a worker import changes the count.
+     */
+    private class CachedWeights(
+        val rows: List<MediaWeight>,
+        val enabledCount: Int,
+        val favoriteWeight: Int,
+        val version: Long
+    )
+
+    private val weightsCache = HashMap<String, CachedWeights>(CACHE_SLOTS)
+
+    private suspend fun weightsFor(
+        imageDao: WallpaperImageDao,
+        slot: String,
+        knownCount: Int,
+        favoriteWeight: Int,
+    ): List<MediaWeight> {
+        val count = if (knownCount >= 0) knownCount else imageDao.countByEnabledGroups(slot)
+        if (count == 0) return emptyList()
+        synchronized(cacheLock) {
+            val hit = weightsCache[slot]
+            if (hit != null && hit.version == enabledSetVersion &&
+                hit.enabledCount == count && hit.favoriteWeight == favoriteWeight
+            ) {
+                return hit.rows
+            }
+        }
+        val rows = try {
+            imageDao.weightsForSlot(slot, favoriteWeight)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        synchronized(cacheLock) {
+            if (!weightsCache.containsKey(slot) && weightsCache.size >= CACHE_SLOTS) {
+                weightsCache.keys.firstOrNull()?.let { weightsCache.remove(it) }
+            }
+            weightsCache[slot] = CachedWeights(rows, count, favoriteWeight, enabledSetVersion)
+        }
+        return rows
+    }
+
+    /**
      * Weighted random pick over [rows], skipping [exclude] (the cursor) and
      * [recent] (最近 N 张不重复). Deterministic for a given seed, so 下一张预览
      * still names the media the switch will show.
@@ -168,11 +220,7 @@ internal object MediaPick {
         // user turned one of them on, so the default path keeps its fast
         // COUNT + OFFSET query untouched.
         if (favoriteWeight > 1 || recentIds.isNotEmpty()) {
-            val rows = try {
-                imageDao.weightsForSlot(slot, favoriteWeight)
-            } catch (_: Exception) {
-                emptyList()
-            }
+            val rows = weightsFor(imageDao, slot, count, favoriteWeight)
             val picked = weightedPick(
                 rows, setOf(lastId), recentIds.toHashSet(),
                 SwitchPicking.pickSeed(lastId, 0, count, pickSeq)
@@ -261,6 +309,217 @@ internal object MediaPick {
         )
             ?: return null
         return imageDao.getImageById(pickId)
+    }
+
+    /** 顺序=新的在前 (see [WallpaperGroup.sortOrder]). */
+    private const val SORT_NEWEST = "NEWEST"
+
+    /**
+     * The groups a screen-wide pick may use right now: enabled, targeting
+     * [slot], and allowed by their own 时间规则. Sorted by build order (id),
+     * which is also the order 顺序切换 walks them in.
+     *
+     * 随机 / 洗牌 / 顺序 三种模式都以这张列表为全集：随机和洗牌在
+     * **所有启用分组**的媒体池里抽，顺序从当前媒体开始按这个顺序逐组推进。
+     */
+    suspend fun eligibleGroups(
+        db: AppDatabase,
+        slot: String,
+        nowMs: Long = System.currentTimeMillis(),
+    ): List<WallpaperGroup> = try {
+        db.wallpaperGroupDao().getEnabledGroupsSync()
+            .filter {
+                WallpaperTarget.fromName(it.target).suitsSlot(slot) &&
+                    GroupRules.isActiveAt(it, nowMs)
+            }
+            .sortedBy { it.id }
+    } catch (_: Exception) {
+        emptyList()
+    }
+
+    private class CachedPool(
+        val rows: List<MediaWeight>,
+        val favoriteIds: Set<Long>,
+        val groupsKey: String,
+        val enabledCount: Int,
+        val favoriteWeight: Int,
+        val version: Long,
+    )
+
+    /**
+     * Pool of every media the enabled groups may show on [slot] right now:
+     * each group contributes exactly the media its own filter allows
+     * (仅图片 / 仅视频 / 全部), favourites carry [favoriteWeight].
+     *
+     * This is the "all enabled groups" universe the three switch modes draw
+     * from (see [eligibleGroups]). It replaced the single-table
+     * `weightsForSlot` query, which could not honour per-group filters or
+     * 时间规则 - a group set to 仅图片 must not leak its videos into the pool.
+     * Cached like the old id list: group/media version + enabled count +
+     * favourite weight + the eligible-group set are all part of the key.
+     */
+    private val poolCache = HashMap<String, CachedPool>(CACHE_SLOTS)
+
+    suspend fun poolFor(
+        imageDao: WallpaperImageDao,
+        pickDao: GroupPickDao,
+        slot: String,
+        groups: List<WallpaperGroup>,
+        favoriteWeight: Int,
+        knownCount: Int = -1,
+    ): List<MediaWeight> {
+        val groupsKey = groups.joinToString(",") { group ->
+            "${group.id}:${GroupRules.mediaFilter(group)}"
+        }
+        val count = if (knownCount >= 0) knownCount else imageDao.countByEnabledGroups(slot)
+        synchronized(cacheLock) {
+            val hit = poolCache[slot]
+            if (hit != null && hit.version == enabledSetVersion &&
+                hit.groupsKey == groupsKey && hit.enabledCount == count &&
+                hit.favoriteWeight == favoriteWeight
+            ) {
+                return hit.rows
+            }
+        }
+        val rows = ArrayList<MediaWeight>()
+        for (group in groups) {
+            try {
+                rows += pickDao.weightsInGroup(
+                    slot, group.id, GroupRules.mediaFilter(group), favoriteWeight
+                )
+            } catch (_: Exception) {
+                // A broken group must not take the whole pool down.
+            }
+        }
+        val favorites = if (favoriteWeight > 1) {
+            rows.filter { it.weight > 1 }.map { it.id }.toHashSet()
+        } else {
+            emptySet()
+        }
+        synchronized(cacheLock) {
+            if (!poolCache.containsKey(slot) && poolCache.size >= CACHE_SLOTS) {
+                poolCache.keys.firstOrNull()?.let { poolCache.remove(it) }
+            }
+            poolCache[slot] = CachedPool(
+                rows, favorites, groupsKey, count, favoriteWeight, enabledSetVersion
+            )
+        }
+        return rows
+    }
+
+    /** ★ ids of a pool built by [poolFor] (empty when 收藏优先 is off). */
+    fun poolFavorites(slot: String, favoriteWeight: Int): Set<Long> {
+        if (favoriteWeight <= 1) return emptySet()
+        synchronized(cacheLock) {
+            return poolCache[slot]?.favoriteIds ?: emptySet()
+        }
+    }
+
+    /**
+     * RANDOM pick over a pool built by [poolFor]: weighted draw (收藏优先),
+     * skipping the media on screen and the 最近 N 张不重复 window.
+     */
+    suspend fun randomFromPool(
+        imageDao: WallpaperImageDao,
+        rows: List<MediaWeight>,
+        lastId: Long,
+        pickSeq: Long = 0L,
+        recentIds: Collection<Long> = emptyList(),
+    ): WallpaperImage? {
+        if (rows.isEmpty()) return null
+        if (rows.size == 1) return imageDao.getImageById(rows[0].id)
+        val seed = SwitchPicking.pickSeed(lastId, 0, rows.size, pickSeq)
+        val picked = weightedPick(rows, setOf(lastId), recentIds.toHashSet(), seed)
+            ?: weightedPick(rows, emptySet(), emptySet(), seed)
+            ?: return null
+        return imageDao.getImageById(picked)
+            ?: imageDao.getImageById(rows.first().id)
+    }
+
+    /**
+     * SHUFFLE pick over a pool built by [poolFor]: a random media not yet shown
+     * in the current pass ([shownIds], pruned to the pool first). Mirrors the
+     * former slot-wide [shuffleUnseen], which could not honour per-group
+     * filters or 时间规则.
+     */
+    suspend fun shuffleUnseenFromPool(
+        imageDao: WallpaperImageDao,
+        poolRows: List<MediaWeight>,
+        favoriteIds: Set<Long>,
+        shownIds: MutableCollection<Long>,
+        excludeId: Long,
+        pickSeq: Long = 0L,
+        favoriteWeight: Int = 1,
+    ): WallpaperImage? {
+        if (poolRows.isEmpty()) return null
+        val poolIds = poolRows.map { it.id }
+        shownIds.retainAll(poolIds.toHashSet())
+        val seed = SwitchPicking.pickSeed(excludeId, shownIds.size, poolIds.size, pickSeq)
+        val pickId = SwitchPicking.pickUnseen(
+            poolIds, shownIds, excludeId, seed, favoriteIds, favoriteWeight
+        ) ?: return null
+        return imageDao.getImageById(pickId)
+    }
+
+    /**
+     * 顺序切换（屏幕级）：从当前媒体开始，**按分组逐个推进**。
+     *
+     * 先在当前分组里按该组自己的顺序继续（[WallpaperGroup.sortOrder] =
+     * NEWEST 时新的在前，否则 id 升序），本组走完就进入 **下一个分组**
+     * （按分组的建立顺序），最后一个分组走完回到第一个分组。每个分组在
+     * 一轮里只被访问一次。
+     *
+     * 以前屏幕级顺序切换是一条「全库 id 升序游标」：当媒体是后来才补进老
+     * 分组（id 与分组顺序交错）时，切换会在分组之间来回跳，而不是「一个
+     * 分组切换完下一个分组再顺序切换」。随机 / 洗牌不受影响，它们本来就
+     * 从所有启用分组里取。
+     *
+     * [groups] 必须是启用分组按建立顺序（id 升序）排好的列表；调用方负责
+     * 按 slot 过滤（[WallpaperTarget.suitsSlot]）。
+     */
+    suspend fun sequentialAcrossGroups(
+        imageDao: WallpaperImageDao,
+        pickDao: GroupPickDao,
+        slot: String,
+        groups: List<WallpaperGroup>,
+        lastId: Long,
+    ): WallpaperImage? {
+        if (groups.isEmpty()) return null
+        val current = if (lastId > 0L) {
+            try {
+                imageDao.getImageById(lastId)
+            } catch (_: Exception) {
+                null
+            }
+        } else null
+        val currentGroupId = current?.groupId ?: 0L
+        // Current group first, then the following ones, wrapping at the end:
+        // every group is visited exactly once before this pass starts over.
+        val startIndex =
+            groups.indexOfFirst { it.id == currentGroupId }.coerceAtLeast(0)
+        val ordered = groups.subList(startIndex, groups.size) +
+            groups.subList(0, startIndex)
+        for (group in ordered) {
+            val filter = GroupRules.mediaFilter(group)
+            val newestFirst = group.sortOrder == SORT_NEWEST
+            if (group.id == currentGroupId && current != null) {
+                val next = if (newestFirst) {
+                    pickDao.getSequentialInGroupBefore(slot, group.id, lastId, filter)
+                } else {
+                    pickDao.getSequentialInGroupAfter(slot, group.id, lastId, filter)
+                }
+                if (next != null) return next
+                // This group is finished: continue with the next one.
+            } else {
+                val first = if (newestFirst) {
+                    pickDao.getNewestInGroup(slot, group.id, filter)
+                } else {
+                    pickDao.getFirstInGroup(slot, group.id, filter)
+                }
+                if (first != null) return first
+            }
+        }
+        return null
     }
 
     /**

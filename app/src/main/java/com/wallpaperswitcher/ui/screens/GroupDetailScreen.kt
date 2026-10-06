@@ -260,7 +260,6 @@ fun GroupDetailScreen(
                 // 总数即可（真正的加载中状态由下面的 loading/占位格子表达）。
                 loadedCount = totalCount,
                 onTargetChange = { target -> viewModel.setGroupTarget(currentGroup.id, target) },
-                onIntervalChange = { ms -> viewModel.setGroupInterval(currentGroup.id, ms) },
                 onWindowChange = { from, to ->
                     viewModel.setGroupActiveWindow(currentGroup.id, from, to)
                 },
@@ -637,7 +636,6 @@ private fun GroupInfoHeader(
     imageCount: Int,
     loadedCount: Int,
     onTargetChange: (WallpaperTarget) -> Unit,
-    onIntervalChange: (Long) -> Unit,
     onWindowChange: (Int, Int) -> Unit,
     onDaysChange: (Int) -> Unit,
     onMediaChange: (String) -> Unit,
@@ -779,7 +777,11 @@ private fun GroupInfoHeader(
                                     style = MaterialTheme.typography.labelMedium
                                 )
                             },
-                            modifier = Modifier.height(30.dp)
+                            // 等宽铺满整行：三个短标签（桌面/锁屏/两者）以前挤在
+                            // 左边，右边留一大片空白（平板尤其明显）。
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(30.dp)
                         )
                     }
                 }
@@ -789,7 +791,6 @@ private fun GroupInfoHeader(
                 // 状态（存的是 0 / "" / -1），所以默认轮换完全不变。
                 GroupRhythmSection(
                     group = group,
-                    onIntervalChange = onIntervalChange,
                     onWindowChange = onWindowChange,
                     onDaysChange = onDaysChange,
                     onMediaChange = onMediaChange,
@@ -1547,11 +1548,10 @@ fun FolderPickerDialog(
                         )
                     }
                 }
-                // 排序项单行横向滚动：窄屏（手机上）也不会折成两行。
+                // 排序项等宽铺满整行：以前左对齐 + 横向滚动，宽屏上右边是一大片
+                // 空白；三个短标签在手机上等宽也放得下，不需要滚动。
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
+                    modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -1559,19 +1559,22 @@ fun FolderPickerDialog(
                         selected = sortMode == 0,
                         onClick = { sortMode = 0 },
                         shape = RoundedCornerShape(12.dp),
-                        label = { Text(stringResource(R.string.sort_media_first)) }
+                        label = { Text(stringResource(R.string.sort_media_first)) },
+                        modifier = Modifier.weight(1f)
                     )
                     FilterChip(
                         selected = sortMode == 1,
                         onClick = { sortMode = 1 },
                         shape = RoundedCornerShape(12.dp),
-                        label = { Text(stringResource(R.string.sort_name)) }
+                        label = { Text(stringResource(R.string.sort_name)) },
+                        modifier = Modifier.weight(1f)
                     )
                     FilterChip(
                         selected = sortMode == 2,
                         onClick = { sortMode = 2 },
                         shape = RoundedCornerShape(12.dp),
-                        label = { Text(stringResource(R.string.sort_time)) }
+                        label = { Text(stringResource(R.string.sort_time)) },
+                        modifier = Modifier.weight(1f)
                     )
                 }
                 Divider(
@@ -1793,6 +1796,22 @@ fun WallpaperPreviewDialog(
     onDismiss: () -> Unit,
     onConfirm: () -> Unit
 ) {
+    val context = LocalContext.current
+    // 预览对话框每次重组（主题变化、父 Composable 刷新）原来都重建 ImageRequest：
+    // 按 image.uri 记住，避免重复构建（同本文件缩略图写法）。
+    val previewRequest = remember(context, image.uri, image.mediaType) {
+        ImageRequest.Builder(context)
+            .data(Uri.parse(image.uri))
+            .size(800, 800)
+            .crossfade(200)
+            .allowHardware(false)
+            .apply {
+                if (image.mediaType == MediaTypes.VIDEO) {
+                    decoderFactory(VideoFrameDecoder.Factory())
+                }
+            }
+            .build()
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.dialog_set_wallpaper_title)) },
@@ -1803,17 +1822,7 @@ fun WallpaperPreviewDialog(
             ) {
                 // Image preview
                 AsyncImage(
-                    model = ImageRequest.Builder(LocalContext.current)
-                        .data(Uri.parse(image.uri))
-                        .size(800, 800)
-                        .crossfade(200)
-                        .allowHardware(false)
-                        .apply {
-                            if (image.mediaType == MediaTypes.VIDEO) {
-                                decoderFactory(coil.decode.VideoFrameDecoder.Factory())
-                            }
-                        }
-                        .build(),
+                    model = previewRequest,
                     contentDescription = image.displayName,
                     contentScale = ContentScale.Fit,
                     placeholder = androidx.compose.ui.graphics.painter.ColorPainter(Color(0xFFE0E0E0)),
@@ -1864,89 +1873,29 @@ fun WallpaperPreviewDialog(
  * strip) to jump to any position proportionally. Covers the currently loaded
  * items; scrolling to the bottom triggers the paging load-more, so the whole
  * group can be traversed by dragging. Only shown while the grid can scroll.
+ *
+ * 交互与 [FastScrollerCore] 共用一份实现（网格与列表以前是两份逐行重复的代码，
+ * 其中一份漏了 key 就会两年后才发现）。
  */
 @Composable
 private fun GridFastScroller(
     gridState: LazyGridState,
     itemCount: Int,
     modifier: Modifier = Modifier
-) {
-    if (itemCount <= 0) return
-    val showScroller by remember {
-        derivedStateOf { gridState.canScrollForward || gridState.canScrollBackward }
-    }
-    if (!showScroller) return
-
-    var dragging by remember { mutableStateOf(false) }
-    var dragFraction by remember { mutableFloatStateOf(0f) }
-    // Grid-derived thumb position (first visible item / loaded items).
-    val scrollFraction by remember {
-        derivedStateOf {
-            if (itemCount <= 1) 0f
-            else (gridState.firstVisibleItemIndex / (itemCount - 1f)).coerceIn(0f, 1f)
-        }
-    }
-    // While dragging the thumb follows the finger; otherwise it tracks the
-    // scroll position.
-    val fraction = if (dragging) dragFraction else scrollFraction
-    // AwaitPointerEventScope is @RestrictsSuspension: suspend calls like
-    // scrollToItem must run in a regular coroutine, hence this scope.
-    val coroutineScope = rememberCoroutineScope()
-
-    BoxWithConstraints(
-        modifier = modifier
-            .width(24.dp)
-            .fillMaxHeight()
-            .pointerInput(itemCount) {
-                fun fractionOf(y: Float): Float =
-                    (y / size.height.toFloat().coerceAtLeast(1f)).coerceIn(0f, 1f)
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    dragging = true
-                    var lastY = down.position.y
-                    dragFraction = fractionOf(lastY)
-                    coroutineScope.launch {
-                        gridState.scrollToItem((dragFraction * (itemCount - 1)).toInt())
-                    }
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        if (event.changes.none { it.pressed }) break
-                        val change = event.changes.firstOrNull() ?: break
-                        val y = change.position.y
-                        if (y != lastY) {
-                            lastY = y
-                            change.consume()
-                            dragFraction = fractionOf(y)
-                            coroutineScope.launch {
-                                gridState.scrollToItem((dragFraction * (itemCount - 1)).toInt())
-                            }
-                        }
-                    }
-                    dragging = false
-                }
-            }
-    ) {
-        val trackHeight = maxHeight - FastScrollerThumbHeight
-        // Thumb pill: subtle at rest, primary color while dragging.
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .offset(y = trackHeight * fraction)
-                .width(FastScrollerThumbWidth)
-                .height(FastScrollerThumbHeight)
-                .clip(RoundedCornerShape(FastScrollerThumbWidth / 2))
-                .background(
-                    if (dragging) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)
-                )
-        )
-    }
-}
+) = FastScrollerCore(
+    itemCount = itemCount,
+    modifier = modifier,
+    canScroll = remember(gridState) {
+        { gridState.canScrollForward || gridState.canScrollBackward }
+    },
+    firstVisibleIndex = remember(gridState) { { gridState.firstVisibleItemIndex } },
+    scrollToItem = remember(gridState) { { index -> gridState.scrollToItem(index) } },
+)
 
 /**
  * Right-edge fast scroller for a LazyColumn: drag the thumb (or tap the
  * strip) to jump to any position proportionally. Same interaction as
- * GridFastScroller, for scrollable lists — used by the folder picker dialog,
+ * [GridFastScroller], for scrollable lists — used by the folder picker dialog,
  * where a device with many media folders can produce a long list. Only shown
  * while the list can actually scroll.
  */
@@ -1955,20 +1904,45 @@ private fun ListFastScroller(
     listState: LazyListState,
     itemCount: Int,
     modifier: Modifier = Modifier
+) = FastScrollerCore(
+    itemCount = itemCount,
+    modifier = modifier,
+    canScroll = remember(listState) {
+        { listState.canScrollForward || listState.canScrollBackward }
+    },
+    firstVisibleIndex = remember(listState) { { listState.firstVisibleItemIndex } },
+    scrollToItem = remember(listState) { { index -> listState.scrollToItem(index) } },
+)
+
+/**
+ * [GridFastScroller] / [ListFastScroller] 的共用实现：拖右侧滑块（或点条带）按比例
+ * 跳到任意位置，只有目标真的能滚动时才显示。
+ *
+ * 网格与列表只差「能不能滚 / 第一个可见下标 / scrollToItem」这三件事，全部经参数传
+ * 入；闭包本身由调用侧 `remember` 住，所以拖拽过程中不会重建手势。
+ */
+@Composable
+private fun FastScrollerCore(
+    itemCount: Int,
+    modifier: Modifier = Modifier,
+    canScroll: () -> Boolean,
+    firstVisibleIndex: () -> Int,
+    scrollToItem: suspend (Int) -> Unit,
 ) {
     if (itemCount <= 0) return
-    val showScroller by remember {
-        derivedStateOf { listState.canScrollForward || listState.canScrollBackward }
+    val showScroller by remember(itemCount) {
+        derivedStateOf { canScroll() }
     }
     if (!showScroller) return
 
     var dragging by remember { mutableStateOf(false) }
     var dragFraction by remember { mutableFloatStateOf(0f) }
-    // List-derived thumb position (first visible item / total items).
-    val scrollFraction by remember {
+    // 滑块位置（首个可见项 / 已加载项）。key = itemCount：分页加载会改 itemCount，
+    // keyed 住才会重算（原来闭包冻结首个 itemCount，滚到底加载更多后滑块不动）。
+    val scrollFraction by remember(itemCount) {
         derivedStateOf {
             if (itemCount <= 1) 0f
-            else (listState.firstVisibleItemIndex / (itemCount - 1f)).coerceIn(0f, 1f)
+            else (firstVisibleIndex() / (itemCount - 1f)).coerceIn(0f, 1f)
         }
     }
     // While dragging the thumb follows the finger; otherwise it tracks the
@@ -1991,7 +1965,7 @@ private fun ListFastScroller(
                     var lastY = down.position.y
                     dragFraction = fractionOf(lastY)
                     coroutineScope.launch {
-                        listState.scrollToItem((dragFraction * (itemCount - 1)).toInt())
+                        scrollToItem((dragFraction * (itemCount - 1)).toInt())
                     }
                     while (true) {
                         val event = awaitPointerEvent()
@@ -2003,7 +1977,7 @@ private fun ListFastScroller(
                             change.consume()
                             dragFraction = fractionOf(y)
                             coroutineScope.launch {
-                                listState.scrollToItem((dragFraction * (itemCount - 1)).toInt())
+                                scrollToItem((dragFraction * (itemCount - 1)).toInt())
                             }
                         }
                     }

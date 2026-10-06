@@ -18,9 +18,18 @@ object OriginalImageUrl {
      * legitimate name like `shot-4x4.png` keeps its suffix.
      */
     private val SIZE_SUFFIX = Regex(
-        """-\d{2,5}x\d{2,5}(?=\.[A-Za-z0-9]{2,5}$)""",
+        """[-_]\d{2,5}x\d{2,5}(?:-c)?(?=\.[A-Za-z0-9]{2,5}$)""",
         RegexOption.IGNORE_CASE,
     )
+
+    /** One `url [descriptor]` entry of a `srcset`. */
+    private val SRCSET_SEPARATOR = Regex("\\s+")
+
+    /**
+     * 描述符缺失时的权重：按 srcset 规范等于 `1x`。它高于 `300w` 这类小图
+     * 变体、低于 `2x` / `1200w`，所以"只写 URL 的那一项"通常就是原图。
+     */
+    private const val BARE_ENTRY_WEIGHT = 1000.0
 
     /**
      * Query parameters that only describe a resized/derived variant. Dropping
@@ -61,5 +70,43 @@ object OriginalImageUrl {
             }
         val rebuilt = if (kept.isEmpty()) upgradedPath else "$upgradedPath?" + kept.joinToString("&")
         return rebuilt + if (hashIndex >= 0) trimmed.substring(hashIndex) else ""
+    }
+
+    /**
+     * `srcset` / `data-srcset` 里**最大的一张**，解析不出来时返回 null。
+     *
+     * 为什么不取第一项：srcset 按约定从小到大排列，而浏览器交给 `currentSrc`
+     * 的是"为当前屏幕/DPR 选中的展示尺寸"——`<picture>` 里还经常是 WebP 这种
+     * 转码变体。订阅源"下到分组"的必须是原图，所以这里按尺寸描述符排序：
+     * `1200w` > `2x`(=2000) > 无描述符(=1000) > `480w`；同样大小时取后一项。
+     */
+    fun largestFromSrcset(srcset: String?): String? {
+        val raw = srcset?.trim().orEmpty()
+        if (raw.isEmpty()) return null
+        // 整条属性就是一个 data: URI 时它的 payload 里也有逗号，不能当 srcset 切。
+        if (raw.startsWith("data:", ignoreCase = true)) return null
+        var best: String? = null
+        var bestWeight = Double.NEGATIVE_INFINITY
+        for (entry in raw.split(',')) {
+            val trimmed = entry.trim()
+            if (trimmed.isEmpty()) continue
+            val parts = trimmed.split(SRCSET_SEPARATOR)
+            val url = parts.firstOrNull().orEmpty()
+            if (url.isEmpty() || url.startsWith("data:", ignoreCase = true)) continue
+            val descriptor = parts.getOrNull(1)?.lowercase().orEmpty()
+            val weight = when {
+                descriptor.endsWith("w") ->
+                    descriptor.dropLast(1).toDoubleOrNull() ?: BARE_ENTRY_WEIGHT
+                descriptor.endsWith("x") ->
+                    (descriptor.dropLast(1).toDoubleOrNull() ?: 1.0) * BARE_ENTRY_WEIGHT
+                else -> BARE_ENTRY_WEIGHT
+            }
+            // `>=`: srcset 约定从小到大，同样大小时取后出现的一项。
+            if (weight >= bestWeight) {
+                bestWeight = weight
+                best = url
+            }
+        }
+        return best
     }
 }

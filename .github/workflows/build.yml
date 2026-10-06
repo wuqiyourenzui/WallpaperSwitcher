@@ -23,6 +23,16 @@ jobs:
       with:
         gradle-version: '8.5'
 
+    - name: Run unit tests
+      run: gradle testDebugUnitTest
+
+    - name: Run Android Lint
+      # Findings that exist today are frozen in app/lint-baseline.xml, so this
+      # step fails only on NEW problems. Delete baseline entries as they get
+      # fixed; never regenerate the file wholesale (that would hide everything
+      # again). Reports land in app/build/reports/lint-results-debug.html.
+      run: gradle lintDebug
+
     - name: Build Debug APK
       run: gradle assembleDebug
 

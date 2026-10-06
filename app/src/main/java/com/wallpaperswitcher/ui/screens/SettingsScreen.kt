@@ -48,7 +48,9 @@ import com.wallpaperswitcher.R
 import com.wallpaperswitcher.ui.AppLocale
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.wallpaperswitcher.ui.theme.LocalAccentColor
 
 /**
@@ -205,6 +207,13 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_page_appearance_desc),
                 onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.Appearance) },
             )
+            Divider(modifier = Modifier.padding(horizontal = 16.dp))
+            SettingsPageEntry(
+                icon = Icons.Outlined.CloudDownload,
+                title = stringResource(R.string.settings_online_sources),
+                subtitle = stringResource(R.string.settings_online_sources_desc),
+                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.OnlineSources) },
+            )
             // 收藏 / 最近显示 / 存储与流量原先只有页面、没有入口（只能从大图浏览等
             // 路径绕进去），统一挂到「外观」下面，设置页就是全部页面的索引。
             Divider(modifier = Modifier.padding(horizontal = 16.dp))
@@ -298,11 +307,15 @@ fun SettingsScreen(
                 }
                 scope.launch {
                     try {
-                        val text = viewModel.exportConfigText()
-                        context.contentResolver.openOutputStream(uri)?.use { out ->
-                            out.write(text.toByteArray(Charsets.UTF_8))
-                            out.flush()
-                        } ?: throw IllegalStateException("no output stream")
+                        // File IO (SAF stream + up to a few hundred KB of JSON)
+                        // stays off the main thread.
+                        withContext(Dispatchers.IO) {
+                            val text = viewModel.exportConfigText()
+                            context.contentResolver.openOutputStream(uri)?.use { out ->
+                                out.write(text.toByteArray(Charsets.UTF_8))
+                                out.flush()
+                            } ?: throw IllegalStateException("no output stream")
+                        }
                         Toast.makeText(
                             context, R.string.toast_config_exported, Toast.LENGTH_SHORT
                         ).show()
@@ -329,10 +342,12 @@ fun SettingsScreen(
                 }
                 scope.launch {
                     try {
-                        val text = context.contentResolver.openInputStream(uri)?.use { input ->
-                            input.readBytes().toString(Charsets.UTF_8)
-                        } ?: throw IllegalStateException("no input stream")
-                        val result = viewModel.importConfigText(text)
+                        val result = withContext(Dispatchers.IO) {
+                            val text = context.contentResolver.openInputStream(uri)?.use { input ->
+                                input.readBytes().toString(Charsets.UTF_8)
+                            } ?: throw IllegalStateException("no input stream")
+                            viewModel.importConfigText(text)
+                        }
                         Toast.makeText(
                             context,
                             context.getString(
@@ -440,37 +455,52 @@ fun SettingsScreen(
                 if (uri == null) return@rememberLauncherForActivityResult
                 scope.launch {
                     try {
-                        // Read the prepared report back (memory or cache file):
-                        // the picker can outlive this composable, and writing an
-                        // empty document used to leave a 0-byte log file.
-                        val text = com.wallpaperswitcher.util.AppLog.readPendingExport(context)
-                        if (text.isNullOrBlank()) {
-                            android.widget.Toast.makeText(
+                        // Every file touch here (cache-file fallback read, the
+                        // UTF-8 conversion of a report that can reach ~2MB, and
+                        // the write into the picked document) is off-main.
+                        val bytes = withContext(Dispatchers.IO) {
+                            // Read the prepared report back (memory or cache file):
+                            // the picker can outlive this composable, and writing an
+                            // empty document used to leave a 0-byte log file.
+                            val text = com.wallpaperswitcher.util.AppLog
+                                .readPendingExport(context)
+                            if (text.isNullOrBlank()) null else text.toByteArray(Charsets.UTF_8)
+                        }
+                        if (bytes == null) {
+                            Toast.makeText(
                                 context,
                                 context.getString(R.string.toast_log_empty),
-                                android.widget.Toast.LENGTH_LONG
+                                Toast.LENGTH_LONG
                             ).show()
                             return@launch
                         }
-                        val bytes = text.toByteArray(Charsets.UTF_8)
-                        val stream = context.contentResolver.openOutputStream(uri)
-                        if (stream == null) {
-                            android.widget.Toast.makeText(
+                        val written = withContext(Dispatchers.IO) {
+                            val stream = context.contentResolver.openOutputStream(uri)
+                            if (stream == null) {
+                                false
+                            } else {
+                                stream.use { out ->
+                                    out.write(bytes)
+                                    out.flush()
+                                }
+                                true
+                            }
+                        }
+                        if (!written) {
+                            Toast.makeText(
                                 context,
                                 context.getString(R.string.toast_log_no_write),
-                                android.widget.Toast.LENGTH_LONG
+                                Toast.LENGTH_LONG
                             ).show()
                             return@launch
                         }
-                        stream.use { out ->
-                            out.write(bytes)
-                            out.flush()
+                        withContext(Dispatchers.IO) {
+                            com.wallpaperswitcher.util.AppLog.clearPendingExport()
                         }
-                        com.wallpaperswitcher.util.AppLog.clearPendingExport()
-                        android.widget.Toast.makeText(
+                        Toast.makeText(
                             context,
                             context.getString(R.string.toast_log_saved, bytes.size / 1024),
-                            android.widget.Toast.LENGTH_LONG
+                            Toast.LENGTH_LONG
                         ).show()
                     } catch (t: Throwable) {
                         android.widget.Toast.makeText(
@@ -560,12 +590,17 @@ fun SettingsScreen(
                         exporting = true
                         scope.launch {
                             try {
-                                val header = viewModel.buildLogReportHeader()
-                                // Prepared (and cached) BEFORE the picker opens:
-                                // the callback no longer depends on this
-                                // composable still holding the text.
-                                val fileName = com.wallpaperswitcher.util.AppLog
-                                .prepareExport(context, header)
+                                // The report is up to 2MB of text plus a cache-file
+                                // write (AppLog.prepareExport): both the build and
+                                // the write have to stay off the main thread.
+                                val fileName = withContext(Dispatchers.IO) {
+                                    val header = viewModel.buildLogReportHeader()
+                                    // Prepared (and cached) BEFORE the picker opens:
+                                    // the callback no longer depends on this
+                                    // composable still holding the text.
+                                    com.wallpaperswitcher.util.AppLog
+                                        .prepareExport(context, header)
+                                }
                                 saveLogLauncher.launch(fileName)
                             } catch (t: Throwable) {
                                 android.widget.Toast.makeText(

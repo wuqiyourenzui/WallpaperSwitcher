@@ -55,6 +55,53 @@ object GroupRules {
         return dayAllowed(group.activeDays, wallClockMs)
     }
 
+    /**
+     * Whether this group carries a 时间规则 at all (a real time-of-day window or
+     * a weekday mask).
+     *
+     * The screen-wide tick needs it to decide whether it has to filter the
+     * candidate groups: when no group restricts itself, every enabled group
+     * qualifies and the extra per-group media-count query can be skipped.
+     */
+    fun hasTimeRules(group: WallpaperGroup): Boolean =
+        windowRestricted(group) || (group.activeDays > 0 && (group.activeDays and ALL_DAYS) != ALL_DAYS)
+
+    /**
+     * True only when BOTH bounds are real minutes and they differ - exactly the
+     * case [windowContains] narrows to a part of the day. Either bound being -1
+     * (or both being equal) leaves the window open, so it is not a restriction.
+     */
+    private fun windowRestricted(group: WallpaperGroup): Boolean =
+        group.activeFromMinute in 0..1439 &&
+            group.activeToMinute in 0..1439 &&
+            group.activeFromMinute != group.activeToMinute
+
+    /**
+     * The groups a SCREEN-WIDE tick may pick from: they must have media for
+     * [slot] (`counts`) and their 时间规则 must allow them right now.
+     *
+     * Used by the screen-wide branch of the switch timer, which otherwise
+     * bypassed [isActiveAt] completely: a group with a 22:00-06:00 window was
+     * still switched to during the day as long as no OTHER group carried its
+     * own interval (see GroupSchedulePlan for the per-group branch).
+     *
+     * @param counts per-group media count for this slot, from
+     *   `groupPickDao().countsForSlot`; a group missing from the map counts as
+     *   "no media" (that is what the per-group branch does too).
+     */
+    fun screenTickCandidates(
+        groups: List<WallpaperGroup>,
+        counts: Map<Long, Int>,
+        slot: String,
+        wallClockMs: Long,
+    ): List<WallpaperGroup> = groups.filter { group ->
+        if (!WallpaperTarget.fromName(group.target).suitsSlot(slot)) {
+            return@filter false
+        }
+        if ((counts[group.id] ?: 0) <= 0) return@filter false
+        isActiveAt(group, wallClockMs)
+    }
+
     /** Bit index used by [WallpaperGroup.activeDays]: 0 = Monday … 6 = Sunday. */
     fun weekdayIndex(wallClockMs: Long): Int {
         val cal = java.util.Calendar.getInstance()

@@ -493,4 +493,128 @@ object OnlineSourceRules {
     } catch (_: Exception) {
         0L
     }
+
+    // --- 内置在线壁纸源：NASA APOD / Wikimedia / 彼岸图网 / 必应壁纸 --------
+
+    /** 一个可下载的远程图片（内置在线源的统一形态）。 */
+    data class FetchedImage(val remoteKey: String, val url: String, val displayName: String)
+
+    /** NASA APOD（science.nasa.gov/apod/）：取当天主图，去掉缩放参数用原图。 */
+    fun parseApodPage(html: String): FetchedImage? {
+        val doc = org.jsoup.Jsoup.parse(html)
+        val img = doc.selectFirst(".media-detail-hero__media img")
+            ?: doc.selectFirst(".media-detail-hero img")
+            ?: return null
+        val raw = img.attr("src").trim().takeIf { it.isNotEmpty() } ?: return null
+        val url = stripUrlParams(absoluteHttps(raw))
+        if (!url.contains("/apod/")) return null
+        return FetchedImage(remoteKey = url, url = url, displayName = fileNameOf(url, "APOD"))
+    }
+
+    /**
+     * Wikimedia Commons「每日图片」feed：现为 RSS 2.0（`<item>` 的 description
+     * 里是转义后的 `<img ...>`），也兼容 Atom 形态的 `<entry><content><img>`。
+     * 缩略图地址升级为原始分辨率。
+     */
+    fun parseWikimediaFeed(xml: String): List<FetchedImage> {
+        val doc = org.jsoup.Jsoup.parse(xml, "", org.jsoup.parser.Parser.xmlParser())
+        val out = ArrayList<FetchedImage>()
+        for (item in doc.select("item")) {
+            val link = item.selectFirst("link")?.text()?.trim().orEmpty()
+            val description = item.selectFirst("description")?.text().orEmpty()
+            val src = IMG_SRC.find(description)?.groupValues?.get(1)
+                ?: item.selectFirst("img")?.attr("src")
+                ?: continue
+            val url = upscaleWikimedia(absoluteHttps(src)) ?: continue
+            out.add(FetchedImage(link.ifEmpty { url }, url, fileNameOf(url, "POTD")))
+        }
+        if (out.isNotEmpty()) return out
+        for (entry in doc.select("entry")) {
+            val id = entry.selectFirst("id")?.text()?.trim().orEmpty()
+            val src = entry.selectFirst("content img")?.attr("src")?.trim().orEmpty()
+            if (src.isEmpty()) continue
+            val url = upscaleWikimedia(absoluteHttps(src)) ?: continue
+            out.add(FetchedImage(id.ifEmpty { url }, url, fileNameOf(url, "POTD")))
+        }
+        return out
+    }
+
+    private val IMG_SRC = Regex("""<img[^>]+src=["']([^"']+)["']""", RegexOption.IGNORE_CASE)
+
+    /** 彼岸图网列表页：条目详情页链接。 */
+    fun parseNetbianListing(html: String): List<String> {
+        val doc = org.jsoup.Jsoup.parse(html, "https://pic.netbian.com/")
+        return doc.select("a[href]").mapNotNull { a ->
+            val abs = a.absUrl("href").ifBlank { a.attr("href") }
+            abs.takeIf {
+                it.startsWith("https://pic.netbian.com/tupian/") && it.endsWith(".html")
+            }
+        }.distinct()
+    }
+
+    /** 彼岸图网详情页：`#img img` 就是原图。 */
+    fun parseNetbianDetail(html: String, pageUrl: String): FetchedImage? {
+        val doc = org.jsoup.Jsoup.parse(html, pageUrl)
+        val img = doc.selectFirst("#img img")
+            ?: doc.selectFirst("div.photo-pic img")
+            ?: return null
+        val src = img.absUrl("src").ifBlank { img.attr("src") }.trim()
+        if (src.isEmpty()) return null
+        val url = absoluteHttps(src)
+        val name = img.attr("alt").trim().ifBlank { fileNameOf(url, "Netbian") }
+        return FetchedImage(remoteKey = url, url = url, displayName = name)
+    }
+
+    /** 必应壁纸站（bing.ioliu.cn）首页：壁纸详情页链接。 */
+    fun parseIoliuListing(html: String): List<String> {
+        val doc = org.jsoup.Jsoup.parse(html, "https://bing.ioliu.cn/")
+        return doc.select("a[href]").mapNotNull { a ->
+            val abs = a.absUrl("href").ifBlank { a.attr("href") }
+            abs.takeIf { it.startsWith("https://bing.ioliu.cn/wallpapers/") }
+        }.distinct()
+    }
+
+    private val IOLIU_FULL = Regex(
+        """https://(?:cn|global)\.bing\.com/th\?id=[^"'\s&]*_1920x(?:1080|1200)\.jpg"""
+    )
+    private val IOLIU_ANY = Regex("""https://(?:cn|global)\.bing\.com/th\?id=[^"'\s&]+""")
+
+    /** 必应壁纸站详情页：优先 1920 宽的原图，其次任意 `th?id=` 原图地址。 */
+    fun parseIoliuDetail(html: String): FetchedImage? {
+        val clean = html.replace("&amp;", "&")
+        val url = IOLIU_FULL.find(clean)?.value
+            ?: IOLIU_ANY.findAll(clean).map { it.value }
+                .firstOrNull { it.contains("_1920x") || it.contains("_UHD") }
+            ?: return null
+        return FetchedImage(remoteKey = url, url = url, displayName = fileNameOf(url, "Bing"))
+    }
+
+    /** Wikimedia 缩略图地址 → 原始文件地址；不是缩略图/不匹配时原样返回。 */
+    fun upscaleWikimedia(url: String): String? {
+        if (!url.contains("upload.wikimedia.org")) return url
+        val marker = "/thumb/"
+        val index = url.indexOf(marker)
+        if (index < 0) return url
+        val prefix = url.substring(0, index)
+        val parts = url.substring(index + marker.length).split('/')
+        if (parts.size < 3) return url
+        return prefix + "/" + parts.dropLast(1).joinToString("/")
+    }
+
+    private fun absoluteHttps(url: String): String {
+        val value = url.replace("&amp;", "&").trim()
+        return when {
+            value.startsWith("//") -> "https:$value"
+            value.startsWith("http://") -> "https://" + value.removePrefix("http://")
+            else -> value
+        }
+    }
+
+    private fun stripUrlParams(url: String): String =
+        url.replace("&amp;", "&").substringBefore('?').substringBefore('&').trim()
+
+    private fun fileNameOf(url: String, fallback: String): String {
+        val name = url.substringAfterLast('/').substringBefore('?')
+        return name.takeIf { it.isNotBlank() && it.length <= 80 } ?: fallback
+    }
 }

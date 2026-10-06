@@ -244,6 +244,8 @@ fun WallpaperSwitcherApp(
                                 stringResource(R.string.settings_page_button)
                             is Screen.Appearance ->
                                 stringResource(R.string.settings_page_appearance)
+                            is Screen.OnlineSources ->
+                                stringResource(R.string.settings_online_sources)
                         }
                     Crossfade(
                         targetState = titleText,
@@ -273,7 +275,8 @@ fun WallpaperSwitcherApp(
                         currentScreen is Screen.SwitchMethods ||
                         currentScreen is Screen.FolderScan ||
                         currentScreen is Screen.ButtonAppearance ||
-                        currentScreen is Screen.Appearance
+                        currentScreen is Screen.Appearance ||
+                        currentScreen is Screen.OnlineSources
                     // 返回箭头随子页面淡入 + 轻微放大（Miuix 的出现方式）。
                     AnimatedVisibility(
                         visible = isSubScreen,
@@ -298,7 +301,8 @@ fun WallpaperSwitcherApp(
                                     // 自己注册的 BackHandler 行为不一致。
                                     is Screen.WallpaperSettings, is Screen.SwitchMethods,
                                     is Screen.FolderScan, is Screen.ButtonAppearance,
-                                    is Screen.Appearance, is Screen.Favorites,
+                                    is Screen.Appearance, is Screen.OnlineSources,
+                                    is Screen.Favorites,
                                     is Screen.Recent, is Screen.Storage ->
                                         currentScreen = Screen.Settings
                                     else -> currentScreen = Screen.Home
@@ -540,6 +544,10 @@ fun WallpaperSwitcherApp(
                     viewModel = viewModel,
                     onBack = { currentScreen = Screen.Settings },
                 )
+                is Screen.OnlineSources -> OnlineSourcesScreen(
+                    viewModel = viewModel,
+                    onBack = { currentScreen = Screen.Settings },
+                )
                 is Screen.Subscriptions -> SubscriptionScreen(
                     viewModel = viewModel,
                     listState = subscriptionsListState,
@@ -686,6 +694,8 @@ sealed class Screen {
     data object ButtonAppearance : Screen()
     /** 外观：语言 / 主题模式 / 主题颜色。 */
     data object Appearance : Screen()
+    /** 在线壁纸源：Bing 每日 / NASA APOD / Wikimedia / 彼岸图网 / ioliu。 */
+    data object OnlineSources : Screen()
 }
 
 /** 页面层级：顶层标签是 0，子页面是 1 —— 决定进场方向（push / pop / 切标签）。 */
@@ -703,7 +713,8 @@ private fun screenDepth(screen: Screen): Int = when (screen) {
     is Screen.SwitchMethods,
     is Screen.FolderScan,
     is Screen.ButtonAppearance,
-    is Screen.Appearance -> 1
+    is Screen.Appearance,
+    is Screen.OnlineSources -> 1
 }
 
 private val ScreenSaver = Saver<Screen, String>(
@@ -725,6 +736,7 @@ private val ScreenSaver = Saver<Screen, String>(
             is Screen.FolderScan -> "set-scan"
             is Screen.ButtonAppearance -> "set-button"
             is Screen.Appearance -> "set-appearance"
+            is Screen.OnlineSources -> "set-online-sources"
         }
     },
     restore = { value ->
@@ -740,6 +752,7 @@ private val ScreenSaver = Saver<Screen, String>(
             value == "set-scan" -> Screen.FolderScan
             value == "set-button" -> Screen.ButtonAppearance
             value == "set-appearance" -> Screen.Appearance
+            value == "set-online-sources" -> Screen.OnlineSources
             value.startsWith("browse:") ->
                 value.removePrefix("browse:").toLongOrNull()?.let { Screen.Browse(it) }
                     ?: Screen.Home

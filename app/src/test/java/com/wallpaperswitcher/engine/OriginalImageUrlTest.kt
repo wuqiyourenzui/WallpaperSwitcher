@@ -65,4 +65,44 @@ class OriginalImageUrlTest {
         assertEquals("", OriginalImageUrl.upgrade(""))
         assertEquals("   ", OriginalImageUrl.upgrade("   "))
     }
+
+    @Test
+    fun `wordpress underscore suffix and cropped variant are removed`() {
+        assertEquals(
+            "https://site.com/wp/photo.jpg",
+            OriginalImageUrl.upgrade("https://site.com/wp/photo_300x200.jpg"),
+        )
+        // WP 的 "裁剪版" 变体：-1024x683-c.jpg
+        assertEquals(
+            "https://site.com/wp/photo.png",
+            OriginalImageUrl.upgrade("https://site.com/wp/photo-1024x683-c.png"),
+        )
+    }
+
+    @Test
+    fun `largest srcset entry wins over the display sized one`() {
+        assertEquals(
+            "https://x/large.jpg",
+            OriginalImageUrl.largestFromSrcset(
+                "https://x/small.jpg 300w, https://x/mid.jpg 800w, https://x/large.jpg 1600w",
+            ),
+        )
+        // 2x 倍率 = 更大的一张。
+        assertEquals(
+            "https://x/2x.jpg",
+            OriginalImageUrl.largestFromSrcset("https://x/1x.jpg 1x, https://x/2x.jpg 2x"),
+        )
+        // 无描述符的一项按 1x 处理，仍然大于 300w 缩略图。
+        assertEquals(
+            "https://x/orig.jpg",
+            OriginalImageUrl.largestFromSrcset("https://x/thumb.jpg 300w, https://x/orig.jpg"),
+        )
+    }
+
+    @Test
+    fun `srcset without usable entries yields null`() {
+        assertEquals(null, OriginalImageUrl.largestFromSrcset(null))
+        assertEquals(null, OriginalImageUrl.largestFromSrcset(""))
+        assertEquals(null, OriginalImageUrl.largestFromSrcset("data:image/gif;base64,AAA"))
+    }
 }

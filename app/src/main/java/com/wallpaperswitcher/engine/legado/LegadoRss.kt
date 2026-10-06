@@ -1,9 +1,10 @@
 package com.wallpaperswitcher.engine.legado
 
 import com.wallpaperswitcher.data.RssSource
+import com.wallpaperswitcher.engine.FetchException
 import com.wallpaperswitcher.engine.FeedParser
+import com.wallpaperswitcher.engine.HttpFailureReason
 import com.wallpaperswitcher.engine.Json
-import com.wallpaperswitcher.engine.OnlineFetcher
 import com.wallpaperswitcher.engine.OnlineSourceRules
 import com.wallpaperswitcher.util.AppLog
 import java.util.concurrent.TimeUnit
@@ -14,7 +15,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import okhttp3.ConnectionPool
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -343,9 +343,9 @@ internal object LegadoRss {
                 fetched++
                 when (OnlineSourceRules.endpointPolicy(currentUrl, allowCleartext = true)) {
                     OnlineSourceRules.EndpointPolicy.NEEDS_HTTPS ->
-                        throw OnlineFetcher.FetchException("https_required")
+                        throw FetchException("https_required")
                     OnlineSourceRules.EndpointPolicy.INVALID ->
-                        throw OnlineFetcher.FetchException("bad_url")
+                        throw FetchException("bad_url")
                     OnlineSourceRules.EndpointPolicy.OK -> Unit
                 }
                 val body = try {
@@ -453,7 +453,7 @@ internal object LegadoRss {
             }
             if (collected.isEmpty() && fetched == 0) {
                 prefetched?.cancel()
-                throw OnlineFetcher.FetchException("parse")
+                throw FetchException("parse")
             }
             prefetched?.cancel()
             PageResult(collected.values.toList(), nextCursor)
@@ -787,7 +787,7 @@ internal object LegadoRss {
             value == "null" || value == "undefined"
         ) {
             AppLog.w(TAG, "login check failed: ${outcome.error ?: value}")
-            throw OnlineFetcher.FetchException("auth")
+            throw FetchException("auth")
         }
     }
 
@@ -863,12 +863,6 @@ internal object LegadoRss {
                 )
             }
         }
-    }
-
-    /** Splits `url,{json options}` and resolves the plain URL part. */
-    private fun endpointOf(template: String): String {
-        val comma = template.indexOf(",{")
-        return if (comma >= 0) template.substring(0, comma).trim() else template.trim()
     }
 
     /**
@@ -953,7 +947,7 @@ internal object LegadoRss {
         val builder = try {
             Request.Builder().url(plainUrl)
         } catch (t: Throwable) {
-            throw OnlineFetcher.FetchException("bad_url", cause = t)
+            throw FetchException("bad_url", cause = t)
         }
         builder.header("User-Agent", USER_AGENT)
         builder.header("Accept", "text/html, application/xhtml+xml, application/json, */*")
@@ -1027,8 +1021,8 @@ internal object LegadoRss {
                         val outcome = try {
                             if (!response.isSuccessful) {
                                 Result.failure(
-                                    OnlineFetcher.FetchException(
-                                        httpReason(response.code), response.code
+                                    FetchException(
+                                        HttpFailureReason.of(response.code), response.code
                                     )
                                 )
                             } else {
@@ -1076,7 +1070,7 @@ internal object LegadoRss {
         val request = try {
             Request.Builder().url(plainUrl).header("User-Agent", USER_AGENT)
         } catch (t: Throwable) {
-            throw OnlineFetcher.FetchException("bad_url", cause = t)
+            throw FetchException("bad_url", cause = t)
         }
         option.headers.forEach { (name, value) ->
             if (name.isNotBlank()) {
@@ -1089,7 +1083,9 @@ internal object LegadoRss {
         val call = request.get().build()
         client.newCall(call).execute().use { response ->
             if (!response.isSuccessful) {
-                throw OnlineFetcher.FetchException(httpReason(response.code), response.code)
+                throw FetchException(
+                    HttpFailureReason.of(response.code), response.code
+                )
             }
             val body = response.peekBody(MAX_BODY_BYTES)
             return ResponseCharset.decode(body.bytes(), body.contentType())
@@ -1109,7 +1105,7 @@ internal object LegadoRss {
         val builder = try {
             Request.Builder().url(plainUrl)
         } catch (t: Throwable) {
-            throw OnlineFetcher.FetchException("bad_url", cause = t)
+            throw FetchException("bad_url", cause = t)
         }
         builder.header("User-Agent", USER_AGENT)
         headers.forEach { (name, value) ->
@@ -1499,15 +1495,6 @@ internal object LegadoRss {
      */
     fun loginCheckJs(source: RssSource): String? =
         (rawMap(source)?.get("loginCheckJs") as? String)?.takeIf { it.isNotBlank() }
-
-    private fun httpReason(status: Int): String = when (status) {
-        401 -> "auth"
-        403 -> "forbidden"
-        404 -> "not_found"
-        429 -> "rate_limited"
-        in 500..599 -> "server"
-        else -> "http_$status"
-    }
 
     private val PAGE_LIST = Regex("""<([^<>]*)>""")
     private val CATEGORY_SEPARATOR = Regex("""(&&|\r?\n)+""")

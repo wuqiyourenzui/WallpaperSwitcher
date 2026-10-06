@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- API 31+ backup / device-transfer rules (see also backup_rules for <= 30). -->
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- Session cookies / login blobs must not leave the device. -->
+        <exclude domain="sharedpref" path="rss_cookies.xml" />
+        <exclude domain="sharedpref" path="rss_login.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="rss_cookies.xml" />
+        <exclude domain="sharedpref" path="rss_login.xml" />
+    </device-transfer>
+</data-extraction-rules>

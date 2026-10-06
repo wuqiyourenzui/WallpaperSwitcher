@@ -1,6 +1,5 @@
 package com.wallpaperswitcher.ui.screens
 
-import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,7 +22,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
@@ -42,7 +40,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.MenuBook
@@ -50,12 +47,10 @@ import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -65,7 +60,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -485,6 +479,11 @@ private fun RssSourceTile(
     val iconUrl = remember(source.url) {
         com.wallpaperswitcher.engine.RssIcons.iconUrl(source.url)
     }
+    // 网格/列表滚动时格子会被复用：把 Coil 请求记住，避免每次重组都重建一个
+    // ImageRequest（同 RecentScreen / GroupDetailScreen 的缩略图写法）。
+    val iconRequest = remember(context, iconUrl) {
+        imageRequest(context, iconUrl ?: "", null)
+    }
     val browserOnly = remember(source.id, source.rawJson) {
         com.wallpaperswitcher.engine.legado.LegadoRss.isBrowseOnly(source)
     }
@@ -523,7 +522,7 @@ private fun RssSourceTile(
             ) {
                 if (iconUrl != null) {
                     AsyncImage(
-                        model = imageRequest(context, iconUrl, null),
+                        model = iconRequest,
                         contentDescription = null,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
@@ -667,9 +666,13 @@ private fun RssImportDialog(
     ) { uri: Uri? ->
         if (uri != null) {
             try {
-                text = context.contentResolver.openInputStream(uri)
-                    ?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }
-                    .orEmpty()
+                // Both levels are closed explicitly: `use` on the reader alone
+                // leaves the file descriptor open if the reader cannot be created
+                // (an unsupported charset - unreachable with UTF_8, but the fd cost
+                // is not worth relying on that).
+                text = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                }.orEmpty()
             } catch (_: Exception) {
             }
         }
@@ -1111,6 +1114,10 @@ private fun RssArticleRow(
         }
     }
     val context = LocalContext.current
+    // 列表滚动中每一行都会反复重组：封面请求记住，避免重建 ImageRequest。
+    val coverRequest = remember(context, article.imageUrl, headers) {
+        imageRequest(context, article.imageUrl, null, headers)
+    }
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
         shape = RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner),
@@ -1126,7 +1133,7 @@ private fun RssArticleRow(
         ) {
             if (article.imageUrl.isNotBlank()) {
                 AsyncImage(
-                    model = imageRequest(context, article.imageUrl, null, headers),
+                    model = coverRequest,
                     contentDescription = null,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier
@@ -1151,9 +1158,11 @@ private fun RssArticleRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                val preview = FeedParser.stripHtml(
-                    article.description.ifBlank { article.content }
-                )
+                // stripHtml 内部每次都会编译 4 个 Regex（FeedParser 不改）：按正文
+                // 记住结果，滚动中反复重组这一行时不再重复解析。
+                val preview = remember(article.description, article.content) {
+                    FeedParser.stripHtml(article.description.ifBlank { article.content })
+                }
                 if (preview.isNotBlank()) {
                     Text(
                         preview,
@@ -1222,11 +1231,19 @@ private fun RssArticleDetailDialog(
             // 和阅读一致：选择界面里就是全屏页显示的那几张图。静态解析的结果
             // （site 推荐位、图集封面等）**不能并进来** —— 之前 `initialImages +
             // images` 会把与当前文章无关的封面混进网格，看起来就是"别的杂图"。
-            images = initialImages.distinct()
+            // 覆盖前先过一遍视频源过滤：否则上面 `.ts/.m4s`/海报被滤掉的结果会被
+            // 这份原始列表原样覆盖，占位图又回到选图网格里（只对视频源生效，所以
+            // 普通源没有 `.m3u8` 的 `.ifEmpty` 兜底、不会白屏）。
+            val picked = if (source?.type == 2) {
+                initialImages.filter { looksLikeVideoStream(it) }
+            } else {
+                initialImages.distinct()
+            }
+            images = picked
             // Pre-select exactly the stream the player was showing (falling
             // back to everything collected) so 加入分组 grabs the right one.
-            selected = initialSelected.filter { it in images }
-                .ifEmpty { initialImages }
+            selected = initialSelected.filter { it in picked }
+                .ifEmpty { picked }
                 .toSet()
             com.wallpaperswitcher.util.AppLog.d(
                 "RssPick",
@@ -1624,11 +1641,14 @@ private fun RssPickerTile(
  * Video-source picker filter: real streams only (mp4/webm/mov/mkv **and** HLS
  * playlists - the importer merges HLS, and the player streams it). Stills such
  * as `_TPL_.mp4` posters and HLS segments are excluded.
+ *
+ * `internal`（不是 `private`）只为了让单测能钉住这套判定：[RssVideoUrlTest]
+ * 覆盖 `.ts` / `.m4s` / 海报 与真正的流各自应/不应通过。除本文件外没有调用点。
  */
 private val VIDEO_STREAM_EXT =
     Regex("""\.(mp4|webm|mov|m4v|mkv|m3u8)(\?|$)""")
 
-private fun looksLikeVideoStream(url: String): Boolean {
+internal fun looksLikeVideoStream(url: String): Boolean {
     val lower = url.lowercase()
     if (looksLikePlayerPlaceholder(lower)) return false
     val path = lower.substringBefore('?')

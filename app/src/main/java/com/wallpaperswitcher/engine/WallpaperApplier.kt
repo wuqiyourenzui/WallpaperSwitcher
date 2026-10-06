@@ -18,12 +18,10 @@ import com.wallpaperswitcher.data.ScaleMode
 import com.wallpaperswitcher.data.ShuffleShown
 import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.data.WallpaperImage
-import com.wallpaperswitcher.data.WallpaperImageDao
 import com.wallpaperswitcher.data.getBool
 import com.wallpaperswitcher.data.getLong
 import com.wallpaperswitcher.data.incrementLong
 import com.wallpaperswitcher.data.getString
-import com.wallpaperswitcher.data.setString
 import com.wallpaperswitcher.data.setLong
 
 /**
@@ -409,6 +407,14 @@ object WallpaperApplier {
         rotateMismatch: Boolean,
         rotateClockwise: Boolean
     ): Bitmap? {
+        // Same process-wide bound as the live engine's loader: the static apply
+        // path must not stack a third screen-size decode on top of an in-flight
+        // switch/prefetch (the engine and the applier share this process).
+        if (!DecodeThrottle.acquire()) {
+            AppLog.w(TAG, "decode throttle busy; static load skipped: ${image.uri.takeLast(60)}")
+            return null
+        }
+        try {
         val result = java.util.concurrent.atomic.AtomicReference<Bitmap?>(null)
         val abandoned = java.util.concurrent.atomic.AtomicBoolean(false)
         val thread = Thread({
@@ -465,6 +471,9 @@ object WallpaperApplier {
         }
         // Finished within the budget: take it and clear the reference.
         return result.getAndSet(null)
+        } finally {
+            DecodeThrottle.release()
+        }
     }
 
     /**
@@ -620,29 +629,32 @@ object WallpaperApplier {
                 slot, scopedGroupId, scopedFilter
             )
         } else when (mode) {
-            SwitchMode.RANDOM -> MediaPick.random(
-                imageDao, slot, lastId, pickSeq = pickSeq,
-                favoriteWeight = favoriteWeight, recentIds = recentIds
-            )
+            SwitchMode.RANDOM -> {
+                // 随机：所有启用分组（时间规则允许的）的媒体池。
+                val groups = MediaPick.eligibleGroups(db, slot)
+                val rows = MediaPick.poolFor(
+                    db.wallpaperImageDao(), db.groupPickDao(), slot, groups, favoriteWeight
+                )
+                MediaPick.randomFromPool(imageDao, rows, lastId, pickSeq, recentIds)
+            }
             SwitchMode.SEQUENTIAL -> {
-                val count = imageDao.countByEnabledGroups(slot)
-                if (count == 0) null else {
-                    // Item-based cursor, identical to the engine: continue after
-                    // the last displayed id and wrap to the first when the deck
-                    // is exhausted (deleted/disabled media never cause skips).
-                    val img = if (lastId > 0L) {
-                        imageDao.getSequentialImageFromEnabledGroupsAfter(slot, lastId)
-                            ?: imageDao.getFirstFromEnabledGroups(slot)
-                    } else {
-                        imageDao.getFirstFromEnabledGroups(slot)
-                    }
-                    img ?: imageDao.getRandomImageFromEnabledGroups(slot)
-                }
+                // 顺序切换：和实时引擎完全一致 —— 从当前媒体开始按分组
+                // 逐个推进（本组走完 → 下一个分组），见
+                // [MediaPick.sequentialAcrossGroups]。
+                val groups = MediaPick.eligibleGroups(db, slot)
+                MediaPick.sequentialAcrossGroups(
+                    imageDao, db.groupPickDao(), slot, groups, lastId
+                )
             }
             SwitchMode.SHUFFLE -> {
-                val total = imageDao.countByEnabledGroups(slot)
+                // 洗牌：牌堆 = 所有启用分组的媒体池（和实时引擎同一实现）。
+                val groups = MediaPick.eligibleGroups(db, slot)
+                val poolRows = MediaPick.poolFor(
+                    db.wallpaperImageDao(), db.groupPickDao(), slot, groups, favoriteWeight
+                )
+                val total = poolRows.size
                 if (total == 0) null else {
-                    val shown = shuffleDao.getShownIds(slot, scopedGroupId).toMutableSet()
+                    val shown = shuffleDao.getShownIds(slot).toMutableSet()
                     // Only a finished pass restarts (see shouldResetShuffleDeck):
                     // an enabled-set change keeps the pass going, the next pick
                     // simply filters the enabled ids by the shown ones.
@@ -650,17 +662,14 @@ object WallpaperApplier {
                         shown.clear()
                         shuffleDeckCleared = true
                     }
-                    // Random UNSEEN pick, filtering the slot's id list in memory
-                    // (the pre-review implementation, restored on request).
-                    var candidate = MediaPick.shuffleUnseen(
+                    var candidate = MediaPick.shuffleUnseenFromPool(
                         imageDao = imageDao,
-                        slot = slot,
+                        poolRows = poolRows,
+                        favoriteIds = MediaPick.poolFavorites(slot, favoriteWeight),
                         shownIds = shown,
                         excludeId = lastId,
-                        generation = MediaScanner.currentGeneration(context),
-                        knownCount = total,
                         pickSeq = pickSeq,
-                        favoriteWeight = favoriteWeight
+                        favoriteWeight = favoriteWeight,
                     )
                     if (candidate == null) {
                         // The pass is over (or only one media exists): start a
@@ -668,8 +677,9 @@ object WallpaperApplier {
                         // restored on request).
                         shown.clear()
                         shuffleDeckCleared = true
-                        candidate = imageDao.getRandomImageFromEnabledGroupsExcluding(slot, lastId)
-                            ?: imageDao.getRandomImageFromEnabledGroups(slot)
+                        candidate = MediaPick.randomFromPool(
+                            imageDao, poolRows, lastId, pickSeq, emptyList()
+                        )
                     }
                     candidate
                 }

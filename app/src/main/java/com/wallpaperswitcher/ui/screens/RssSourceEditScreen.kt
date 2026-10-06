@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Divider
@@ -147,7 +146,9 @@ fun RssSourceEditScreen(
         Text(stringResource(R.string.rss_edit_type), style = MaterialTheme.typography.bodyMedium)
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.horizontalScroll(rememberScrollState())
+            // 等宽铺满整行：三个短标签（网页/图片/视频）以前挤在左边，宽屏上
+            // 右边留一大片空白。
+            modifier = Modifier.fillMaxWidth()
         ) {
             for ((value, labelRes) in listOf(
                 0 to R.string.rss_edit_type_web,
@@ -157,7 +158,8 @@ fun RssSourceEditScreen(
                 FilterChip(
                     selected = type == value,
                     onClick = { type = value },
-                    label = { Text(stringResource(labelRes)) }
+                    label = { Text(stringResource(labelRes)) },
+                    modifier = Modifier.weight(1f)
                 )
             }
         }

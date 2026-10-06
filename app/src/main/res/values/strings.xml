@@ -43,7 +43,6 @@
     <string name="button_color_pink">粉色</string>
     <string name="button_color_white">白色</string>
     <string name="button_color_black">黑色</string>
-    <string name="settings_wallpaper_title">壁纸设置</string>
     <string name="settings_switch_mode">切换模式</string>
     <string name="switch_mode_random">随机</string>
     <string name="switch_mode_sequential">顺序</string>
@@ -65,9 +64,6 @@
     <string name="settings_rotate_direction">旋转方向</string>
     <string name="rotate_clockwise">顺时针</string>
     <string name="rotate_counter_clockwise">逆时针</string>
-    <string name="settings_switch_methods">切换方式</string>
-    <string name="settings_section_methods">切换方式</string>
-    <string name="settings_section_methods_hint">什么时候触发切换</string>
     <string name="settings_timed_switch">定时切换</string>
     <string name="settings_timed_switch_hint">按设定间隔自动切换壁纸</string>
     <string name="settings_switch_interval">切换间隔</string>
@@ -78,14 +74,11 @@
     <string name="settings_double_tap_hint">双击屏幕切换壁纸（需设置动态壁纸）</string>
     <string name="settings_floating_button">悬浮切换按钮</string>
     <string name="settings_floating_button_hint">点一下悬浮按钮即切换（部分启动器不转发双击）</string>
-    <string name="settings_switch_fade">切换过渡动画</string>
-    <string name="settings_switch_fade_hint">切换壁纸时淡入显示</string>
     <string name="settings_video_sound">视频壁纸播放声音</string>
     <string name="settings_video_sound_hint">桌面可见时播放声音，其余场景静音</string>
     <string name="settings_lock_timer">锁屏定时切换</string>
-    <string name="settings_lock_timer_hint">按下方间隔单独更换锁屏壁纸</string>
+    <string name="settings_lock_timer_hint">按下方间隔单独更换锁屏壁纸（只切换图片；关闭后锁屏跟随动态壁纸，可播放视频）</string>
     <string name="settings_lock_interval">锁屏切换间隔</string>
-    <string name="settings_section_scan">文件夹自动扫描</string>
     <string name="settings_auto_scan">自动扫描文件夹</string>
     <string name="settings_auto_scan_hint">定期把已导入文件夹的新增媒体加入分组</string>
     <string name="settings_scan_interval">扫描间隔</string>
@@ -102,7 +95,6 @@
     <string name="action_choose_image">选择图片</string>
     <string name="action_replace_image">更换图片</string>
     <string name="action_clear_image">清除图片</string>
-    <string name="settings_section_appearance">外观</string>
     <string name="settings_theme_mode">主题模式</string>
     <string name="settings_theme_color">主题颜色</string>
     <string name="theme_color_system">跟随系统</string>
@@ -178,7 +170,10 @@
     <string name="selection_none">取消全选</string>
     <string name="selection_count">已选 %1$d/%2$d</string>
     <string name="dialog_delete_groups_title">删除分组</string>
-    <string name="dialog_delete_groups_message">确定删除选中的 %1$d 个分组吗？分组里的媒体记录会一起移除（手机里的照片/视频文件不会被删除）。</string>
+    <plurals name="dialog_delete_groups_message">
+        <item quantity="one">确认删除选中的这个分组吗？分组里的媒体记录会一起移除（手机里的照片/视频文件不会被删除）。</item>
+        <item quantity="other">确认删除选中的 %1$d 个分组吗？分组里的媒体记录会一起移除（手机里的照片/视频文件不会被删除）。</item>
+    </plurals>
     <string name="empty_groups_title">还没有壁纸分组</string>
     <string name="empty_groups_hint">点击「新建分组」开始添加壁纸</string>
     <string name="dialog_new_group_title">新建壁纸分组</string>
@@ -295,7 +290,6 @@
     <string name="hint_motion_needs_engine">视频/GIF 需要动态壁纸：请在系统动态壁纸中选择本应用</string>
     <string name="home_permission_warning">缺少「照片和视频」权限，无法读取已导入的媒体；请授予权限后重试</string>
     <string name="action_grant_permission">去授权</string>
-    <string name="settings_logs_privacy_note">日志含设备型号与文件夹名称，请谨慎分享</string>
     <!--
       数量用 plurals：中文只有 other 一档，但英语/西班牙语需要 one，俄语需要
       one/few/many，写成 string 会出现 "1 groups" 这类错误。
@@ -312,9 +306,6 @@
     <plurals name="folder_count">
         <item quantity="other">共 %1$d 个文件夹</item>
     </plurals>
-    <!-- 分组独立节奏（间隔 / 模式 / 时间规则） -->
-    <string name="group_option_follow_global">跟随全局</string>
-    <string name="group_interval_label">间隔</string>
     <string name="group_window_label">时段</string>
     <string name="group_window_all_day">全天</string>
     <string name="group_window_from">开始</string>
@@ -340,8 +331,6 @@
     <string name="tile_switch_label">切换壁纸</string>
     <string name="tile_pause_label">暂停切换</string>
     <string name="tile_resume_label">继续切换</string>
-    <string name="tile_paused_toast">已暂停壁纸切换</string>
-    <string name="tile_resumed_toast">已继续壁纸切换</string>
     <string name="widget_switch">切换</string>
     <string name="widget_pause">暂停</string>
     <string name="widget_resume">继续</string>
@@ -356,7 +345,6 @@
     <string name="settings_config_backup">配置导出 / 导入</string>
     <string name="settings_export_config">导出配置</string>
     <string name="settings_import_config">导入配置</string>
-    <string name="settings_config_hint">导出分组、间隔、模式与全局设置（不含图片/视频文件）</string>
     <string name="toast_config_exported">配置已导出</string>
     <string name="toast_config_export_failed">导出失败：%1$s</string>
     <string name="toast_config_imported">已导入 %1$d 个分组、%2$d 个订阅源</string>
@@ -385,92 +373,27 @@
     <string name="day_fri">五</string>
     <string name="day_sat">六</string>
     <string name="day_sun">日</string>
-    <!-- 跟随深色模式 -->
-    <string name="group_theme_label">主题</string>
-    <string name="group_theme_any">不限</string>
-    <string name="group_theme_hint">按手机当前的深色/浅色模式决定这个分组是否参与轮换</string>
     <!-- 视频播完再切 / 收藏 / 最近不重复 -->
     <string name="settings_video_play_to_end">视频播完再切</string>
     <string name="settings_video_play_to_end_hint">定时切换等视频播完再换；手动切换不受影响</string>
-    <string name="settings_favorite_boost">收藏优先</string>
-    <string name="settings_favorite_boost_hint">随机 / 洗牌时收藏的图片出现频率更高</string>
-    <string name="settings_recent_no_repeat">最近不重复</string>
-    <string name="settings_recent_no_repeat_hint">随机模式下最近出现过的图片不会立刻重复</string>
-    <string name="recent_no_repeat_off">关闭</string>
     <string name="media_favorite_add">加入收藏</string>
     <string name="media_favorite_remove">取消收藏</string>
-    <string name="media_favorite_badge">收藏</string>
-    <!-- 分组筛选 / 顺序 -->
-    <string name="group_filter_label">筛选</string>
-    <string name="group_filter_all">全部</string>
-    <string name="group_filter_image">仅图片</string>
-    <string name="group_filter_motion">仅视频 / GIF</string>
-    <string name="group_filter_favorite">仅收藏</string>
-    <string name="group_sort_label">顺序</string>
-    <string name="group_sort_added">加入顺序</string>
-    <string name="group_sort_newest">新的在前</string>
-    <!-- 小组件 -->
-    <string name="widget_next_in">下次切换</string>
     <string name="widget_current_unknown">未知</string>
     <!-- 在线壁纸源 (Bing 每日图 / 指定 URL / WebDAV) -->
     <string name="online_auto_group_name">在线壁纸</string>
-    <string name="settings_section_online">在线壁纸源</string>
-    <string name="settings_online_sources">在线壁纸源</string>
-    <string name="settings_online_sources_desc">Bing 每日图 / 指定 URL / WebDAV，定时拉取进分组</string>
-    <string name="title_online_sources">在线壁纸源</string>
-    <string name="online_add">添加来源</string>
-    <string name="online_empty">还没有在线壁纸源，点右下角添加</string>
-    <string name="online_type_bing">Bing 每日图</string>
-    <string name="online_type_url">指定 URL</string>
-    <string name="online_type_meirentu">美人图（meirentu.club）</string>
-    <string name="online_type_webdav">WebDAV 目录</string>
-    <string name="online_dialog_add_title">添加在线壁纸源</string>
-    <string name="online_dialog_edit_title">编辑在线壁纸源</string>
-    <string name="online_label_name">名称（可选）</string>
-    <string name="online_label_target_group">拉取到分组</string>
     <string name="online_group_auto">自动创建「在线壁纸」</string>
-    <string name="online_label_interval">更新间隔</string>
-    <string name="online_label_url">图片 URL</string>
-    <string name="online_label_webdav_url">WebDAV 地址</string>
-    <string name="online_label_webdav_path">子目录（可选）</string>
-    <string name="online_label_username">用户名（可选）</string>
-    <string name="online_label_password">密码（可选）</string>
-    <string name="online_password_keep">留空表示不修改</string>
-    <string name="online_label_keep_count">保留数量</string>
-    <string name="online_keep_count_desc">超出后自动删除最旧的图片，0 表示不限制</string>
-    <string name="online_keep_unlimited">不限制</string>
-    <string name="online_wifi_only">仅 Wi-Fi 时更新</string>
-    <string name="online_charging_only">仅充电时更新</string>
-    <string name="online_privacy_note">只访问你填写的地址；账号密码加密保存在本机；公网地址必须使用 HTTPS</string>
-    <string name="online_action_refresh">立即更新</string>
     <string name="online_never_updated">尚未更新</string>
-    <string name="online_last_update">上次更新</string>
-    <string name="online_status_ok">已更新：新增 %1$d 张</string>
     <string name="online_status_ok_none">已更新：没有新图片</string>
+    <string name="online_status_ok_added">已更新：新增 %1$d 张</string>
+    <string name="settings_online_sources">在线壁纸源</string>
+    <string name="settings_online_sources_desc">Bing 每日、NASA APOD、Wikimedia 等内置源</string>
+    <string name="settings_online_sources_hint">开启后自动下载到「在线壁纸」分组；Wi-Fi 下按天更新</string>
+    <string name="settings_online_refresh_now">立即更新</string>
+    <string name="settings_online_source_started">已开启「%1$s」，正在下载…</string>
+    <string name="settings_online_source_none">先开启一个在线壁纸源</string>
+    <string name="settings_online_source_refreshing">已开始更新在线壁纸</string>
     <string name="online_status_error">更新失败：%1$s</string>
-    <string name="online_delete_title">删除在线壁纸源</string>
-    <string name="online_delete_message">将同时删除已下载的图片和文件，确定删除「%1$s」吗？</string>
-    <string name="online_saved">已保存</string>
-    <string name="online_refresh_started">已开始更新</string>
-    <string name="online_url_hint">https://example.com/latest.jpg</string>
-    <string name="online_webdav_hint">https://nas.example.com/dav/photos</string>
-    <string name="online_meirentu_hint">https://meirentu.club/</string>
-    <string name="online_meirentu_note">抓取列表页里最新专辑的前 2 页，每次最多 8 张</string>
-    <string name="online_meirentu_select">选择图片</string>
-    <string name="online_meirentu_selected">已选 %1$d 张</string>
-    <string name="online_meirentu_auto_mode">自动抓取最新专辑</string>
-    <string name="online_meirentu_manual_mode">只下载选中的 %1$d 张图片</string>
-    <string name="online_meirentu_clear">清空选择</string>
-    <string name="online_meirentu_pages">每本专辑页数</string>
-    <string name="online_max_per_run">每次最多下载</string>
-    <string name="online_picker_title">选择美人图图片</string>
-    <string name="online_picker_albums">专辑</string>
-    <string name="online_picker_load_more">加载更多</string>
-    <string name="online_picker_no_more">没有更多了</string>
-    <string name="online_picker_select_page">全选本页</string>
     <string name="online_picker_loading">加载中…</string>
-    <string name="online_picker_failed">加载失败：%1$s</string>
-    <string name="online_picker_done">完成</string>
     <!-- 阅读订阅源 (Legado 兼容) -->
     <string name="title_subscriptions">订阅</string>
     <string name="nav_subscriptions">订阅</string>
@@ -480,7 +403,6 @@
     <string name="rss_delete_title">删除订阅源</string>
     <string name="rss_delete_message">确定删除「%1$s」及其已抓取的文章吗？</string>
     <string name="rss_last_update">上次更新</string>
-    <string name="rss_open">阅读</string>
     <string name="rss_name">名称（可选）</string>
     <string name="rss_url">订阅地址（RSS/Atom）</string>
     <string name="rss_url_hint">https://example.com/feed.xml</string>
@@ -497,21 +419,17 @@
     <string name="rss_edit_add_field">添加字段</string>
     <string name="settings_rss_download_dir">订阅图片下载目录</string>
     <string name="settings_rss_download_dir_default">应用私有目录（默认，不占相册）</string>
-    <string name="settings_rss_download_dir_reset">恢复默认</string>
     <string name="settings_rss_download_dir_saved">已切换下载目录，新导入的图片会保存到该文件夹</string>
     <string name="settings_rss_download_dir_reset_done">已恢复为应用私有目录</string>
     <string name="rss_article">文章</string>
-    <string name="rss_open_original">打开原文</string>
     <string name="rss_open_in_browser">用浏览器打开</string>
     <string name="rss_status_ok">已更新：新增 %1$d 篇</string>
     <string name="rss_browse_source">网页型源 · 点卡片用浏览器打开</string>
     <string name="rss_saved">已保存</string>
     <string name="rss_refresh_done">已刷新：新增 %1$d 篇</string>
     <string name="rss_refresh_failed">刷新失败：%1$s</string>
-    <string name="rss_refresh_started">已开始刷新全部订阅</string>
     <string name="rss_import_failed">导入失败，请检查内容格式</string>
     <string name="rss_import_done">已导入 %1$d 个订阅源，更新 %2$d 个（跳过 %3$d 个）</string>
-    <string name="rss_refresh_all">全部刷新</string>
     <string name="rss_article_images">文章图片（%1$d）</string>
     <string name="rss_select_all">全选</string>
     <string name="rss_clear_selection">清空</string>
@@ -586,21 +504,11 @@
     <string name="rss_edit_saved">已保存</string>
     <string name="rss_edit_save_failed">保存失败</string>
     <string name="rss_proxy">代理</string>
-    <string name="rss_proxy_hint">部分站点需经代理访问；留空则直连（例：127.0.0.1:7890，支持 socks5://）</string>
-    <string name="rss_proxy_value">代理地址（host:port）</string>
-    <string name="rss_proxy_clear">清除</string>
-    <string name="rss_proxy_saved">代理已保存</string>
-    <string name="rss_proxy_cleared">已改为直连</string>
     <string name="rss_load_more">加载更多</string>
     <string name="rss_no_more">没有更多了</string>
-    <string name="rss_images_loading">正在加载图片…</string>
-    <string name="rss_categories">分类</string>
-    <string name="rss_web_mode">浏览器模式</string>
     <string name="rss_web_collected">已收集 %1$d 张</string>
     <string name="rss_web_use">用这些图</string>
-    <string name="rss_add_video_group">视频加入分组</string>
     <string name="rss_reload">重新抓取</string>
-    <string name="rss_play_external">系统播放器</string>
     <string name="rss_video_title">视频</string>
     <string name="rss_video_loading">正在获取视频…</string>
     <string name="rss_video_failed">视频暂时播不了（地址可能已失效）</string>
@@ -618,11 +526,7 @@
     <string name="favorites_empty">还没有收藏，去大图浏览里双击一下试试</string>
     <string name="recent_title">最近显示</string>
     <string name="recent_empty">还没有记录：切换几张壁纸后就会出现在这里</string>
-    <string name="recent_slot_home">桌面</string>
-    <string name="recent_slot_lock">锁屏</string>
     <string name="recent_push">推回当前屏</string>
-    <string name="recent_pushed">已推回</string>
-    <string name="preview_nothing">没有可预览的下一张</string>
     <string name="browse_entry">浏览</string>
     <string name="storage_title">存储与流量</string>
     <string name="storage_total">应用已占用 %1$s</string>
@@ -684,21 +588,9 @@
     <string name="wizard_done">完成</string>
     <string name="wizard_skip">稍后再说</string>
     <string name="settings_page_setup_desc">三步完成初始设置与自检</string>
-    <string name="option_panel_title">选择</string>
-    <string name="option_default">默认</string>
-    <string name="color_picker_title">选择颜色</string>
-    <string name="color_hex">色值</string>
     <string name="live_wallpaper_permission_title">需要开启「动态壁纸服务」</string>
     <string name="live_wallpaper_permission_message">系统未允许本应用使用「动态壁纸服务」，点击图片时系统动态壁纸界面会立刻关闭，导致无法设置。请在「权限管理 → 其他权限」中打开「动态壁纸服务」后重试。</string>
     <string name="action_open_permission">去开启</string>
     <string name="toast_picker_unavailable">无法打开系统动态壁纸界面</string>
 </resources>
-
-
-
-
-
-
-
-
 

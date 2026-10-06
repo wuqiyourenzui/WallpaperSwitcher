@@ -19,11 +19,23 @@ object SwitchPicking {
     /**
      * 视频播完再切: decide what a timed tick does while [videoPlaying].
      *
-     * [holdPending] must *drop* the tick rather than let it through. The first
-     * implementation returned early only while no hold was pending, so the
-     * SECOND interval fell through and cut the clip off mid-pass - exactly the
-     * "视频播完再切还是会被定时切换" report. Manual / unlock switches never call
-     * this (they must act immediately).
+     * [holdPending] must *drop* the tick rather than let it through while the
+     * clip is genuinely on screen. The first implementation returned early only
+     * while no hold was pending, so the SECOND interval fell through and cut
+     * the clip off mid-pass - exactly the "视频播完再切还是会被定时切换" report.
+     * Manual / unlock switches never call this (they must act immediately).
+     *
+     * A pending hold is only meaningful while a video is actually playing: it
+     * is released by the engine's onVideoPassCompleted when the pass ends. If the clip
+     * left the screen without completing a pass - it failed to start, the
+     * decode thread gave up, or a manual switch replaced it - no completion
+     * will ever arrive, so this tick must *release* the stale hold and switch
+     * normally instead of dropping every future tick forever (the emulator
+     * deadlock where timed switching stopped until the option was toggled).
+     * The "isVideoPlaying blinks between passes" case is not lost: the
+     * completion callback clears the hold at the pass boundary before the
+     * next pass starts, so a blink can only be seen here when the pass really
+     * never completed.
      */
     fun videoEndHold(
         optionEnabled: Boolean,
@@ -32,10 +44,10 @@ object SwitchPicking {
     ): VideoEndHold = when {
         // Turning the option off releases a hold that was already waiting.
         !optionEnabled -> VideoEndHold.SWITCH_NOW
-        // Once a hold waits for the pass to end, every later tick is dropped -
-        // even if `videoPlaying` blinks false for a moment while the decoder
-        // restarts between passes.
-        holdPending -> VideoEndHold.DROP_TICK
+        // A hold waits for the pass to end only while the video is on screen;
+        // a hold with no video playing is stale (failed / superseded clip) and
+        // must be released, or timed switching stops for good.
+        holdPending && videoPlaying -> VideoEndHold.DROP_TICK
         videoPlaying -> VideoEndHold.HOLD_PENDING
         else -> VideoEndHold.SWITCH_NOW
     }

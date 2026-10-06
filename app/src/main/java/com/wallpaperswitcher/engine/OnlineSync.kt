@@ -198,6 +198,48 @@ object OnlineSync {
                     }
                 }
 
+                // 设置里的内置在线壁纸源：取回图片列表后走同一套下载/入库/去重逻辑。
+                OnlineSource.TYPE_NASA_APOD,
+                OnlineSource.TYPE_WIKIMEDIA,
+                OnlineSource.TYPE_NETBIAN,
+                OnlineSource.TYPE_IOLIU -> {
+                    val items = when (source.type) {
+                        OnlineSource.TYPE_NASA_APOD -> OnlineFetcher.listNasaApod()
+                        OnlineSource.TYPE_WIKIMEDIA -> OnlineFetcher.listWikimedia()
+                        OnlineSource.TYPE_NETBIAN -> OnlineFetcher.listNetbian(maxPerRun)
+                        else -> OnlineFetcher.listIoliu(maxPerRun)
+                    }.filter { it.remoteKey !in knownKeys }.take(maxPerRun)
+                    val referer = when (source.type) {
+                        OnlineSource.TYPE_NETBIAN -> "https://pic.netbian.com/"
+                        OnlineSource.TYPE_IOLIU -> "https://bing.ioliu.cn/"
+                        else -> null
+                    }
+                    for (item in items) {
+                        // 多图源（彼岸/ioliu/Wikimedia）里单张图偶发 5xx 不应中断
+                        // 整轮：记一条日志并继续下一张，其余图片照常入库。
+                        try {
+                            if (
+                                store(
+                                    db, source, groupId, item, password, targetDir,
+                                    knownKeys, knownHashes, referer
+                                )
+                            ) {
+                                added++
+                            } else {
+                                skipped++
+                            }
+                        } catch (t: Throwable) {
+                            skipped++
+                            AppLog.w(
+                                TAG,
+                                "online item failed: type=${source.type} " +
+                                    "reason=${OnlineFetcher.classify(t)} " +
+                                    "ex=${t.javaClass.simpleName}"
+                            )
+                        }
+                    }
+                }
+
                 else -> return@withContext finish(db, source, Report.error("bad_url"))
             }
 

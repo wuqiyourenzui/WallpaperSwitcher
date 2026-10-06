@@ -115,7 +115,17 @@ data class GroupSchedule(
         childColumns = ["groupId"],
         onDelete = ForeignKey.CASCADE
     )],
-    indices = [Index("groupId")]
+    indices = [
+        Index("groupId"),
+        // Windowed grid paging sorts one group by (addedAt, id) for every
+        // 200-row page; without the covering index SQLite re-sorts the whole
+        // group on each fetch (tens of ms on the 65k-media tablet library).
+        Index(value = ["groupId", "addedAt", "id"]),
+        // Metadata back-fill and favourite toggles address rows by uri; the
+        // favourites screen also aggregates GROUP BY uri.
+        Index("uri"),
+        Index("isFavorite")
+    ]
 )
 data class WallpaperImage(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

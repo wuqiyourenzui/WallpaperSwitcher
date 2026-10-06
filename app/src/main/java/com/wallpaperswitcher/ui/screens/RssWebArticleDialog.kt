@@ -4,7 +4,6 @@ import android.annotation.SuppressLint
 import android.os.Handler
 import android.os.Looper
 import android.view.View
-import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -35,6 +34,7 @@ import com.wallpaperswitcher.R
 import com.wallpaperswitcher.data.RssSource
 import com.wallpaperswitcher.engine.legado.LegadoRss
 import com.wallpaperswitcher.engine.legado.RssSourceEditor
+import com.wallpaperswitcher.util.AppLog
 import java.io.ByteArrayInputStream
 import org.json.JSONArray
 
@@ -46,6 +46,42 @@ import org.json.JSONArray
  * 它和全屏的 [RssWebScreen] 共用同一份阅读对齐逻辑：同一个 [configureArticleWebView]
  * 配置、同一套 `style` / `injectJs` / 黑白名单 / 跳转拦截 / 直链播放页。
  */
+/**
+ * The JS bridge behind `addJavascriptInterface(collector, "wsCollector")`.
+ *
+ * A NAMED class on purpose: `addJavascriptInterface` resolves the bridge methods
+ * by reflection, and lint doubts an anonymous object can carry
+ * `@JavascriptInterface` at all ("None of the methods in the added interface have
+ * been annotated" - a false negative that also hides a real risk, because only a
+ * named class is what the platform documents). A top-level class also holds no
+ * reference to the dialog or its composition.
+ */
+internal class ImageCollector(private val onImages: (List<String>) -> Unit) {
+    @JavascriptInterface
+    fun onImages(json: String) {
+        try {
+            val array = JSONArray(json)
+            val list = ArrayList<String>(array.length())
+            for (i in 0 until array.length()) {
+                val value = array.optString(i).trim()
+                if (value.startsWith(PLAYER_STATE_PREFIX)) {
+                    // Player diagnostics (see PLAYER_STATE_JS): log only, never a
+                    // download candidate.
+                    AppLog.d(TAG, value.take(300))
+                    continue
+                }
+                // Only http(s) targets: the page is remote content, so never let it
+                // feed local/file/data URLs into the downloader through the bridge.
+                if (value.startsWith("http://") || value.startsWith("https://")) {
+                    list.add(value)
+                }
+            }
+            if (list.isNotEmpty()) onImages(list)
+        } catch (_: Throwable) {
+        }
+    }
+}
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun RssWebArticleDialog(
@@ -61,31 +97,22 @@ fun RssWebArticleDialog(
     var images by remember { mutableStateOf<List<String>>(emptyList()) }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val sniffed = remember { java.util.Collections.synchronizedSet(mutableSetOf<String>()) }
+    // 已收集到的地址（保序去重）。原来每嗅到/收到一条就 `(images + x).distinct()`
+    // 重建整个 List 并写一次 State：n 条要走 O(n²) 次字符串比较，页面每请求一个
+    // 子资源就触发一次重组。这里用 Set 在后台累积，只把新增的并进 State。
+    // 只在主线程访问（嗅探结果本来就 post 回主线程）。
+    val collected = remember { LinkedHashSet<String>() }
+    // remember 住：collector 也是 remember 的，必须持有同一份 lambda，避免漏收集。
+    val collectImages: (List<String>) -> Unit = remember(collected) {
+        { urls ->
+            val fresh = urls.filter { collected.add(it) }
+            if (fresh.isNotEmpty()) images = collected.toList()
+        }
+    }
     // 阅读的阅读器字段：`style` / `injectJs` / 黑白名单 / 跳转拦截。
     val webOptions = remember(source?.id) { LegadoRss.webOptions(source) }
 
-    val collector = remember {
-        object {
-            @JavascriptInterface
-            fun onImages(json: String) {
-                try {
-                    val array = JSONArray(json)
-                    val list = ArrayList<String>(array.length())
-                    for (i in 0 until array.length()) {
-                        val value = array.optString(i).trim()
-                        // Only http(s) targets: the page is remote content, so
-                        // never let it feed local/file/data URLs into the
-                        // downloader through the JS bridge.
-                        if (value.startsWith("http://") || value.startsWith("https://")) {
-                            list.add(value)
-                        }
-                    }
-                    if (list.isNotEmpty()) images = (images + list).distinct()
-                } catch (_: Throwable) {
-                }
-            }
-        }
-    }
+    val collector = remember { ImageCollector { collectImages(it) } }
 
     val content: @Composable () -> Unit = {
         Column(modifier = Modifier.fillMaxSize().padding(8.dp)) {
@@ -104,6 +131,9 @@ fun RssWebArticleDialog(
                         webViewClient = object : WebViewClient() {
                             override fun onPageFinished(view: WebView, finishedUrl: String?) {
                                 view.evaluateJavascript(COLLECT_JS, null)
+                                // Player state probe (see PLAYER_STATE_JS): only
+                                // emits while a <video> element actually exists.
+                                view.evaluateJavascript(PLAYER_STATE_JS, null)
                                 // 阅读 `injectJs`: 页面加载完在正文里再补一段脚本。
                                 val inject = webOptions.injectJs
                                 if (!inject.isNullOrBlank()) {
@@ -147,7 +177,7 @@ fun RssWebArticleDialog(
                                 if (MEDIA_SNIFF.containsMatchIn(target.lowercase()) &&
                                     sniffed.add(target)
                                 ) {
-                                    mainHandler.post { images = (images + target).distinct() }
+                                    mainHandler.post { collectImages(listOf(target)) }
                                 }
                                 return null
                             }
@@ -178,7 +208,7 @@ fun RssWebArticleDialog(
                             directMedia != null -> {
                                 // The rule output is just a media URL (video sources
                                 // often decode to that): do not render it as text.
-                                mainHandler.post { images = listOf(directMedia) }
+                                mainHandler.post { collectImages(listOf(directMedia)) }
                                 loadDataWithBaseURL(
                                     url,
                                     wrapViewport(playerPageHtml(listOf(directMedia)), playerLayout = true),
@@ -197,7 +227,19 @@ fun RssWebArticleDialog(
                             else -> loadUrl(url, headers)
                         }
                     }
-                }
+                },
+                // Same teardown as the browser screen plus the JS bridge: the
+                // collector interface must be severed before destroy() or the
+                // page keeps a reference to it, and an undestroyed WebView
+                // keeps playing/decoding in the background.
+                onRelease = { view ->
+                    try {
+                        view.stopLoading()
+                        view.removeJavascriptInterface("wsCollector")
+                        view.destroy()
+                    } catch (_: Throwable) {
+                    }
+                },
             )
             Row(
                 modifier = Modifier.fillMaxWidth().padding(top = 6.dp),
@@ -242,18 +284,62 @@ fun RssWebArticleDialog(
     }
 }
 
-/** Collect on load, while scrolling (lazy images) and every 2s as a safety net. */
+private const val TAG = "RssWeb"
+
+/**
+ * Collect on load, while scrolling (lazy images) and every 2s as a safety net.
+ *
+ * 原图优先: 收集到的 URL 就是「加入分组」要下载的地址，所以每个 `<img>` 都按
+ * `data-original / data-src / …` → `srcset` 里**最大**的一项 → `src` 取值 ——
+ * 不能直接用 `currentSrc`，那是浏览器"为当前屏幕/DPR 选中的展示尺寸"，
+ * `<picture>` 里还常常是 WebP 这种转码变体，下进分组就是"处理过"的图。
+ */
 private const val COLLECT_JS = """
 (function(){
   if (window.__wsHooked) { window.__wsSend(); return; }
   window.__wsHooked = true;
+  function wsAbs(u){
+    if (!u) return '';
+    var s = String(u).trim();
+    if (!s || /^data:/i.test(s)) return '';
+    try { return new URL(s, document.baseURI).href; } catch (e) { return s; }
+  }
+  function wsLargestSrcset(v){
+    if (!v) return '';
+    var s0 = String(v).trim();
+    if (/^data:/i.test(s0)) return '';   // data: URI 的 payload 里也有逗号
+    var parts = s0.split(','), best = '', bestW = -1;
+    for (var i = 0; i < parts.length; i++) {
+      var t = parts[i].trim(); if (!t) continue;
+      var sp = t.split(/\s+/), u = sp[0];
+      if (!u || /^data:/i.test(u)) continue;
+      var d = (sp[1] || '').toLowerCase(), w = 1000;   // 无描述符 = 1x
+      if (/^\d+(\.\d+)?w$/.test(d)) w = parseFloat(d);
+      else if (/^\d+(\.\d+)?x$/.test(d)) w = parseFloat(d) * 1000;
+      if (w >= bestW) { bestW = w; best = u; }          // 同样大取后一项
+    }
+    return best;
+  }
+  function wsOriginal(img){
+    var names = ['data-original', 'data-src', 'data-lazy-src', 'data-echo',
+                 'data-url', 'data-actualsrc'];
+    for (var k = 0; k < names.length; k++) {
+      var v = wsAbs(img.getAttribute(names[k]));
+      if (v) return v;
+    }
+    var big = wsLargestSrcset(img.getAttribute('srcset')) ||
+              wsLargestSrcset(img.getAttribute('data-srcset'));
+    if (big) return wsAbs(big);
+    var s = wsAbs(img.getAttribute('src'));
+    if (s) return s;
+    return wsAbs(img.currentSrc);
+  }
   window.__wsSend = function(){
     try {
       var urls = [];
       var imgs = document.images || [];
       for (var i = 0; i < imgs.length; i++) {
-        var src = imgs[i].currentSrc || imgs[i].getAttribute('data-src') ||
-                  imgs[i].getAttribute('data-original') || imgs[i].src || '';
+        var src = wsOriginal(imgs[i]);
         if (src && urls.indexOf(src) < 0) urls.push(src);
       }
       // Videos (video sources / direct links) join the same list; the importer

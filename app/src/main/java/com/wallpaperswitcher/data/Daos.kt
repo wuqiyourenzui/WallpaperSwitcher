@@ -87,6 +87,13 @@ interface WallpaperImageDao {
     @Query("SELECT uri FROM wallpaper_images WHERE groupId = :groupId")
     suspend fun getUrisByGroup(groupId: Long): List<String>
 
+    /**
+     * Ids of media rows carrying the synthetic folder marker of an online
+     * source (`online/<sourceId>`), used to prune rows the user deleted.
+     */
+    @Query("SELECT id FROM wallpaper_images WHERE folderPath = :folder")
+    suspend fun getIdsByFolder(folder: String): List<Long>
+
     /** URIs of the rows that live under one of the app's own media folders. */
     @Query("SELECT uri FROM wallpaper_images WHERE uri LIKE :pattern")
     suspend fun getUrisLike(pattern: String): List<String>
@@ -163,14 +170,6 @@ interface WallpaperImageDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertAll(images: List<WallpaperImage>)
 
-    /**
-     * Media ids of one folder path. The online sources use it to prune items
-     * whose media row the user deleted (see OnlineSync), without one query per
-     * item.
-     */
-    @Query("SELECT id FROM wallpaper_images WHERE folderPath = :folderPath")
-    suspend fun getIdsByFolder(folderPath: String): List<Long>
-
     @Delete
     suspend fun delete(image: WallpaperImage)
 
@@ -238,24 +237,32 @@ interface WallpaperImageDao {
 
     // --- Enabled-groups queries ---
 
+    // Random row without ORDER BY RANDOM() (which sorts the whole candidate set):
+    // the CTE collects the candidates once and a random OFFSET picks one.
     @Query("""
-        SELECT * FROM wallpaper_images
-        WHERE groupId IN (
-            SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND target IN ('BOTH', :slot)
+        WITH candidates AS (
+            SELECT * FROM wallpaper_images
+            WHERE groupId IN (
+                SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND target IN ('BOTH', :slot)
+            )
+            AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
         )
-        AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
-        ORDER BY RANDOM() LIMIT 1
+        SELECT * FROM candidates
+        LIMIT 1 OFFSET ABS(RANDOM() % MAX(1, (SELECT COUNT(*) FROM candidates)))
     """)
     suspend fun getRandomImageFromEnabledGroups(slot: String): WallpaperImage?
 
     @Query("""
-        SELECT * FROM wallpaper_images
-        WHERE groupId IN (
-            SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND target IN ('BOTH', :slot)
+        WITH candidates AS (
+            SELECT * FROM wallpaper_images
+            WHERE groupId IN (
+                SELECT id FROM wallpaper_groups WHERE isEnabled = 1 AND target IN ('BOTH', :slot)
+            )
+            AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
+            AND id != :excludeId
         )
-        AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
-        AND id != :excludeId
-        ORDER BY RANDOM() LIMIT 1
+        SELECT * FROM candidates
+        LIMIT 1 OFFSET ABS(RANDOM() % MAX(1, (SELECT COUNT(*) FROM candidates)))
     """)
     suspend fun getRandomImageFromEnabledGroupsExcluding(slot: String, excludeId: Long): WallpaperImage?
 
@@ -281,8 +288,8 @@ interface WallpaperImageDao {
 
     // Fast random pick: ORDER BY RANDOM() sorts the whole table on every
     // switch, which is slow and power-hungry on large libraries. This uses a
-    // random OFFSET instead (with the ORDER BY RANDOM() variant kept as a
-    // fallback when the offset lands on a deleted row gap).
+    // random OFFSET instead; the fallback queries above use the same trick, so
+    // even the "offset landed on a deleted row gap" path never sorts.
     @Query("""
         SELECT * FROM wallpaper_images
         WHERE groupId IN (
@@ -314,6 +321,15 @@ interface WallpaperImageDao {
     fun getMediaCounts(): Flow<List<GroupMediaCount>>
 }
 
+/**
+ * One `app_settings` row, as read by [SettingsDao.getAllFlow].
+ *
+ * `value` is nullable on purpose: the per-key read ([SettingsDao.getValueFlow])
+ * hands out a null for an absent row, and one shared read keeps that same shape
+ * so both paths fall back to the same per-field default.
+ */
+data class SettingEntry(val key: String, val value: String?)
+
 @Dao
 interface SettingsDao {
 
@@ -322,6 +338,14 @@ interface SettingsDao {
 
     @Query("SELECT value FROM app_settings WHERE `key` = :key")
     fun getValueFlow(key: String): Flow<String?>
+
+    /**
+     * The whole table in ONE query, for the settings screen state
+     * (see `WallpaperViewModel.settingsUiState`): a write invalidates the table
+     * once -> one query -> one new state, instead of one query per key.
+     */
+    @Query("SELECT `key` AS `key`, value AS value FROM app_settings")
+    fun getAllFlow(): Flow<List<SettingEntry>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun setSetting(setting: AppSettings)
@@ -624,14 +648,17 @@ interface GroupPickDao {
     ): WallpaperImage?
 
     @Query("""
-        SELECT * FROM wallpaper_images
-        WHERE groupId = :groupId
-        AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
-        AND (:filter = ''
-             OR (:filter = 'IMAGE' AND mediaType = 'IMAGE')
-             OR (:filter = 'MOTION' AND mediaType != 'IMAGE'))
-        AND id != :excludeId
-        ORDER BY RANDOM() LIMIT 1
+        WITH candidates AS (
+            SELECT * FROM wallpaper_images
+            WHERE groupId = :groupId
+            AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
+            AND (:filter = ''
+                 OR (:filter = 'IMAGE' AND mediaType = 'IMAGE')
+                 OR (:filter = 'MOTION' AND mediaType != 'IMAGE'))
+            AND id != :excludeId
+        )
+        SELECT * FROM candidates
+        LIMIT 1 OFFSET ABS(RANDOM() % MAX(1, (SELECT COUNT(*) FROM candidates)))
     """)
     suspend fun getRandomInGroupExcluding(
         slot: String,
@@ -641,13 +668,16 @@ interface GroupPickDao {
     ): WallpaperImage?
 
     @Query("""
-        SELECT * FROM wallpaper_images
-        WHERE groupId = :groupId
-        AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
-        AND (:filter = ''
-             OR (:filter = 'IMAGE' AND mediaType = 'IMAGE')
-             OR (:filter = 'MOTION' AND mediaType != 'IMAGE'))
-        ORDER BY RANDOM() LIMIT 1
+        WITH candidates AS (
+            SELECT * FROM wallpaper_images
+            WHERE groupId = :groupId
+            AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
+            AND (:filter = ''
+                 OR (:filter = 'IMAGE' AND mediaType = 'IMAGE')
+                 OR (:filter = 'MOTION' AND mediaType != 'IMAGE'))
+        )
+        SELECT * FROM candidates
+        LIMIT 1 OFFSET ABS(RANDOM() % MAX(1, (SELECT COUNT(*) FROM candidates)))
     """)
     suspend fun getRandomInGroup(slot: String, groupId: Long, filter: String = ""): WallpaperImage?
 

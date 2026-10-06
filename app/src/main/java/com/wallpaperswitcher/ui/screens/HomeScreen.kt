@@ -429,7 +429,11 @@ fun HomeScreen(
             title = { Text(stringResource(R.string.dialog_delete_groups_title)) },
             text = {
                 Text(
-                    stringResource(R.string.dialog_delete_groups_message, count)
+                    // Plural, not a plain string: the English text used to read
+                    // "Delete the selected 1 groups?" for a single group.
+                    pluralStringResource(
+                        R.plurals.dialog_delete_groups_message, count, count
+                    )
                 )
             },
             confirmButton = {

@@ -140,9 +140,6 @@ class FloatingSwitchButton private constructor(context: Context) {
     private var grabOffsetY = 0f
     /** True when this ROM reports rawX/rawY in display space (see handleTouch). */
     private var useAbsoluteDrag = false
-    /** Finger position in WINDOW coordinates, refreshed on every move. */
-    private var lastLocalX = 0f
-    private var lastLocalY = 0f
     /** Window position in SCREEN coordinates when the drag started. */
     private var windowAtDownX = 0
     private var windowAtDownY = 0

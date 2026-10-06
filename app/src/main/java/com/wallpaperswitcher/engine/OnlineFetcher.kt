@@ -56,6 +56,16 @@ internal object OnlineFetcher {
     private const val BING_ARCHIVE_URL =
         "https://www.bing.com/HPImageArchive.aspx?format=js&idx=0&n=8"
 
+    // --- 内置在线壁纸源（设置里的选项） -------------------------------------
+    private const val APOD_PAGE_URL = "https://science.nasa.gov/apod/"
+    private const val WIKIMEDIA_FEED_URL =
+        "https://commons.wikimedia.org/w/api.php?action=featuredfeed&feed=potd"
+    private const val NETBIAN_ORIGIN = "https://pic.netbian.com"
+    private val NETBIAN_CATEGORIES = listOf(
+        "/4kfengjing/", "/4kdongman/", "/4kmeinv/", "/4kziran/", "/4kyouxi/", "/4kqiche/",
+    )
+    private const val IOLIU_HOME = "https://bing.ioliu.cn/"
+
     private val PROPFIND_BODY = """
         <?xml version="1.0" encoding="utf-8"?>
         <D:propfind xmlns:D="DAV:"><D:prop>
@@ -133,6 +143,83 @@ internal object OnlineFetcher {
                 )
             }
         }
+    }
+
+    /** Plain GET of an HTML/JSON page with the caller's referer and a size cap. */
+    private suspend fun getText(url: String, referer: String? = null): String =
+        withContext(Dispatchers.IO) {
+            val request = requestBuilder(url, credentials = null, referer = referer)
+                // 部分站点（彼岸图网等）会按 UA/缺省头拒绝非浏览器请求。
+                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                .get()
+                .build()
+            client.newCall(request).execute().use { response ->
+                checkStatus(response, "ONLINE")
+                response.peekBody(MAX_LISTING_BYTES).string()
+            }
+        }
+
+    /** NASA APOD: today's hero image (1 item; video days yield a parse error). */
+    suspend fun listNasaApod(): List<RemoteItem> {
+        val image = OnlineSourceRules.parseApodPage(getText(APOD_PAGE_URL))
+            ?: throw FetchException("parse")
+        return listOf(RemoteItem(image.remoteKey, image.url, image.displayName))
+    }
+
+    /** Wikimedia Commons picture of the day (Atom feed, newest first). */
+    suspend fun listWikimedia(): List<RemoteItem> {
+        val images = OnlineSourceRules.parseWikimediaFeed(getText(WIKIMEDIA_FEED_URL))
+        if (images.isEmpty()) throw FetchException("parse")
+        return images.take(MAX_NEW_PER_RUN)
+            .map { RemoteItem(it.remoteKey, it.url, it.displayName) }
+    }
+
+    /** 彼岸图网: one random 4K category; each item's detail page holds the original. */
+    suspend fun listNetbian(maxItems: Int): List<RemoteItem> = withContext(Dispatchers.IO) {
+        var links: List<String> = emptyList()
+        for (category in NETBIAN_CATEGORIES.shuffled()) {
+            links = try {
+                OnlineSourceRules.parseNetbianListing(getText(NETBIAN_ORIGIN + category))
+            } catch (_: Throwable) {
+                emptyList()
+            }
+            if (links.isNotEmpty()) break
+        }
+        if (links.isEmpty()) throw FetchException("parse")
+        val out = ArrayList<RemoteItem>()
+        for (link in links.take(maxItems)) {
+            val image = try {
+                // 详情页逐页抓取，放慢一点避免被站点限流（405）。
+                kotlinx.coroutines.delay(350L)
+                OnlineSourceRules.parseNetbianDetail(
+                    getText(link, referer = "$NETBIAN_ORIGIN/"),
+                    link,
+                )
+            } catch (_: Throwable) {
+                null
+            }
+            if (image != null) out.add(RemoteItem(image.remoteKey, image.url, image.displayName))
+        }
+        if (out.isEmpty()) throw FetchException("parse")
+        out
+    }
+
+    /** 必应壁纸站: home page cards -> detail pages -> full-resolution Bing URL. */
+    suspend fun listIoliu(maxItems: Int): List<RemoteItem> = withContext(Dispatchers.IO) {
+        val links = OnlineSourceRules.parseIoliuListing(getText(IOLIU_HOME)).take(maxItems)
+        if (links.isEmpty()) throw FetchException("parse")
+        val out = ArrayList<RemoteItem>()
+        for (link in links) {
+            val image = try {
+                OnlineSourceRules.parseIoliuDetail(getText(link, referer = IOLIU_HOME))
+            } catch (_: Throwable) {
+                null
+            }
+            if (image != null) out.add(RemoteItem(image.remoteKey, image.url, image.displayName))
+        }
+        if (out.isEmpty()) throw FetchException("parse")
+        out
     }
 
     /** WebDAV PROPFIND Depth:1 on the configured collection. */

@@ -12,6 +12,8 @@ import com.wallpaperswitcher.util.AppLog
 import java.io.File
 import java.io.FileOutputStream
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -35,8 +37,19 @@ object RssMediaImporter {
     private const val MAX_BYTES = 30L * 1024 * 1024
     private const val USER_AGENT = RssHttp.USER_AGENT
     private const val AUTO_GROUP_FALLBACK = "在线壁纸"
-    /** Parallel image downloads; the sites are small and this is the main win. */
-    private const val DOWNLOAD_PARALLELISM = 4
+    /**
+     * Parallel image downloads. Each job now also validates + publishes (SAF
+     * copy) its own file, so the per-file work that used to run serially after
+     * the whole batch overlaps other downloads instead of queueing behind them.
+     */
+    private const val DOWNLOAD_PARALLELISM = 6
+    /**
+     * Ceiling for the body copy of one download attempt. The socket read
+     * timeout (120s) only fires when a read returns nothing; a trickle resets
+     * it byte by byte. Partial temp bytes survive a timeout + resume, so the
+     * retry continues instead of restarting.
+     */
+    private const val BODY_COPY_TIMEOUT_MS = 5 * 60 * 1000L
 
     /**
      * Same client as the rest of the subscription traffic: shared connection
@@ -96,6 +109,7 @@ object RssMediaImporter {
             "import start: ${urls.size} url(s) -> group $groupId " +
                 urls.take(3).joinToString(" | ") { it.take(110) },
         )
+        val startedAt = android.os.SystemClock.elapsedRealtime()
         val db = AppDatabase.getInstance(context)
         val targetGroup = resolveGroup(context, db, groupId)
         val imageDao = db.wallpaperImageDao()
@@ -134,23 +148,27 @@ object RssMediaImporter {
         } catch (_: Throwable) {
         }
 
-        // 1) Download in parallel (bounded), remembering which URL produced
-        //    which file so failures can be reported per URL.
+        // 1) Download + validate + publish in parallel (bounded), remembering
+        //    which URL produced which file so failures can be reported per URL.
         //
         // 原图优先: the page's URL is often a resized variant (`-300x200.jpg`,
         // `?w=300`). Download the upgraded original instead, falling back to
         // the page URL when the guess does not exist. Two URLs of the same
         // image collapse into one download after the upgrade.
+        //
+        // 速度: 校验（bounds 解码）与发布（拷进用户选的 SAF 目录）以前是"全部
+        // 下完再一张张串行做"，几十张图时后半段纯排队；现在每个 URL 的下载 →
+        // 校验 → 发布在同一个任务里完成，和别的下载重叠。
         val distinctUrls = urls.distinct()
         val candidates = ArrayList<Pair<String, String>>(distinctUrls.size)
-        var failed = 0
+        val failedCount = AtomicInteger(0)
         for (original in distinctUrls) {
             val request = OriginalImageUrl.upgrade(original)
             if (OnlineSourceRules.endpointPolicy(request, allowCleartext = true) ==
                 OnlineSourceRules.EndpointPolicy.INVALID
             ) {
                 AppLog.w(TAG, "invalid endpoint: ${original.take(80)}")
-                failed++
+                failedCount.incrementAndGet()
                 continue
             }
             candidates.add(original to request)
@@ -159,133 +177,59 @@ object RssMediaImporter {
         if (targets.size != candidates.size) {
             AppLog.d(TAG, "原图优先: ${candidates.size - targets.size} duplicate URL(s) collapsed")
         }
-        val downloaded = ArrayList<Pair<String, File>>(targets.size)
+        val prepared = ArrayList<Prepared>(targets.size)
+        val downloadedBytes = AtomicLong(0L)
+        val publishedToTree = AtomicInteger(0)
+        // 用户可以在设置里指定下载目录（SAF）；没指定就留在应用私有目录。
+        val downloadTree = RssDownloadDir.load(context)
         coroutineScope {
             val gate = Semaphore(DOWNLOAD_PARALLELISM)
             val jobs = targets.map { (original, request) ->
                 async(Dispatchers.IO) {
                     gate.withPermit {
-                        // CDNs sometimes drop a connection mid-body; a fresh
-                        // attempt usually succeeds, so retry twice before
-                        // reporting the failure (with the real message).
-                        var file: File? = null
-                        var lastError: Throwable? = null
-                        for (attempt in 1..3) {
-                            try {
-                                file = download(request, headers, referer, dir)
-                                lastError = null
-                                break
-                            } catch (t: Throwable) {
-                                lastError = t
-                            }
-                        }
-                        // 升级猜测失败（404/403/不是图片）时回退到页面给的
-                        // URL —— 猜错不能把这张图丢掉。
-                        if (file == null && request != original) {
-                            AppLog.d(TAG, "original url failed, falling back to the page url")
-                            for (attempt in 1..2) {
-                                try {
-                                    file = download(original, headers, referer, dir)
-                                    lastError = null
-                                    break
-                                } catch (t: Throwable) {
-                                    lastError = t
-                                }
-                            }
-                        }
-                        if (file == null && lastError != null) {
-                            AppLog.w(
-                                TAG,
-                                "download failed: ${lastError.javaClass.simpleName}: " +
-                                    lastError.message?.take(160).orEmpty()
-                            )
-                        } else if (file == null) {
-                            AppLog.w(TAG, "download produced nothing: ${request.takeLast(70)}")
-                        }
-                        original to file
+                        val file = downloadWithFallback(
+                            request, original, headers, referer, dir
+                        ) ?: return@withPermit null
+                        downloadedBytes.addAndGet(file.length())
+                        // Validate + publish right here: the next image is
+                        // already downloading on another slot while this one
+                        // gets decoded/copied.
+                        prepareDownloadedMedia(
+                            context, downloadTree, file, existing, publishedToTree
+                        )
                     }
                 }
             }
             for (job in jobs) {
-                val (url, file) = job.await()
-                if (file == null) failed++ else downloaded.add(url to file)
+                val item = job.await()
+                if (item == null) failedCount.incrementAndGet() else prepared.add(item)
             }
         }
         // Charge today's counter with everything pulled from the network - the
         // files that fail validation below still cost the user traffic.
-        RssDownloadPolicy.record(context, downloaded.sumOf { it.second.length() })
+        RssDownloadPolicy.record(context, downloadedBytes.get())
 
-        // 2) Validate + de-duplicate, then insert the whole batch in one call.
-        // 用户可以在设置里指定下载目录（SAF）；没指定就留在应用私有目录。
-        val downloadTree = RssDownloadDir.load(context)
-        var publishedToTree = 0
-        val rows = ArrayList<WallpaperImage>(downloaded.size)
-        for ((_, file) in downloaded) {
-            var uri = "file://${file.path}"
-            if (uri in existing) {
-                file.delete()
-                continue
-            }
-            val isVideo = VIDEO_EXT.containsMatchIn(file.name.lowercase())
-            if (isVideo) {
-                // Videos cannot be bounds-decoded; the player probes them at
-                // playback time, so width/height stay 0 here.
-                if (!looksLikeVideoFile(file)) {
-                    // An HTML error page / m3u8 playlist saved as .mp4 would be
-                    // unplayable - reject it instead of polluting the group.
-                    file.delete()
-                    failed++
-                    continue
-                }
-                val published = publishToTree(context, downloadTree, file, isVideo = true)
-                if (published != null) {
-                    uri = published
-                    file.delete()
-                    publishedToTree++
-                }
-                existing.add(uri)
-                rows.add(
-                    WallpaperImage(
-                        groupId = targetGroup,
-                        uri = uri,
-                        displayName = file.name,
-                        mediaType = MediaTypes.VIDEO,
-                        isFromFolder = false,
-                        folderPath = "rss/${source?.id ?: 0}",
-                        width = 0,
-                        height = 0,
-                    )
-                )
-                continue
-            }
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(file.path, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-                file.delete()
-                failed++
-                continue
-            }
-            val published = publishToTree(context, downloadTree, file, isVideo = false)
-            if (published != null) {
-                uri = published
-                file.delete()
-                publishedToTree++
-            }
-            existing.add(uri)
+        // 2) Batch de-duplication (the parallel jobs above only READ the
+        //    existing set), then insert the whole batch in one call.
+        val rows = ArrayList<WallpaperImage>(prepared.size)
+        for (item in prepared) {
+            // 同一批里两条 URL 落到同一个文件（内容相同）时只留一行。
+            if (!existing.add(item.uri)) continue
             rows.add(
                 WallpaperImage(
                     groupId = targetGroup,
-                    uri = uri,
-                    displayName = file.name,
-                    mediaType = MediaTypes.IMAGE,
+                    uri = item.uri,
+                    displayName = item.displayName,
+                    mediaType = item.mediaType,
                     isFromFolder = false,
                     folderPath = "rss/${source?.id ?: 0}",
-                    width = bounds.outWidth,
-                    height = bounds.outHeight,
+                    width = item.width,
+                    height = item.height,
                 )
             )
         }
         var added = 0
+        var failed = failedCount.get()
         if (rows.isNotEmpty()) {
             try {
                 imageDao.insertAll(rows)
@@ -303,11 +247,78 @@ object RssMediaImporter {
             }
         }
         if (added > 0) MediaPick.invalidateEnabledIds()
-        if (publishedToTree > 0) {
-            AppLog.d(TAG, "published $publishedToTree file(s) into $downloadTree")
+        if (publishedToTree.get() > 0) {
+            AppLog.d(TAG, "published ${publishedToTree.get()} file(s) into $downloadTree")
         }
-        AppLog.d(TAG, "import done: added=$added failed=$failed")
+        AppLog.d(
+            TAG,
+            "import done: added=$added failed=$failed in " +
+                "${android.os.SystemClock.elapsedRealtime() - startedAt}ms"
+        )
         Report(added, failed)
+    }
+
+    /** One validated download, ready to become a media row. */
+    private class Prepared(
+        val uri: String,
+        val displayName: String,
+        val mediaType: String,
+        val width: Int,
+        val height: Int,
+    )
+
+    /**
+     * Validate one downloaded file and (when the user configured a download
+     * folder) copy it into that tree, returning the row data - or null when the
+     * file is not usable media.
+     *
+     * [knownUris] is only read here: the batch-level de-duplication runs after
+     * every job finished, so this can run on several threads at once.
+     */
+    private fun prepareDownloadedMedia(
+        context: Context,
+        downloadTree: String,
+        file: File,
+        knownUris: Set<String>,
+        publishedToTree: AtomicInteger,
+    ): Prepared? {
+        val isVideo = VIDEO_EXT.containsMatchIn(file.name.lowercase())
+        if (isVideo) {
+            // Videos cannot be bounds-decoded; the player probes them at
+            // playback time, so width/height stay 0 here.
+            if (!looksLikeVideoFile(file)) {
+                // An HTML error page / m3u8 playlist saved as .mp4 would be
+                // unplayable - reject it instead of polluting the group.
+                file.delete()
+                return null
+            }
+            var uri = "file://${file.path}"
+            if (uri !in knownUris) {
+                val published = publishToTree(context, downloadTree, file, isVideo = true)
+                if (published != null) {
+                    uri = published
+                    file.delete()
+                    publishedToTree.incrementAndGet()
+                }
+            }
+            return Prepared(uri, file.name, MediaTypes.VIDEO, 0, 0)
+        }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            file.delete()
+            return null
+        }
+        var uri = "file://${file.path}"
+        if (uri !in knownUris) {
+            val published = publishToTree(context, downloadTree, file, isVideo = false)
+            if (published != null) {
+                uri = published
+                file.delete()
+                publishedToTree.incrementAndGet()
+            }
+        }
+        return Prepared(uri, file.name, MediaTypes.IMAGE, bounds.outWidth, bounds.outHeight)
     }
 
     /**
@@ -376,19 +387,77 @@ object RssMediaImporter {
         )
     }
 
+    /**
+     * Why a download attempt failed decides whether retrying is worth it:
+     * a 404/403 (or an oversized/non-media response) will fail the same way
+     * three times, and the original-URL guess plus its fallback used to burn up
+     * to 5 requests per image. Permanent failures return immediately so the
+     * caller can fall back or move on; only transient ones (5xx, I/O, empty
+     * body) use the retry budget.
+     */
+    private sealed class DownloadOutcome {
+        class Ok(val file: File) : DownloadOutcome()
+        object Permanent : DownloadOutcome()
+        object Transient : DownloadOutcome()
+    }
+
+    /**
+     * Download [request], falling back to the page's own [original] URL when the
+     * "原图优先" guess does not exist - a wrong guess must never lose an image.
+     * Permanent failures skip their remaining retries (see [DownloadOutcome]).
+     */
+    private fun downloadWithFallback(
+        request: String,
+        original: String,
+        headers: Map<String, String>,
+        referer: String?,
+        dir: File,
+    ): File? {
+        // CDNs sometimes drop a connection mid-body; a fresh attempt usually
+        // succeeds, so transient failures retry before we report them.
+        attemptDownload(request, headers, referer, dir, attempts = 3)?.let { return it }
+        if (request == original) return null
+        AppLog.d(TAG, "original url failed, falling back to the page url")
+        return attemptDownload(original, headers, referer, dir, attempts = 2)
+    }
+
+    private fun attemptDownload(
+        url: String,
+        headers: Map<String, String>,
+        referer: String?,
+        dir: File,
+        attempts: Int,
+    ): File? {
+        for (attempt in 1..attempts) {
+            when (val outcome = download(url, headers, referer, dir)) {
+                is DownloadOutcome.Ok -> return outcome.file
+                // 404/403/太大/不是媒体: 再试也是一样的结果。
+                DownloadOutcome.Permanent -> return null
+                DownloadOutcome.Transient -> Unit
+            }
+        }
+        AppLog.w(TAG, "download gave up after $attempts attempt(s): ${url.takeLast(70)}")
+        return null
+    }
+
     private fun download(
         url: String,
         headers: Map<String, String>,
         referer: String?,
         dir: File,
-    ): File? {
+    ): DownloadOutcome {
         AppLog.d(TAG, "GET $url")
-        if (url.lowercase().contains(".m3u8")) return downloadHls(url, headers, referer, dir)
+        if (url.lowercase().contains(".m3u8")) {
+            // HLS goes through its own playlist/segment path; a missing
+            // playlist is permanent, a segment failure is worth retrying.
+            val file = downloadHls(url, headers, referer, dir)
+            return if (file != null) DownloadOutcome.Ok(file) else DownloadOutcome.Transient
+        }
         val builder = try {
             Request.Builder().url(url).header("User-Agent", USER_AGENT)
         } catch (t: Throwable) {
             AppLog.w(TAG, "bad url: ${t.javaClass.simpleName} ${url.take(80)}")
-            return null
+            return DownloadOutcome.Permanent
         }
         var hasReferer = false
         for ((name, value) in headers) {
@@ -399,59 +468,128 @@ object RssMediaImporter {
             }
         }
         if (!hasReferer && referer != null) builder.header("Referer", referer)
+        // Stable temp name + Range resume: media CDNs frequently truncate a
+        // response ("unexpected end of stream"); each retry continues where the
+        // previous one stopped instead of starting over. The Range header has to
+        // be on the request built below - adding it to `builder` after execute()
+        // (the old code) never reached the server, so every retry restarted at 0.
+        val temp = File(dir, "rss_" + urlDigest(url) + ".tmp")
+        val already = if (temp.exists()) temp.length() else 0L
+        val validator = resumeValidators[url]
+        if (already > 0L && validator != null) {
+            // Ask the server to treat the resume as valid ONLY while the object
+            // is unchanged: an ETag mismatch answers 200 (whole file) instead of
+            // concatenating two different versions into one broken file.
+            builder.header("If-Range", validator)
+        }
+        if (already > 0L) builder.header("Range", "bytes=$already-")
         downloadClient.newCall(builder.get().build()).execute().use { response ->
+            if (response.code == 416) {
+                // The temp file is already at/after the remote length: drop it
+                // so the next attempt starts clean instead of looping.
+                AppLog.w(TAG, "range not satisfiable, restarting: ${url.takeLast(50)}")
+                temp.delete()
+                return DownloadOutcome.Transient
+            }
             if (!response.isSuccessful) {
                 AppLog.w(TAG, "http ${response.code} for ${url.takeLast(60)}")
-                return null
+                // 4xx 再试也是一样（408/429 是"稍后再来"，仍算可重试）。
+                val code = response.code
+                val retryable = code >= 500 || code == 408 || code == 429
+                return if (retryable) DownloadOutcome.Transient else DownloadOutcome.Permanent
             }
-            val body = response.body ?: return null
-            if (body.contentLength() > MAX_BYTES) {
-                AppLog.w(TAG, "too large (${body.contentLength()}): ${url.takeLast(50)}")
-                return null
-            }
+            val body = response.body ?: return DownloadOutcome.Transient
+            // Remember (or refresh) the validator of the object these bytes come
+            // from, so the NEXT resume can prove it is still the same object.
+            response.header("ETag")?.let { resumeValidators[url] = it }
+                ?: response.header("Last-Modified")?.let { resumeValidators[url] = it }
             val type = response.header("Content-Type").orEmpty()
             val extension = OnlineSourceRules.imageExtension(url, type)
                 ?: videoExtension(url, type)
                 ?: run {
                     AppLog.w(TAG, "unknown media type '$type': ${url.takeLast(50)}")
-                    return null
+                    resumeValidators.remove(url)
+                    return DownloadOutcome.Permanent
                 }
-            // Stable temp name + Range resume: media CDNs frequently truncate a
-            // response ("unexpected end of stream"); each retry continues where
-            // the previous one stopped instead of starting over.
-            val temp = File(dir, "rss_" + Integer.toHexString(url.hashCode()) + ".tmp")
-            val already = if (temp.exists()) temp.length() else 0L
-            if (already > 0L) builder.header("Range", "bytes=$already-")
-            var total = 0L
+            // 200 here means the server ignored/refused the range (the file
+            // changed - see If-Range above): the writer below reopens the temp
+            // file with `append=false`, i.e. starts over instead of splicing.
             val resume = already > 0L && response.code == 206
-            body.byteStream().use { input ->
-                FileOutputStream(temp, resume).use { output ->
+            if (already > 0L && response.code == 200 && validator != null) {
+                AppLog.d(
+                    TAG,
+                    "remote object changed (If-Range rejected); restarting download: " +
+                        url.takeLast(40)
+                )
+                resumeValidators.remove(url)
+            }
+            val limit = if (resume) MAX_BYTES - already else MAX_BYTES
+            if (limit <= 0L || body.contentLength() > limit) {
+                AppLog.w(TAG, "too large (${body.contentLength()}): ${url.takeLast(50)}")
+                if (limit <= 0L) {
+                    temp.delete()
+                    resumeValidators.remove(url)
+                }
+                return DownloadOutcome.Permanent
+            }
+            // Hash while writing: the final file name is the content hash, and
+            // re-reading the whole file just to hash it cost another pass over
+            // every (up to 30MB) video. A resumed download seeds the digest
+            // with the bytes already on disk.
+            val copyDeadlineAt =
+                android.os.SystemClock.elapsedRealtime() + BODY_COPY_TIMEOUT_MS
+            val digest = MessageDigest.getInstance("SHA-256")
+            if (resume) {
+                temp.inputStream().use { input ->
                     val buffer = ByteArray(64 * 1024)
                     while (true) {
                         val read = input.read(buffer)
                         if (read < 0) break
-                        total += read
-                        if (total > MAX_BYTES) {
-                            temp.delete()
-                            return null
-                        }
-                        output.write(buffer, 0, read)
+                        digest.update(buffer, 0, read)
                     }
                 }
             }
-            if (total <= 0L && !resume) {
-                AppLog.w(TAG, "empty body: ${url.takeLast(60)}")
-                temp.delete()
-                return null
-            }
-            val digest = MessageDigest.getInstance("SHA-256")
-            temp.inputStream().use { input ->
-                val buffer = ByteArray(64 * 1024)
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read < 0) break
-                    digest.update(buffer, 0, read)
+            var written = 0L
+            body.byteStream().use { input ->
+                FileOutputStream(temp, resume).use { output ->
+                    // Bound each attempt: a trickling CDN resets the socket
+                    // read timeout on every byte, so without a deadline one
+                    // download could hold a parallelism permit forever. The
+                    // partial temp survives a timeout (resume), so the retry
+                    // continues where this one stopped instead of starting over.
+                    val copied = StreamCopy.copy(
+                        input = input,
+                        output = output,
+                        maxBytes = limit,
+                        deadlineAtMs = copyDeadlineAt,
+                        nowMs = { android.os.SystemClock.elapsedRealtime() },
+                        onChunk = { buffer, read -> digest.update(buffer, 0, read) },
+                    )
+                    written = copied.bytes
+                    if (copied.timedOut) {
+                        val slow = "download too slow after ${BODY_COPY_TIMEOUT_MS / 1000}s"
+                        AppLog.w(TAG, "$slow: ${url.takeLast(50)}")
+                        if (!resume) temp.delete()
+                        return DownloadOutcome.Transient
+                    }
+                    if (copied.cancelled) {
+                        if (!resume) temp.delete()
+                        return DownloadOutcome.Transient
+                    }
+                    if (copied.exceededLimit) {
+                        temp.delete()
+                        return DownloadOutcome.Permanent
+                    }
                 }
+            }
+            if (written == 0L) {
+                // No progress this attempt. A 200 truncated the temp file, so
+                // it must go; a 206 leaves the existing bytes for the retry.
+                if (!resume) {
+                    AppLog.w(TAG, "empty body: ${url.takeLast(60)}")
+                    temp.delete()
+                }
+                return DownloadOutcome.Transient
             }
             val hash = digest.digest().joinToString("") { "%02x".format(it) }
             val target = File(dir, "$hash.$extension")
@@ -460,9 +598,39 @@ object RssMediaImporter {
                 temp.copyTo(target, overwrite = true)
                 temp.delete()
             }
-            return target
+            // The download is finished: the validator was only needed to prove
+            // the resume was the same object. Dropping it keeps the process-wide
+            // map from growing by one entry per downloaded URL forever.
+            resumeValidators.remove(url)
+            return DownloadOutcome.Ok(target)
         }
     }
+
+    /**
+     * Stable 16-hex-character digest of [url], used for temp/HLS file names.
+     *
+     * `url.hashCode()` was a 32-bit value: two different media URLs could share
+     * it, and a collision made a resumed download append the OTHER URL's bytes
+     * into the same temp file (the merged file then still passed the 16-byte
+     * header sniff and was published). SHA-256 truncated to 64 bits keeps the
+     * names short without ever colliding in practice.
+     */
+    private fun urlDigest(url: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(url.toByteArray(Charsets.UTF_8))
+        val sb = StringBuilder(16)
+        for (i in 0 until 8) sb.append("%02x".format(bytes[i]))
+        return sb.toString()
+    }
+
+    /**
+     * Resume validators of the downloads in flight (url -> ETag/Last-Modified).
+     *
+     * Only two things are needed from it: the `If-Range` value of a resume, and
+     * knowing that the temp bytes belong to the same remote object. Process-local
+     * on purpose - after a restart the temp file is simply resumed with a plain
+     * Range again, which is the old behaviour.
+     */
+    private val resumeValidators = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /** Video download support: 阅读 video sources feed `.mp4`/`.m3u8` links. */
     private fun videoExtension(url: String, contentType: String): String? {
@@ -479,6 +647,9 @@ object RssMediaImporter {
     }
 
     private val VIDEO_EXT = Regex("""\.(mp4|webm|mov|m4v|mkv|ts|m3u8)$""")
+
+    /** Hard cap for one merged HLS "video" (see downloadHls). */
+    private const val MAX_HLS_BYTES = 512L * 1024 * 1024
 
     /**
      * HLS: fetch the playlist, download every segment and concatenate them into
@@ -535,8 +706,9 @@ object RssMediaImporter {
         val fmp4 = init != null || segments.first().lowercase().let {
             it.endsWith(".mp4") || it.endsWith(".m4s")
         }
-        val target = File(dir, "rss_${Integer.toHexString(url.hashCode())}.${if (fmp4) "mp4" else "ts"}")
+        val target = File(dir, "rss_${urlDigest(url)}.${if (fmp4) "mp4" else "ts"}")
         var done = 0
+        var totalBytes = 0L
         try {
             target.outputStream().use { out ->
                 init?.let { out.write(it) }
@@ -548,13 +720,23 @@ object RssMediaImporter {
                         bytes = requestBytes(segment, headers, referer)
                         if (bytes != null) break
                     }
-                    if (bytes == null) {
+                    val segmentBytes = bytes
+                    if (segmentBytes == null) {
                         AppLog.w(TAG, "hls segment failed: ${segment.takeLast(60)}")
                         target.delete()
                         return null
                     }
-                    out.write(bytes)
+                    out.write(segmentBytes)
                     done++
+                    totalBytes += segmentBytes.size
+                    if (totalBytes > MAX_HLS_BYTES) {
+                        // MAX_HLS_SEGMENTS bounds the COUNT, not the size: an
+                        // endless/adversarial playlist could otherwise fill the
+                        // data partition with one "video".
+                        AppLog.w(TAG, "hls too large (>${MAX_HLS_BYTES / (1024 * 1024)}MB) - aborted")
+                        target.delete()
+                        return null
+                    }
                 }
             }
         } catch (t: Throwable) {

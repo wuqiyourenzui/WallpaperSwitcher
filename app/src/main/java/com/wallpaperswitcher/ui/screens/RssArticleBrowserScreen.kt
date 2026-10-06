@@ -24,7 +24,6 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import com.wallpaperswitcher.R
 import com.wallpaperswitcher.data.RssArticle
@@ -111,6 +110,18 @@ fun RssArticleBrowserScreen(
                         webViewClient = sniffingClient(article, pending)
                     }
                     loadUrl(article.link, headers)
+                }
+            },
+            // Leaving the screen must really tear the page down: a detached
+            // WebView keeps its renderer, page timers and (with autoplay
+            // enabled) media alive until destroy() runs, and repeated article
+            // opens would accumulate that per-page memory in a process that
+            // also hosts the live-wallpaper engine.
+            onRelease = { view ->
+                try {
+                    view.stopLoading()
+                    view.destroy()
+                } catch (_: Throwable) {
                 }
             },
         )

@@ -3,6 +3,7 @@ package com.wallpaperswitcher.engine
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.WallpaperGroup
+import com.wallpaperswitcher.util.AppLog
 
 /**
  * 配置导出 / 导入: the wallpaper configuration (groups + global wallpaper
@@ -23,8 +24,9 @@ import com.wallpaperswitcher.data.WallpaperGroup
 object ConfigBackup {
 
     const val FORMAT = "wallpaper-switcher-config"
-    /** 2 = 订阅源（sources）也进配置。 */
-    const val VERSION = 2
+    /** 3 = 分组星期/主题/筛选/排序 + 超分算法等壁纸设置也进配置。 */
+    const val VERSION = 3
+    private const val TAG = "ConfigBackup"
     /** Suggested SAF file name (without extension). */
     const val FILE_NAME = "wallpaper-switcher-config"
 
@@ -46,7 +48,15 @@ object ConfigBackup {
         SettingsKeys.VIDEO_SOUND_ENABLED,
         SettingsKeys.UNLOCK_SWITCH_ENABLED,
         SettingsKeys.LOCK_TIMER_ENABLED,
-        SettingsKeys.LOCK_INTERVAL_MS
+        SettingsKeys.LOCK_INTERVAL_MS,
+        SettingsKeys.ENHANCE_ALGO,
+        SettingsKeys.KEN_BURNS_ENABLED,
+        SettingsKeys.VIDEO_PLAY_TO_END,
+        SettingsKeys.FAVORITE_BOOST,
+        SettingsKeys.RECENT_NO_REPEAT,
+        SettingsKeys.RSS_WIFI_ONLY,
+        SettingsKeys.RSS_DAILY_LIMIT_MB,
+        SettingsKeys.RSS_ORPHAN_TTL_DAYS
     )
 
     /** One group as stored in the file. */
@@ -57,7 +67,11 @@ object ConfigBackup {
         val intervalMs: Long = 0L,
         val switchMode: String = "",
         val activeFromMinute: Int = -1,
-        val activeToMinute: Int = -1
+        val activeToMinute: Int = -1,
+        val activeDays: Int = 0,
+        val activeThemeMode: String = "",
+        val filterMode: String = "",
+        val sortOrder: String = ""
     )
 
     data class Config(
@@ -115,7 +129,14 @@ object ConfigBackup {
                 sb.append("      \"intervalMs\": ").append(group.intervalMs).append(",\n")
                 sb.append("      \"switchMode\": \"").append(escape(group.switchMode)).append("\",\n")
                 sb.append("      \"activeFromMinute\": ").append(group.activeFromMinute).append(",\n")
-                sb.append("      \"activeToMinute\": ").append(group.activeToMinute).append('\n')
+                sb.append("      \"activeToMinute\": ").append(group.activeToMinute).append(",\n")
+                sb.append("      \"activeDays\": ").append(group.activeDays).append(",\n")
+                sb.append("      \"activeThemeMode\": \"")
+                    .append(escape(group.activeThemeMode)).append("\",\n")
+                sb.append("      \"filterMode\": \"")
+                    .append(escape(group.filterMode)).append("\",\n")
+                sb.append("      \"sortOrder\": \"")
+                    .append(escape(group.sortOrder)).append("\"\n")
                 sb.append("    }")
                 sb.append(if (index == config.groups.size - 1) "\n" else ",\n")
             }
@@ -172,7 +193,12 @@ object ConfigBackup {
                     activeFromMinute = ((map["activeFromMinute"] as? Long) ?: -1L).toInt()
                         .coerceIn(-1, 1439),
                     activeToMinute = ((map["activeToMinute"] as? Long) ?: -1L).toInt()
-                        .coerceIn(-1, 1439)
+                        .coerceIn(-1, 1439),
+                    activeDays = ((map["activeDays"] as? Long) ?: 0L).toInt()
+                        .coerceIn(0, 127),
+                    activeThemeMode = (map["activeThemeMode"] as? String).orEmpty(),
+                    filterMode = (map["filterMode"] as? String).orEmpty(),
+                    sortOrder = (map["sortOrder"] as? String).orEmpty()
                 )
             }
             .orEmpty()
@@ -233,7 +259,11 @@ object ConfigBackup {
                     intervalMs = it.intervalMs,
                     switchMode = it.switchMode,
                     activeFromMinute = it.activeFromMinute,
-                    activeToMinute = it.activeToMinute
+                    activeToMinute = it.activeToMinute,
+                    activeDays = it.activeDays,
+                    activeThemeMode = it.activeThemeMode,
+                    filterMode = it.filterMode,
+                    sortOrder = it.sortOrder
                 )
             },
             settings = settings,
@@ -261,11 +291,13 @@ object ConfigBackup {
      * (see [RssSourceImport]). Returns how many were written.
      */
     suspend fun apply(db: AppDatabase, config: Config): ApplyResult {
+        var failures = 0
         for ((key, value) in config.settings) {
             if (key !in EXPORTED_SETTINGS) continue
             try {
                 db.settingsDao().setSetting(com.wallpaperswitcher.data.AppSettings(key, value))
             } catch (_: Exception) {
+                failures++
             }
         }
         var created = 0
@@ -279,11 +311,16 @@ object ConfigBackup {
                         intervalMs = group.intervalMs,
                         switchMode = group.switchMode,
                         activeFromMinute = group.activeFromMinute,
-                        activeToMinute = group.activeToMinute
+                        activeToMinute = group.activeToMinute,
+                        activeDays = group.activeDays,
+                        activeThemeMode = group.activeThemeMode,
+                        filterMode = group.filterMode,
+                        sortOrder = group.sortOrder
                     )
                 )
                 created++
             } catch (_: Exception) {
+                failures++
             }
         }
         var sources = 0
@@ -305,6 +342,10 @@ object ConfigBackup {
             for (source in decision.inserted) db.rssSourceDao().insert(source)
             sources = decision.inserted.size + decision.updated.size
         } catch (_: Exception) {
+            failures++
+        }
+        if (failures > 0) {
+            AppLog.w(TAG, "config import: $failures write(s) failed")
         }
         return ApplyResult(groups = created, sources = sources)
     }

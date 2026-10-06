@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- API <= 30 auto-backup rules (see also data_extraction_rules for 31+). -->
+<full-backup-content>
+    <!-- Session cookies / login blobs must not leave the device via backup. -->
+    <exclude domain="sharedpref" path="rss_cookies.xml" />
+    <exclude domain="sharedpref" path="rss_login.xml" />
+</full-backup-content>

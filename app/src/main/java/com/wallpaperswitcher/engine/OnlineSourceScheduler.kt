@@ -85,28 +85,32 @@ object OnlineSourceScheduler {
     }
 
     /**
-     * App start / boot self-heal: schedule every enabled source and cancel the
-     * work of the disabled ones. WorkManager persists its queue, but an edit
-     * that happened while the process was dead (a restore, an OEM cleanup)
-     * must still end up with the right constraints.
-     *
-     * **The online-wallpaper-source feature was removed**, so this now only
-     * tears down whatever a previous version scheduled (periodic + one-shot)
-     * and does not enqueue anything new. The sources themselves stay in the
-     * database so nothing the user downloaded is lost.
+     * App start / boot self-heal: make sure the built-in rows exist, then
+     * schedule every enabled source and cancel the work of the disabled ones.
+     * WorkManager persists its queue, but an edit that happened while the
+     * process was dead (a restore, an OEM cleanup) must still end up with the
+     * right constraints.
      */
     suspend fun ensureScheduled(context: Context) {
+        OnlineBuiltins.ensureSources(context)
         val sources = try {
             AppDatabase.getInstance(context).onlineSourceDao().getAll()
         } catch (_: Throwable) {
             return
         }
+        val scheduledIds = OnlineBuiltins.builtinEnabled(sources).map { it.id }.toHashSet()
         for (source in sources) {
-            cancel(context, source.id)
-            try {
-                WorkManager.getInstance(context)
-                    .cancelUniqueWork("$REFRESH_PREFIX${source.id}")
-            } catch (_: Throwable) {
+            // 只调度「设置 → 在线壁纸源」里的内置源；旧版遗留的 URL/WebDAV/
+            // 美人图行保持原样（不排期，也不删除已下载的内容）。
+            if (source.id in scheduledIds) {
+                schedule(context, source)
+            } else {
+                cancel(context, source.id)
+                try {
+                    WorkManager.getInstance(context)
+                        .cancelUniqueWork("$REFRESH_PREFIX${source.id}")
+                } catch (_: Throwable) {
+                }
             }
         }
     }

@@ -6,21 +6,11 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Guards the online-source rules that are easy to get wrong silently: the
- * WorkManager interval floor, the HTTPS policy, the Bing/WebDAV parsers and the
- * stable result codes the UI localizes.
+ * Guards the shared subscription-source rules that are easy to get wrong
+ * silently: the HTTPS / cleartext policy, URL resolution and the stable result
+ * codes the UI localizes.
  */
 class OnlineSourceRulesTest {
-
-    @Test
-    fun intervalIsClampedToTheWorkManagerFloorAndTheSevenDayCeiling() {
-        // 0 (never set) falls back to the daily default; anything below the
-        // 15-minute periodic minimum is raised, so WorkManager never rejects it.
-        assertEquals(24 * 60, OnlineSourceRules.normalizeIntervalMinutes(0))
-        assertEquals(15, OnlineSourceRules.normalizeIntervalMinutes(5))
-        assertEquals(30, OnlineSourceRules.normalizeIntervalMinutes(30))
-        assertEquals(7 * 24 * 60, OnlineSourceRules.normalizeIntervalMinutes(Int.MAX_VALUE))
-    }
 
     @Test
     fun publicCleartextIsRejectedButPrivateLanIsAllowed() {
@@ -57,66 +47,12 @@ class OnlineSourceRulesTest {
     }
 
     @Test
-    fun bingPayloadParsesAndResolvesTheRelativeUrl() {
-        val json = """
-            {"images":[
-              {"url":"/th?id=OHR.Foo_ZH-CN123_1920x1080.jpg&rf=LaDigue",
-               "enddate":"20261002","title":"t"},
-              {"url":"https://cdn.example.com/2.jpg","enddate":"20261001","title":"t2"}
-            ]}
-        """.trimIndent()
-        val images = OnlineSourceRules.parseBingPayload(json)
-        assertEquals(2, images.size)
-        assertEquals("20261002", images[0].remoteKey)
+    fun importedLegadoSourcesMayOptIntoPublicCleartext() {
+        // 阅读 sources are imported by the user and may legitimately be http.
         assertEquals(
-            "https://www.bing.com/th?id=OHR.Foo_ZH-CN123_1920x1080.jpg&rf=LaDigue",
-            images[0].url
+            OnlineSourceRules.EndpointPolicy.OK,
+            OnlineSourceRules.endpointPolicy("http://example.com/feed", allowCleartext = true)
         )
-        assertEquals("20261001", images[1].remoteKey)
-        assertEquals("https://cdn.example.com/2.jpg", images[1].url)
-    }
-
-    @Test
-    fun malformedBingPayloadIsEmptyInsteadOfThrowing() {
-        assertTrue(OnlineSourceRules.parseBingPayload("{").isEmpty())
-        assertTrue(OnlineSourceRules.parseBingPayload("""{"images":[]}""").isEmpty())
-    }
-
-    @Test
-    fun webDavListingParsesAnyNamespacePrefix() {
-        val xml = """
-            <?xml version="1.0" encoding="utf-8"?>
-            <d:multistatus xmlns:d="DAV:">
-              <d:response>
-                <d:href>/dav/photos/a.jpg</d:href>
-                <d:propstat><d:prop>
-                  <d:getlastmodified>Tue, 06 Oct 2026 12:34:56 GMT</d:getlastmodified>
-                  <d:getcontentlength>1234</d:getcontentlength>
-                </d:prop></d:propstat>
-              </d:response>
-              <d:response><d:href>/dav/photos/sub/</d:href></d:response>
-            </d:multistatus>
-        """.trimIndent()
-        val entries = OnlineSourceRules.parseWebDavListing(xml)
-        assertEquals(2, entries.size)
-        assertEquals("/dav/photos/a.jpg", entries[0].href)
-        assertTrue(entries[0].lastModifiedMs > 0L)
-        assertEquals(1234L, entries[0].sizeBytes)
-        assertTrue(OnlineSourceRules.looksLikeWebDavDirectory(entries[1].href))
-    }
-
-    @Test
-    fun webDavListingRejectsDoctypeEntities() {
-        // XXE: the listing comes from the network and must never read a local
-        // file. disallow-doctype-decl turns this document into a parse error.
-        val xml = """
-            <?xml version="1.0"?>
-            <!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>
-            <d:multistatus xmlns:d="DAV:">
-              <d:response><d:href>&xxe;</d:href></d:response>
-            </d:multistatus>
-        """.trimIndent()
-        assertTrue(OnlineSourceRules.parseWebDavListing(xml).isEmpty())
     }
 
     @Test
@@ -142,12 +78,6 @@ class OnlineSourceRulesTest {
     }
 
     @Test
-    fun basicAuthHeaderEncodesUserAndPassword() {
-        assertEquals("Basic dXNlcjpwYXNz", OnlineSourceRules.basicAuthHeader("user", "pass"))
-        assertNull(OnlineSourceRules.basicAuthHeader("", ""))
-    }
-
-    @Test
     fun privateHostDetectionCoversTheUsualLanRanges() {
         assertTrue(OnlineSourceRules.isPrivateHost("192.168.31.7"))
         assertTrue(OnlineSourceRules.isPrivateHost("172.16.5.4"))
@@ -159,63 +89,6 @@ class OnlineSourceRulesTest {
     }
 
     @Test
-    fun keepCountIsClampedToTheSupportedRange() {
-        assertEquals(0, OnlineSourceRules.normalizeKeepCount(0))
-        assertEquals(0, OnlineSourceRules.normalizeKeepCount(-5))
-        assertEquals(2000, OnlineSourceRules.normalizeKeepCount(Int.MAX_VALUE))
-    }
-
-    // --- 美人图 (meirentu.club) HTML scraping ---
-
-    @Test
-    fun meirentuAlbumIdsAreUniqueAndKeepTheListingOrder() {
-        val html = """
-            <a href="/pic/441354166995.html">a</a>
-            <a href="/pic/441354166995-2.html">a page 2</a>
-            <a href="/pic/227192094259.html">b</a>
-            <a href="/group/xiuren.html">not an album</a>
-            <a href="/pic/972117786737-38.html">c last page</a>
-        """.trimIndent()
-        assertEquals(
-            listOf(441354166995L, 227192094259L, 972117786737L),
-            OnlineSourceRules.parseMeirentuAlbumIds(html)
-        )
-    }
-
-    @Test
-    fun meirentuImagesAreFilteredByAlbumIdAndResolved() {
-        val html = """
-            <img src="/static/img/logo.png" />
-            <img style="min-height:220px"
-                 src="https://p12.mmdb.cc/file/20261002/441354166995/00159791.jpg" />
-            <img style="min-height:220px"
-                 src="//p12.mmdb.cc/file/20261002/441354166995/00208074.jpg" />
-            <img class="waitpic lazyimg"
-                 data-src="https://cdn20.mmdb.cc/file/20251223/440610471951/0.jpg" />
-            <img src="https://p12.mmdb.cc/file/20261002/441354166995/00398140.jpg?v=1" />
-        """.trimIndent()
-        val urls = OnlineSourceRules.parseMeirentuImageUrls(
-            html, albumId = 441354166995L, pageUrl = "https://meirentu.club/pic/441354166995.html"
-        )
-        assertEquals(3, urls.size)
-        assertTrue(urls[0].endsWith("/441354166995/00159791.jpg"))
-        assertTrue(urls[1].startsWith("https://p12.mmdb.cc/"))
-        assertTrue(urls[2].endsWith("/441354166995/00398140.jpg?v=1"))
-    }
-
-    @Test
-    fun meirentuAlbumPageUrlFollowsTheSitesPaginationScheme() {
-        assertEquals(
-            "https://meirentu.club/pic/123.html",
-            OnlineSourceRules.meirentuAlbumPageUrl("https://meirentu.club/", 123L, 1)
-        )
-        assertEquals(
-            "https://meirentu.club/pic/123-3.html",
-            OnlineSourceRules.meirentuAlbumPageUrl("https://meirentu.club/group/xiuren.html", 123L, 3)
-        )
-    }
-
-    @Test
     fun originOfDropsThePathAndKeepsThePort() {
         assertEquals("https://meirentu.club", OnlineSourceRules.originOf("https://meirentu.club/pic/1.html"))
         assertEquals("https://nas.example.com:8443", OnlineSourceRules.originOf("https://nas.example.com:8443/dav/x"))
@@ -223,55 +96,137 @@ class OnlineSourceRulesTest {
     }
 
     @Test
-    fun pagesPerAlbumAndMaxPerRunAreClamped() {
-        // 0 (older rows / not set) falls back to the product defaults.
-        assertEquals(2, OnlineSourceRules.normalizePagesPerAlbum(0))
-        assertEquals(2, OnlineSourceRules.normalizePagesPerAlbum(-3))
-        assertEquals(10, OnlineSourceRules.normalizePagesPerAlbum(99))
-        assertEquals(8, OnlineSourceRules.normalizeMaxPerRun(0))
-        assertEquals(8, OnlineSourceRules.normalizeMaxPerRun(-1))
-        assertEquals(50, OnlineSourceRules.normalizeMaxPerRun(1000))
-    }
-
-    @Test
-    fun selectedImagesRoundTripWithBlanksAndDuplicatesRemoved() {
-        val raw = "https://p12.mmdb.cc/a.jpg\n\n https://p12.mmdb.cc/b.jpg \nhttps://p12.mmdb.cc/a.jpg\n"
-        val parsed = OnlineSourceRules.parseSelectedImages(raw)
-        val expected = listOf("https://p12.mmdb.cc/a.jpg", "https://p12.mmdb.cc/b.jpg")
-        assertEquals(expected, parsed)
-        assertEquals("", OnlineSourceRules.encodeSelectedImages(emptyList()))
+    fun resolveUrlHandlesRelativeAbsoluteAndProtocolRelativeTargets() {
+        val base = "https://a.example/dir/page.html"
+        assertEquals("https://a.example/dir/c.jpg", OnlineSourceRules.resolveUrl(base, "c.jpg"))
+        assertEquals("https://a.example/b.jpg", OnlineSourceRules.resolveUrl(base, "/b.jpg"))
+        assertEquals("https://cdn.example/b.jpg", OnlineSourceRules.resolveUrl(base, "//cdn.example/b.jpg"))
         assertEquals(
-            expected,
-            OnlineSourceRules.parseSelectedImages(OnlineSourceRules.encodeSelectedImages(expected))
+            "https://cdn.example/b.jpg",
+            OnlineSourceRules.resolveUrl(base, "https://cdn.example/b.jpg")
         )
+        assertNull(OnlineSourceRules.resolveUrl("not a url", "x.jpg"))
     }
 
     @Test
-    fun meirentuAlbumCardsCarryCoverAndLabel() {
-        val html = """
-            <li><a href="/pic/441354166995.html">
-              <img class="lazyimg" data-src="https://cdn20.mmdb.cc/file/20261002/441354166995/0.jpg"
-                   alt="鱼子酱Fish" /></a></li>
-            <li><a href="/pic/227192094259.html">
-              <img class="lazyimg" data-src="//cdn20.mmdb.cc/file/20261001/227192094259/0.jpg"
-                   alt="王馨瑶" /></a></li>
-        """.trimIndent()
-        val albums = OnlineSourceRules.parseMeirentuAlbums(html, "https://meirentu.club/")
-        assertEquals(2, albums.size)
-        assertEquals(441354166995L, albums[0].id)
-        assertEquals("https://cdn20.mmdb.cc/file/20261002/441354166995/0.jpg", albums[0].coverUrl)
-        assertEquals("鱼子酱Fish", albums[0].label)
-        assertEquals("王馨瑶", albums[1].label)
-        assertEquals("https://cdn20.mmdb.cc/file/20261001/227192094259/0.jpg", albums[1].coverUrl)
+    fun logSafeHostNeverReturnsThePathOrQuery() {
+        assertEquals(
+            "cdn.example.com",
+            OnlineSourceRules.logSafeHost("https://cdn.example.com/a.jpg?token=secret")
+        )
+        assertEquals("?", OnlineSourceRules.logSafeHost("not a url"))
     }
 
     @Test
-    fun htmlEntitiesInAlbumLabelsAreDecoded() {
+    fun htmlEntitiesAreDecoded() {
         assertEquals("周妍希&绮里嘉", OnlineSourceRules.decodeHtmlEntities("周妍希&amp;绮里嘉"))
         assertEquals("a<b>c", OnlineSourceRules.decodeHtmlEntities("a&lt;b&gt;c"))
         assertEquals("it's", OnlineSourceRules.decodeHtmlEntities("it&#39;s"))
         // &amp;lt; must decode to the literal "&lt;", not to "<".
         assertEquals("&lt;", OnlineSourceRules.decodeHtmlEntities("&amp;lt;"))
         assertEquals("plain", OnlineSourceRules.decodeHtmlEntities("plain"))
+    }
+
+    // --- 内置在线壁纸源的页面解析（HTML/Atom 片段取自真实页面） --------------
+
+    @Test
+    fun apodHeroImageLosesTheScalingQuery() {
+        val html = """
+            <div class="media-detail-hero__media">
+              <figure><img src="https://assets.science.nasa.gov/content/dam/science/cds/apod/apod/2026/october/Smile.gif?w=512&amp;h=512&amp;fit=clip"/></figure>
+            </div>
+        """.trimIndent()
+        val image = OnlineSourceRules.parseApodPage(html)
+        assertEquals(
+            "https://assets.science.nasa.gov/content/dam/science/cds/apod/apod/2026/october/Smile.gif",
+            image?.url
+        )
+        assertEquals("Smile.gif", image?.displayName)
+        // A video day (no hero <img>) must yield null, not a broken URL.
+        assertNull(OnlineSourceRules.parseApodPage("<div class='media-detail-hero__media'></div>"))
+    }
+
+    @Test
+    fun wikimediaThumbnailsAreUpgradedToTheOriginal() {
+        val atom = """
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <id>tag:commons,2026:potd</id>
+                <content type="xhtml"><div xmlns="http://www.w3.org/1999/xhtml">
+                  <img src="//upload.wikimedia.org/wikipedia/commons/thumb/a/ab/File.jpg/800px-File.jpg"/>
+                </div></content>
+              </entry>
+            </feed>
+        """.trimIndent()
+        val images = OnlineSourceRules.parseWikimediaFeed(atom)
+        assertEquals(1, images.size)
+        assertEquals(
+            "https://upload.wikimedia.org/wikipedia/commons/a/ab/File.jpg",
+            images.first().url
+        )
+        assertEquals("tag:commons,2026:potd", images.first().remoteKey)
+    }
+
+    @Test
+    fun wikimediaRssItemsWithEscapedImagesAreParsed() {
+        // The live feed is RSS 2.0 with HTML-escaped <img> inside <description>.
+        val rss = """
+            <rss version="2.0"><channel>
+              <item>
+                <title>Picture of the day for October 6</title>
+                <link>https://commons.wikimedia.org/wiki/Special:FeedItem/potd/20261006000000</link>
+                <description>&lt;img src="//upload.wikimedia.org/wikipedia/commons/thumb/a/ab/File.jpg/800px-File.jpg"/&gt;</description>
+              </item>
+            </channel></rss>
+        """.trimIndent()
+        val images = OnlineSourceRules.parseWikimediaFeed(rss)
+        assertEquals(1, images.size)
+        assertEquals(
+            "https://upload.wikimedia.org/wikipedia/commons/a/ab/File.jpg",
+            images.first().url
+        )
+        assertTrue(images.first().remoteKey.startsWith("https://commons.wikimedia.org/"))
+    }
+
+    @Test
+    fun netbianListingAndDetailYieldTheOriginalImage() {
+        val listing = """
+            <ul class="slist"><li><a href="/tupian/44186.html" target="_blank">
+              <img src="/uploads/allimg/260930/thumb.jpg"/><b>森林 4K</b></a></li></ul>
+        """.trimIndent()
+        val links = OnlineSourceRules.parseNetbianListing(listing)
+        assertEquals(listOf("https://pic.netbian.com/tupian/44186.html"), links)
+        val detail = """
+            <div class="photo-pic"><a id="img"><img
+              src="/uploads/allimg/160627/full.jpg"
+              data-pic="/uploads/allimg/160627/small.jpg" alt="阳光草地 4K壁纸"/></a></div>
+        """.trimIndent()
+        val image = OnlineSourceRules.parseNetbianDetail(detail, links.first())
+        assertEquals("https://pic.netbian.com/uploads/allimg/160627/full.jpg", image?.url)
+        assertEquals("阳光草地 4K壁纸", image?.displayName)
+    }
+
+    @Test
+    fun ioliuDetailPrefersTheFullResolutionBingUrl() {
+        val home = """
+            <a href="/wallpapers/w10jpx932ijvmr">card</a>
+            <a href="/wallpapers/w1cmx453jqmjdi">card</a>
+        """.trimIndent()
+        assertEquals(
+            listOf(
+                "https://bing.ioliu.cn/wallpapers/w10jpx932ijvmr",
+                "https://bing.ioliu.cn/wallpapers/w1cmx453jqmjdi",
+            ),
+            OnlineSourceRules.parseIoliuListing(home)
+        )
+        val detail = """
+            <img src="https://cn.bing.com/th?id=OHR.KidsDay_PT-BR9683382943_400x240.jpg"/>
+            <meta property="og:image" content="https://global.bing.com/th?id=OHR.KidsDay_PT-BR9683382943_1920x1200.jpg"/>
+        """.trimIndent()
+        val image = OnlineSourceRules.parseIoliuDetail(detail)
+        assertEquals(
+            "https://global.bing.com/th?id=OHR.KidsDay_PT-BR9683382943_1920x1200.jpg",
+            image?.url
+        )
     }
 }

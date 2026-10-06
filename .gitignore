@@ -28,5 +28,13 @@ local.properties
 /kt_cp.txt
 /kotlin_info.log
 /exif_*.jpg
+
+# --- 编辑器 / 代理工具残留 ---
+*.TMP
+.codex/
+# 一次性截图与压测快照（tools/perf-snapshot.ps1 输出）
+/q1.png
+/q2.png
+/docs/performance/
 # 空的散落文件
 /MediaPickTest.kt

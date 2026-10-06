@@ -1,13 +1,11 @@
 package com.wallpaperswitcher.ui.screens
 
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
 import com.wallpaperswitcher.data.RssArticle
 import com.wallpaperswitcher.data.RssSource
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel

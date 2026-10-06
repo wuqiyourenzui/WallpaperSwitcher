@@ -96,10 +96,12 @@ internal const val PLAYER_STATE_JS = """
   if (window.__wsStateHooked) return;
   window.__wsStateHooked = true;
   window.__wsErr = function(m){
+    if (!document.querySelector('video')) return;
     try { wsCollector.onImages(JSON.stringify(['$PLAYER_STATE_PREFIX err ' + m])); } catch (e) {}
   };
   window.addEventListener('error', function(e){ window.__wsErr('js:' + (e.message || '')); }, true);
   function sample(when){
+    if (!document.querySelector('video')) return;
     try {
       var v = document.querySelector('video');
       var r = v ? v.getBoundingClientRect() : {width:0,height:0};
@@ -215,13 +217,66 @@ private fun urlMatchRules(raw: String?): List<String> =
     raw?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() }.orEmpty()
 
 private fun urlMatchesRule(rule: String, url: String): Boolean {
+    if (rule.isEmpty()) return false
     if (url.startsWith(rule)) return true
+    // WebView 会对页面里每一个子资源都走一遍黑白名单（shouldInterceptRequest 在
+    // 后台线程上），原来每条规则、每次调用都 `Regex(rule)` 现编译一次 —— 一张图
+    // 几十个资源就是几十次编译，而正则编译是这里最贵的一步。按规则串缓存编译结果。
+    // 空规则短路，和原来「空规则编译异常→false」一致。
+    val pattern = compiledRule(rule) ?: return false
     return try {
-        url.matches(Regex(rule))
+        url.matches(pattern)
     } catch (_: Throwable) {
         false
     }
 }
+
+/**
+ * `Regex` 编译结果缓存：`shouldInterceptRequest` 对每个子资源都会命中它。
+ *
+ * **必须有界**：规则串来自源的 JSON，正常一个源只有几条（黑白名单各一行），但
+ * 一个源可以带来任意多个不同的规则串，而这张表跟着进程活（本 App 的进程还包含
+ * 常驻的实时壁纸服务），无上限就是内存单调增长 —— 与 [LegadoJs] 里
+ * `scriptCache` 的缺陷同形。LRU 上限 256 与该处保持一致：一个源最多几条规则，
+ * 256 条足以覆盖「多个源同时开着 + 站点地址里的动态串」的命中面，超出后淘汰最久
+ * 未用的（淘汰后只是下次重新编译一次，不改变任何行为）。
+ *
+ * 访问顺序 LRU（`LinkedHashMap(..., accessOrder = true)`）不是线程安全的，而
+ * `shouldInterceptRequest` 回调在 WebView 的后台线程上，所以读写都在
+ * [rulePatternsLock] 里。
+ */
+private fun compiledRule(rule: String): Regex? = synchronized(rulePatternsLock) {
+    if (rulePatterns.containsKey(rule)) {
+        // accessOrder = true：get 也会把这条挪到队尾（最近使用）。
+        rulePatterns[rule]?.regex
+    } else {
+        val holder = try {
+            PatternHolder(Regex(rule))
+        } catch (_: Throwable) {
+            // 规则串不是合法正则：把失败也缓存下来，避免每次子资源都重复抛一次
+            // 异常（原来这条路径每个资源都要构造并抛出）。
+            PatternHolder(null)
+        }
+        rulePatterns[rule] = holder
+        holder.regex
+    }
+}
+
+private val rulePatternsLock = Any()
+
+/** 规则串 → 编译结果，最近使用在队尾；超过 [RULE_CACHE_MAX] 淘汰最久未用的。 */
+private val rulePatterns = object : LinkedHashMap<String, PatternHolder>(64, 0.75f, true) {
+    override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, PatternHolder>?): Boolean =
+        size > RULE_CACHE_MAX
+}
+
+private const val RULE_CACHE_MAX = 256
+
+/**
+ * 缓存项：`regex == null` 表示这条规则编译失败过（`LinkedHashMap` 可以存 null，
+ * 但包装成对象后「编译失败」与「还没编译」在读取侧不用再区分）。
+ */
+private class PatternHolder(val regex: Regex?)
 
 /**
  * 规则正文大多没有 viewport（阅读在 WebView 里同样按站点自己的排版）：
