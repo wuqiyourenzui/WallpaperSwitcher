@@ -78,6 +78,9 @@
     <string name="settings_double_tap_hint">Toca dos veces la pantalla para cambiar (requiere fondo animado)</string>
     <string name="settings_floating_button">Botón flotante de cambio</string>
     <string name="settings_floating_button_hint">Un toque en el botón cambia el fondo (algunos lanzadores no envían el doble toque)</string>
+    <string name="settings_usage_access_ok">Se muestra en el inicio (acceso de uso concedido)</string>
+    <string name="settings_usage_access_missing">No puede detectar el inicio, el botón podría no aparecer</string>
+    <string name="settings_usage_access_hint">Toca para conceder «Acceso de uso»</string>
     <string name="settings_video_sound">Sonido del fondo de vídeo</string>
     <string name="settings_video_sound_hint">Sonido solo cuando se ve Inicio</string>
     <string name="settings_lock_timer">Cambio por temporizador en bloqueo</string>

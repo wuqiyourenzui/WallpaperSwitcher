@@ -76,6 +76,9 @@
     <string name="settings_double_tap_hint">Double-tap the screen to switch (requires a live wallpaper)</string>
     <string name="settings_floating_button">Floating switch button</string>
     <string name="settings_floating_button_hint">One tap switches (some launchers do not forward double taps)</string>
+    <string name="settings_usage_access_ok">Shown on the home screen (usage access granted)</string>
+    <string name="settings_usage_access_missing">Cannot detect the home screen, the button may not appear</string>
+    <string name="settings_usage_access_hint">Tap to grant "Usage access", otherwise the button may stay hidden</string>
     <string name="settings_video_sound">Play video sound</string>
     <string name="settings_video_sound_hint">Play sound while the home screen is visible (muted elsewhere)</string>
 

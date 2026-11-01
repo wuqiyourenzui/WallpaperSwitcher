@@ -78,6 +78,9 @@
     <string name="settings_double_tap_hint">Двойное касание экрана меняет обои (нужны живые обои)</string>
     <string name="settings_floating_button">Плавающая кнопка смены</string>
     <string name="settings_floating_button_hint">Одно касание кнопки меняет обои (некоторые лаунчеры не передают двойное касание)</string>
+    <string name="settings_usage_access_ok">Показывается на домашнем экране (доступ к использованию разрешён)</string>
+    <string name="settings_usage_access_missing">Не удаётся определить домашний экран, кнопка может не появиться</string>
+    <string name="settings_usage_access_hint">Нажмите, чтобы разрешить «Доступ к использованию»</string>
     <string name="settings_video_sound">Звук видеообоев</string>
     <string name="settings_video_sound_hint">Звук только когда виден рабочий стол</string>
     <string name="settings_lock_timer">Смена на блокировке по таймеру</string>

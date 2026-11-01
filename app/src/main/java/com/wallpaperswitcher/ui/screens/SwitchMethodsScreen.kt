@@ -216,3 +216,69 @@ fun SwitchMethodsScreen(
     }
 }
 
+
+/**
+ * 「使用情况访问」授权状态行：没有权限时红色提示 + 点击跳系统设置。
+ *
+ * 悬钮只在桌面显示（其它 App 上隐藏）靠 UsageStats 判断前台包名，没权限就永远
+ * 判断不了 —— 用户看到的会是"悬钮再也没出现"，所以必须在这里讲明白。
+ */
+@Composable
+private fun UsageAccessRow() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var granted by remember {
+        mutableStateOf(com.wallpaperswitcher.engine.LauncherForeground.hasPermission(context))
+    }
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.LaunchedEffect(lifecycleOwner) {
+        // 从系统设置返回时重新检查
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
+                granted = com.wallpaperswitcher.engine.LauncherForeground.hasPermission(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable {
+                if (!granted) {
+                    try {
+                        context.startActivity(
+                            android.content.Intent(
+                                android.provider.Settings.ACTION_USAGE_ACCESS_SETTINGS
+                            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            if (granted) Icons.Outlined.CheckCircle else Icons.Outlined.Info,
+            contentDescription = null,
+            tint = if (granted) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.error,
+        )
+        Spacer(modifier = Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(
+                    if (granted) R.string.settings_usage_access_ok
+                    else R.string.settings_usage_access_missing
+                ),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (!granted) {
+                Text(
+                    text = stringResource(R.string.settings_usage_access_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}

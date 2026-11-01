@@ -60,6 +60,8 @@ internal class FloatingButtonController(
     // (e.g. quick app switch back to the desktop) could drop the SHOW
     // request and leave the button missing until the next event.
     private val floatingButtonUpdatePending = AtomicBoolean(false)
+    /** 应用是否在前台（由引擎的 applyAppForeground 维护）；true 时一律不显示。 */
+    @Volatile private var appForegroundSeen = false
 
     /**
      * Show/hide the floating double-tap button according to the setting,
@@ -68,6 +70,17 @@ internal class FloatingButtonController(
      * ops are posted to the main handler.
      */
     fun update() {
+        // 应用在前台期间永久隐藏：以前只依赖 host.appInForeground()，而那个标志
+        // 在"引擎实例换过/活动先 hide 后 re-evaluate"的时序里可能是旧值，
+        // 结果就是点了悬钮进应用，按钮 0.5s 后又冒出来。这里用一个本类自己的
+        // 显式闸门，只有"应用离开前台"才解除。
+        if (appForegroundSeen) {
+            mainHandler.post {
+                host.onWindowChanged()
+                floatingButton?.hideOverlay()
+            }
+            return
+        }
         // Only the REAL engine owns the floating button. The picker's preview
         // engine used to create a second overlay window at the same spot
         // (verified with dumpsys: two APPLICATION_OVERLAY windows of ours,
@@ -137,7 +150,9 @@ internal class FloatingButtonController(
                         // 结果就是"没触摸时按钮消失、点一下又出现"。
                         // 现在只按「本应用是否在前台」决定：不在前台就显示（桌面/其它 App 之上），
                         // 只有打开本应用才收起（用户要求）。
+                        // 只有桌面前台才显示：其它 App 打开时不要浮在别人界面上。
                         if (enabled && canOverlay &&
+                            com.wallpaperswitcher.engine.LauncherForeground.isLauncherForeground(context) &&
                             !host.appInForeground()
                         ) {
                             // Visible again (or still): a hide that was only
@@ -182,6 +197,24 @@ internal class FloatingButtonController(
      * Live appearance + content update (recolors the on-screen button as the
      * user drags the opacity slider / picks a color, swaps label or picture).
      */
+    /**
+     * 引擎通知"应用在前台/已离开前台"。
+     *
+     * 进前台：立刻隐藏并**保持隐藏**（见 [update] 的闸门）；
+     * 离开前台：解除闸门让 [update] 按正常规则重新决定显示。
+     */
+    fun onAppForeground(foreground: Boolean) {
+        appForegroundSeen = foreground
+        if (foreground) {
+            mainHandler.post {
+                cancelPendingHide()
+                host.onWindowChanged()
+                floatingButton?.hideOverlay()
+            }
+        } else {
+            update()
+        }
+    }
     fun applyAppearance(colorArgb: Int, opacity: Int, text: String, imageUri: String) {
         mainHandler.post {
             floatingButton?.setAppearance(colorArgb, opacity)

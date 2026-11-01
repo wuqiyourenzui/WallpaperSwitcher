@@ -81,6 +81,9 @@
     <string name="settings_double_tap_hint">雙擊螢幕切換壁紙（需設定動態壁紙）</string>
     <string name="settings_floating_button">懸浮切換按鈕</string>
     <string name="settings_floating_button_hint">點一下懸浮按鈕即切換（部分啟動器不轉發雙擊）</string>
+    <string name="settings_usage_access_ok">已在桌面顯示（使用情況存取已授權）</string>
+    <string name="settings_usage_access_missing">無法判斷桌面，按鈕可能不顯示</string>
+    <string name="settings_usage_access_hint">點此授權「使用情況存取」</string>
     <string name="settings_video_sound">影片壁紙播放聲音</string>
     <string name="settings_video_sound_hint">桌面可見時播放聲音，其餘場景靜音</string>
     <string name="settings_lock_timer">鎖屏定時切換</string>

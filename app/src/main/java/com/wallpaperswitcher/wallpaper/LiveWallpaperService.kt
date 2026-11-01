@@ -1838,8 +1838,13 @@ class LiveWallpaperService : WallpaperService() {
                 // the decode survives the open animation while a covered report
                 // that arrives earlier still pauses us right away.
                 hideFloatingButtonNow()
+                // 显式把闸门关上：即使 MainActivity 的 dismiss 路径没走到（预览引擎/时序），
+                // 应用在前台期间也不会再冒出来。
+                floating.onAppForeground(true)
             } else {
                 AppLog.d(TAG, "App UI hidden: re-evaluating wallpaper state")
+                // 应用已离开前台：解除"进应用后一直隐藏"的闸门，回到桌面才重新显示。
+                floating.onAppForeground(false)
                 // Resuming only on the system's visibility callback costs 1.5-2.5s
                 // of silence on this ROM (measured): the callback that says "the
                 // wallpaper is visible again" arrives long after the launcher is

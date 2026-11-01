@@ -75,6 +75,9 @@
     <string name="settings_double_tap_hint">双击屏幕切换壁纸（需设置动态壁纸）</string>
     <string name="settings_floating_button">悬浮切换按钮</string>
     <string name="settings_floating_button_hint">点一下悬浮按钮即切换（部分启动器不转发双击）</string>
+    <string name="settings_usage_access_ok">已在桌面显示（使用情况访问已授权）</string>
+    <string name="settings_usage_access_missing">悬钮无法判断桌面，可能不显示</string>
+    <string name="settings_usage_access_hint">点此授权「使用情况访问」，否则悬钮只在权限可用时显示</string>
     <string name="settings_video_sound">视频壁纸播放声音</string>
     <string name="settings_video_sound_hint">桌面可见时播放声音，其余场景静音</string>
     <string name="settings_lock_timer">锁屏定时切换</string>
