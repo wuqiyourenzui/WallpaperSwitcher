@@ -23,6 +23,11 @@ internal class SwitchQueue(
 
     internal interface Host {
         fun isUserTapSource(source: String): Boolean
+        /**
+         * 视频播完再切：这次请求是不是"定时 tick 撞上视频、应当整次丢弃"。
+         * 只有 `timer` 来源会返回 true（见 [SwitchPicking.timerWithVideo]）。
+         */
+        suspend fun skipTimedSwitchForVideo(source: String): Boolean
         fun isSwitchInProgress(): Boolean
         fun switchStartedAt(): Long
         fun markSwitchStarted()
@@ -42,6 +47,17 @@ internal class SwitchQueue(
     private val consumerStarted = AtomicBoolean(false)
     private val pendingAutoSwitch = AtomicBoolean(false)
     private val pendingUserSwitches = AtomicInteger(0)
+    /**
+     * 有用户点击在排队：队列里的自动切换（定时 / 播完再切）直接作废，别让
+     * 一次点击排在它们后面等好几秒（真机实测：点完 4.9 秒才轮到，用户以为
+     * "点了没反应"）。点击真正开始时清掉。
+     */
+    private val userTapPriority = AtomicBoolean(false)
+    /**
+     * 上一次用户切换完成的时刻：自动切换（定时 / 播完再切）在这之后的
+     * [USER_SWITCH_GRACE_MS] 内一律不执行，避免刚点完就被换走。
+     */
+    @Volatile private var lastUserSwitchDoneAt = 0L
 
     fun request(source: String, targetId: Long? = null, groupId: Long = 0L) {
         ensureConsumer()
@@ -90,6 +106,8 @@ internal class SwitchQueue(
                 return
             }
             AppLog.d(tag, "User tap queued ($source), in flight=$pendingUserSwitches")
+            // 点击优先：队列里排着的自动切换会在消费时被作废（见 consumeSwitches）。
+            userTapPriority.set(true)
             scope.launch {
                 switchChannel.send(SwitchRequest(source, null))
             }
@@ -148,6 +166,7 @@ internal class SwitchQueue(
         consumerStarted.set(false)
         pendingAutoSwitch.set(false)
         pendingUserSwitches.set(0)
+        userTapPriority.set(false)
     }
 
     private suspend fun consumeSwitches() {
@@ -156,6 +175,24 @@ internal class SwitchQueue(
             // non-target switch to queue while this one executes (the
             // rapid-tap coalescing window).
             if (req.targetId == null) pendingAutoSwitch.set(false)
+            // 用户在等：队列里排着的自动切换（定时 / 播完再切）让路，直接作废。
+            // 点击本身立刻走下面那段，不再排在自动切换后面。
+            if (userTapPriority.get() && !host.isUserTapSource(req.source)) {
+                AppLog.d(tag, "Auto switch dropped: a user tap is waiting (${req.source})")
+                continue
+            }
+            if (host.isUserTapSource(req.source)) userTapPriority.set(false)
+            // 用户刚点完（比如悬钮）：让这一小会儿，别把刚上屏的内容立刻换走。
+            if (!host.isUserTapSource(req.source) && lastUserSwitchDoneAt != 0L &&
+                SystemClock.elapsedRealtime() - lastUserSwitchDoneAt < USER_SWITCH_GRACE_MS
+            ) {
+                AppLog.d(tag, "Auto switch dropped: a user switch just ran (${req.source})")
+                continue
+            }
+            // 视频播完再切：定时 tick 撞上视频时在这里就直接丢掉，不进入切换流程
+            // （否则日志会出现一对假的 "Switch start/done: timer"，让人以为
+            // 视频被定时切过一次）。手动/解锁等来源永远不经过这个判断。
+            if (host.skipTimedSwitchForVideo(req.source)) continue
             host.markSwitchStarted()
             try {
                 AppLog.d(tag, "Switch start: ${req.source}")
@@ -183,6 +220,11 @@ internal class SwitchQueue(
                 // switches cache the screen's next one (the cache records
                 // which group it belongs to).
                 host.afterSwitch(req, sincePreviousSwitchMs, effectiveGroupId)
+                // 记住"刚跑完一次用户切换"：紧随其后的自动切换要让它一会儿，
+                // 否则用户点了悬钮、图片刚上屏 30ms 就被定时切换又换走。
+                if (host.isUserTapSource(req.source)) {
+                    lastUserSwitchDoneAt = SystemClock.elapsedRealtime()
+                }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (t: Throwable) {
@@ -208,5 +250,12 @@ internal class SwitchQueue(
          * stopped tapping.
          */
         private const val MAX_PENDING_USER_SWITCHES = 3
+
+        /**
+         * 用户切换完成后的"静默期"：这段时间内的自动切换（定时 / 播完再切）
+         * 一律不执行。真机实测：点了悬钮，图片 30ms 后就被定时切换换回视频，
+         * 用户看到的就是"点了没用"。
+         */
+        private const val USER_SWITCH_GRACE_MS = 3_000L
     }
 }

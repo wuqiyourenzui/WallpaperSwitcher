@@ -11,6 +11,12 @@
 定向读取：先用 `rg` 定位再按行范围读，不整文件通读，不重复读同一文件。
 一个会话做一件连贯的事；长会话用 `/compact` 压缩，任务完成后不追加未要求的总结。
 
+### 手机 App 开发
+
+本 repo 是 Android / Kotlin / Compose 项目。**动手前先读 `docs/agents/mobile-app.md`** ——
+验证命令、adb 取证配方、Compose 叠层与返回键的定案、订阅源/WebView 域知识、结论纪律都在里面，
+内容全部来自真机踩坑，避免重复犯错。
+
 ### Issue tracker
 
 Issues 和 specs 存放在本 repo 的 GitHub Issues 中，通过 `gh` CLI 操作。详见 `docs/agents/issue-tracker.md`。

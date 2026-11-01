@@ -60,6 +60,13 @@ fun RssArticleScreen(
             // 用户在网页里至少能看到文章本身 —— 真机上一堆 `image article (0B)`
             // 就是这么来的（规则脚本跟我们的引擎不兼容，或站点回挑战页）。
             html.isBlank() -> ArticleMode.BROWSER
+            // 视频文章走原生播放器。**这里的解析是能成功的**：真机日志里
+            // 91porn 的文章被解出了真正的 mp4 地址
+            // （`la.btc620.com//mp43/1242134.mp4?st=…`）并播放。
+            // 播放器内部自带兜底：解析不出来时才退到网页嗅探
+            // （见 RssVideoScreen 的 VideoState.Sniffing）。
+            // 曾经把这里改成 BROWSER 想让观感和阅读一致，结果绕过了解析 ——
+            // 站点给未解析的请求只回 639B 的 stub，视频反而看不了（已回退）。
             isVideoArticle(html, article.link) -> ArticleMode.VIDEO
             else -> ArticleMode.IMAGE
         }
@@ -92,7 +99,7 @@ fun RssArticleScreen(
         ArticleMode.BROWSER -> {
             val stream = sniffed
             if (stream != null) {
-                // 页面里的播放器真的拉起了流 → 交给原生播放器（+ 加入分组）。
+                // 用户在网页里点了「用这个视频」→ 原生播放器（+ 加入分组）。
                 RssVideoScreen(
                     viewModel = viewModel,
                     article = article,

@@ -57,6 +57,14 @@ interface OnlineItemDao {
     @Query("SELECT remoteKey FROM online_items WHERE sourceId = :sourceId")
     suspend fun remoteKeys(sourceId: Long): List<String>
 
+    /** 一次性 key 归一用：所有行（含只有 key、没有文件的别名行）。 */
+    @Query("SELECT * FROM online_items")
+    suspend fun getAllOnce(): List<OnlineItem>
+
+    /** 把旧形态的 remoteKey 改成新形态（保留 content hash 与该行指向的媒体）。 */
+    @Query("UPDATE online_items SET remoteKey = :newKey WHERE sourceId = :sourceId AND remoteKey = :oldKey")
+    suspend fun renameKey(sourceId: Long, oldKey: String, newKey: String)
+
     @Query(
         "SELECT contentHash FROM online_items " +
             "WHERE sourceId = :sourceId AND contentHash != ''"

@@ -40,6 +40,86 @@ class SwitchPickingTest {
         assertTrue(SwitchPicking.shouldResetShuffleDeck(shownSize = 7, totalCount = 5))
     }
 
+    // --- 顺序模式: 「本组走完」判据 (see SwitchPicking.sequentialWrapped) ---
+
+    @Test
+    fun ascendingWalkIsExhaustedOnlyWhenThePickWrapsBack() {
+        assertFalse(SwitchPicking.sequentialWrapped(pickedId = 7, cursorId = 5, newestFirst = false))
+        // getSequentialInGroupAfter found nothing and GroupPick fell back to
+        // the group's first media: the walk is over.
+        assertTrue(SwitchPicking.sequentialWrapped(pickedId = 2, cursorId = 5, newestFirst = false))
+        // Single-item group: the pick is the cursor itself.
+        assertTrue(SwitchPicking.sequentialWrapped(pickedId = 5, cursorId = 5, newestFirst = false))
+    }
+
+    @Test
+    fun newestFirstWalkIsExhaustedOnlyWhenThePickWrapsForward() {
+        // 顺序=新的在前 walks newest → oldest, so a smaller id is the normal
+        // next step and only the wrap back to the newest media ends the group.
+        assertFalse(SwitchPicking.sequentialWrapped(pickedId = 3, cursorId = 5, newestFirst = true))
+        assertTrue(SwitchPicking.sequentialWrapped(pickedId = 9, cursorId = 5, newestFirst = true))
+        assertTrue(SwitchPicking.sequentialWrapped(pickedId = 5, cursorId = 5, newestFirst = true))
+    }
+
+    // --- 顺序模式的参考点 = 屏幕上那张 (see SwitchPicking.sequentialAnchor) ---
+
+    @Test
+    fun sequentialContinuesAfterTheDisplayedImageNotTheStaleCursor() {
+        // 用户报的那个场景：随机/洗牌期间分组游标停在 5（上一次顺序模式的旧位置），
+        // 屏幕上显示的却是 9（同一分组）。切到顺序后下一张必须是 9 的下一张，
+        // 也就是参考点要变成 9，而不是继续用 5。
+        assertEquals(
+            9L,
+            SwitchPicking.sequentialAnchor(
+                displayedId = 9, displayedGroupId = 3, walkGroupId = 3, cursor = 5
+            )
+        )
+        // 正常顺序运行时两者本来就相等，锚点不改变任何行为。
+        assertEquals(
+            9L,
+            SwitchPicking.sequentialAnchor(
+                displayedId = 9, displayedGroupId = 3, walkGroupId = 3, cursor = 9
+            )
+        )
+    }
+
+    @Test
+    fun theCursorStillWinsWhenTheDisplayedImageIsInAnotherGroup() {
+        // 本组走完已推进到下一个分组（屏幕上是 2 组的图），或屏幕上那张是别组的：
+        // 这时只有分组游标有意义，不能被屏幕上的图带跑。
+        assertEquals(
+            5L,
+            SwitchPicking.sequentialAnchor(
+                displayedId = 9, displayedGroupId = 2, walkGroupId = 3, cursor = 5
+            )
+        )
+    }
+
+    @Test
+    fun nothingOnScreenOrUnknownGroupKeepsTheCursor() {
+        // 冷启动 / 屏幕还没内容（displayedId = 0）：保持游标。
+        assertEquals(
+            5L,
+            SwitchPicking.sequentialAnchor(
+                displayedId = 0, displayedGroupId = 3, walkGroupId = 3, cursor = 5
+            )
+        )
+        // 屏幕上那张已经从库里删掉（查不到分组 → 0）：同样保持游标。
+        assertEquals(
+            5L,
+            SwitchPicking.sequentialAnchor(
+                displayedId = 9, displayedGroupId = 0, walkGroupId = 3, cursor = 5
+            )
+        )
+        // 没有要走的分组（屏幕级兜底路径）：保持游标。
+        assertEquals(
+            5L,
+            SwitchPicking.sequentialAnchor(
+                displayedId = 9, displayedGroupId = 3, walkGroupId = 0, cursor = 5
+            )
+        )
+    }
+
     @Test
     fun randomOffsetStaysWithinBounds() {
         repeat(500) {
@@ -208,66 +288,87 @@ class SwitchPickingTest {
         )
     }
 
-    // --- 视频播完再切: timed ticks while a video is on screen ---
+    // --- 视频播完再切: 定时 tick 撞上视频时只丢不切 ------------------------
 
     @Test
-    fun firstTimedTickHoldsUntilTheVideoPassEnds() {
+    fun timerTicksAreDroppedWhileAVideoIsOnScreen() {
+        // 选项开着 + 屏幕上是视频 → 定时一律丢掉，视频只按"播完 N 次"切换。
+        // （旧实现是"等这一段播完再切"，结果视频只播一遍就被换掉，次数失效。）
         assertEquals(
-            SwitchPicking.VideoEndHold.HOLD_PENDING,
-            SwitchPicking.videoEndHold(
-                optionEnabled = true, videoPlaying = true, holdPending = false
+            SwitchPicking.TimerWithVideo.DROP,
+            SwitchPicking.timerWithVideo(
+                optionEnabled = true,
+                videoActive = true,
+                consecutiveDrops = 0,
+                dropLimit = 12,
             )
+        )
+        assertEquals(
+            SwitchPicking.TimerWithVideo.DROP,
+            SwitchPicking.timerWithVideo(true, videoActive = true, consecutiveDrops = 11, dropLimit = 12)
         )
     }
 
     @Test
-    fun laterTimedTicksAreDroppedWhileAHoldIsPending() {
-        // The reported bug: the SECOND interval was let through (the guard
-        // required !holdPending), so it cut the clip off mid-pass.
+    fun timerSwitchesImagesNormally() {
+        // 切到图片之后，定时切换照常生效。
         assertEquals(
-            SwitchPicking.VideoEndHold.DROP_TICK,
-            SwitchPicking.videoEndHold(
-                optionEnabled = true, videoPlaying = true, holdPending = true
-            )
+            SwitchPicking.TimerWithVideo.SWITCH_NOW,
+            SwitchPicking.timerWithVideo(true, videoActive = false, consecutiveDrops = 0, dropLimit = 12)
         )
     }
 
     @Test
-    fun staleHoldIsReleasedOnceNoVideoIsOnScreen() {
-        // The emulator deadlock: the held clip failed to start / was replaced,
-        // so onVideoPassCompleted never ran and every later tick was dropped
-        // forever ("still held" spam, timed switching dead). A hold with no
-        // video on screen is stale and must be released by the tick itself.
+    fun optionOffLetsTheTimerCutTheVideo() {
         assertEquals(
-            SwitchPicking.VideoEndHold.SWITCH_NOW,
-            SwitchPicking.videoEndHold(
-                optionEnabled = true, videoPlaying = false, holdPending = true
-            )
+            SwitchPicking.TimerWithVideo.SWITCH_NOW,
+            SwitchPicking.timerWithVideo(false, videoActive = true, consecutiveDrops = 0, dropLimit = 12)
         )
     }
 
     @Test
-    fun disablingTheOptionReleasesAWaitingHold() {
+    fun brokenVideoDoesNotBlockTimedSwitchingForever() {
+        // 视频起不来/一直播不完时，连续丢弃到上限就放行一次（兜底）。
         assertEquals(
-            SwitchPicking.VideoEndHold.SWITCH_NOW,
-            SwitchPicking.videoEndHold(
-                optionEnabled = false, videoPlaying = true, holdPending = true
-            )
+            SwitchPicking.TimerWithVideo.SWITCH_NOW,
+            SwitchPicking.timerWithVideo(true, videoActive = true, consecutiveDrops = 12, dropLimit = 12)
         )
     }
 
+    // --- 视频播完再切（与定时切换解耦）------------------------------------
+
     @Test
-    fun ticksSwitchNormallyWhenNoVideoIsPlaying() {
-        assertEquals(
-            SwitchPicking.VideoEndHold.SWITCH_NOW,
-            SwitchPicking.videoEndHold(
-                optionEnabled = true, videoPlaying = false, holdPending = false
+    fun videoEndSwitchesOnTheFirstPassByDefault() {
+        // 默认播放 1 次：第一段播完就要换，且**不看定时开关**（这个函数里没有
+        // 定时参数，正因为如此）。
+        assertTrue(SwitchPicking.videoEndSwitchDue(optionEnabled = true, repeats = 1, passesThisClip = 0))
+    }
+
+    @Test
+    fun videoEndWaitsForTheConfiguredCount() {
+        // 设成 3 次：第 1、2 段播完继续放着，第 3 段播完才换。
+        assertFalse(SwitchPicking.videoEndSwitchDue(true, repeats = 3, passesThisClip = 0))
+        assertFalse(SwitchPicking.videoEndSwitchDue(true, repeats = 3, passesThisClip = 1))
+        assertTrue(SwitchPicking.videoEndSwitchDue(true, repeats = 3, passesThisClip = 2))
+    }
+
+    @Test
+    fun videoEndRespectsTheOptionAndClampsTheCount() {
+        // 选项关着就永不自动切；0 / 负数夹回 1；次数没有上限，42 就等 42 段。
+        assertFalse(SwitchPicking.videoEndSwitchDue(false, repeats = 1, passesThisClip = 0))
+        assertTrue(SwitchPicking.videoEndSwitchDue(true, repeats = 0, passesThisClip = 0))
+        assertFalse(
+            SwitchPicking.videoEndSwitchDue(
+                true,
+                repeats = 42,
+                passesThisClip = 40,
             )
         )
-        assertEquals(
-            SwitchPicking.VideoEndHold.SWITCH_NOW,
-            SwitchPicking.videoEndHold(
-                optionEnabled = false, videoPlaying = false, holdPending = false
+        assertTrue(
+            SwitchPicking.videoEndSwitchDue(
+                true,
+                repeats = 42,
+                passesThisClip = 41,
             )
         )
     }

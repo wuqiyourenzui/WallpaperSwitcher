@@ -15,8 +15,15 @@ internal fun imageRequest(
     url: String,
     referer: String?,
     headers: Map<String, String> = emptyMap(),
+    /**
+     * 解码边长的像素上限：列表缩略图只有几十 dp，按原图（常见 1080×1920）解码
+     * 再缩小是纯浪费 —— 真机表现为切到订阅页首帧 100ms+。
+     * 传 0 表示不限（全屏看图用）。
+     */
+    sizePx: Int = 512,
 ): ImageRequest = ImageRequest.Builder(context)
     .data(url)
+    .apply { if (sizePx > 0) size(sizePx, sizePx) }
     .apply {
         var hasReferer = false
         for ((name, value) in headers) {

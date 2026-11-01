@@ -19,7 +19,6 @@ class SettingsPageTest {
             Screen.FolderScan,
             Screen.ButtonAppearance,
             Screen.Appearance,
-            Screen.Favorites,
             Screen.Recent,
             Screen.Storage,
         ).forEach { screen ->
@@ -33,7 +32,6 @@ class SettingsPageTest {
             Screen.Home,
             Screen.Subscriptions,
             Screen.GroupDetail(1L),
-            Screen.Browse(1L),
             Screen.SubscriptionArticles(1L),
             Screen.RssLogin(1L),
             Screen.RssSourceEdit(1L),

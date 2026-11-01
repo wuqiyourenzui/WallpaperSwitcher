@@ -305,6 +305,33 @@ class LegadoRuleEngineTest {
         assertEquals(null, LegadoRss.loginCheckJs(without))
     }
 
+    /**
+     * 阅读在 `AnalyzeRule.evalJS` 里同时绑定 `result` 与 `src`（AnalyzeRule.kt:835-839，
+     * 两者都指向当前内容）。只给 `result` 时，源里那些 `String(src||'')` 的规则会直接
+     * ReferenceError ——「秀人集（8012359）」的 `ruleContent` 就是这样，正文一张图都出不来。
+     *
+     * 注意：脚本必须是表达式（阅读 / 本引擎都不接受脚本顶层的 `return`，
+     * Rhino 会报「返回的值无效」，见同文件第 151 行的既有写法）。
+     */
+    @Test
+    fun jsRulesSeeBothResultAndSrc() {
+        val engine = engine()
+        // 规则级：内容就是整页 HTML。
+        assertEquals(html, engine.getString("@js:String(src||'')", html))
+        // 逐项规则：`src` 与 `result` 指向同一个东西（该项元素）。
+        val items = engine.getElements("class.item", html)
+        assertEquals(
+            engine.getString("@js:String(result||'')", items[0]),
+            engine.getString("@js:String(src||'')", items[0]),
+        )
+        assertTrue(engine.getString("@js:String(src||'')", items[0]).contains("Title One"))
+        // 源里常见的写法：从 `src` 扫出地址。
+        assertEquals(
+            "/img/1.jpg",
+            engine.getString("@js:String(src||'').match(/data-src=\"([^\"]+)\"/)[1]", items[0]),
+        )
+    }
+
     @Test
     fun ruleAlternativesSplitOnTopLevelCommasOnly() {
         assertEquals(listOf("a", "b", "c"), RuleAlternatives.split("a,b,c"))

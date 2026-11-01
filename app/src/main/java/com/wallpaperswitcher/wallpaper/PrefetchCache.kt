@@ -57,6 +57,15 @@ internal class PrefetchCache(
 
     fun hasCache(): Boolean = synchronized(lock) { imageId > 0L || bitmap != null }
 
+    /**
+     * Id of the cached image (0 = nothing cached). Used to drop an entry that
+     * the next switch already displayed: an early tap can outrun the in-flight
+     * prefetch, decode the same image by itself, and the late store then parks
+     * the *current* image in the cache - the tap after that would pick it and
+     * hit the "already on screen, skip" path, i.e. a tap that does nothing.
+     */
+    fun cachedImageId(): Long = synchronized(lock) { imageId }
+
     fun isStoreInProgress(): Boolean = storeInProgress.get()
 
     fun beginStore(): Boolean = storeInProgress.compareAndSet(false, true)

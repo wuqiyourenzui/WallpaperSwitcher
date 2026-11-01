@@ -443,6 +443,70 @@ object OnlineSourceRules {
         "jpg", "jpeg", "png", "webp", "gif", "bmp", "heic", "heif"
     )
 
+    /**
+     * 网盘目录里允许当壁纸下载的视频容器。
+     *
+     * 只收 MediaExtractor/MediaCodec 在这台机器上真能解的容器：`MediaTypes` 的清单里
+     * 还有 avi / 3gp，但它们在多数机型上解不出来（下载完才发现放不了，白占空间）。
+     */
+    private val SUPPORTED_VIDEO_EXTENSIONS = setOf("mp4", "m4v", "mov", "webm", "mkv")
+
+    /**
+     * 网盘条目的媒体扩展名；`includeVideos=false` 时行为与 [imageExtension] 完全一致
+     * （内置源/老配置语义不变）。命中不了返回 null —— 调用方必须把 null 当"跳过"。
+     *
+     * @param contentType 服务端声明的类型（可为空）；它优先于 URL 后缀，因为网盘直链
+     *   常常把真实类型放在 `Content-Type` 里而 URL 没有后缀（WebDAV 镜像常没有后缀）
+     *   直链就是这种形态）。
+     */
+    fun mediaExtension(url: String, contentType: String?, includeVideos: Boolean): String? {
+        if (!includeVideos) return imageExtension(url, contentType)
+        val ct = contentType?.substringBefore(';')?.trim()?.lowercase()
+        val fromContentType = when (ct) {
+            "video/mp4" -> "mp4"
+            "video/quicktime" -> "mov"
+            "video/webm" -> "webm"
+            "video/x-matroska", "video/mkv" -> "mkv"
+            "video/x-m4v", "video/m4v" -> "m4v"
+            else -> null
+        }
+        if (fromContentType != null) return fromContentType
+        val ext = url.substringBefore('?').substringAfterLast('.', "").lowercase()
+        if (ext in SUPPORTED_VIDEO_EXTENSIONS) return ext
+        return imageExtension(url, contentType)
+    }
+
+    /** 该扩展名是不是视频容器（下载/入库分流用，避免两套白名单漂移）。 */
+    fun isVideoExtension(extension: String): Boolean =
+        extension.lowercase() in SUPPORTED_VIDEO_EXTENSIONS
+
+    /**
+     * 体积护栏：远程已知大小时提前跳过，别下完再删。
+     *
+     * @param size 服务端声明的字节数（0/负 = 未知，不能据此跳过）
+     * @param maxBytes 本次允许的最大字节数（图片 100MB / 视频可配，默认 300MB）
+     */
+    fun tooLargeToFetch(size: Long, maxBytes: Long): Boolean =
+        size > 0L && maxBytes > 0L && size > maxBytes
+
+    /**
+     * 远程文件名的安全形式：只保留 basename，拒绝路径穿越。
+     *
+     * 网盘（尤其 WebDAV 的 href）由服务端给出，可能是 `../../x` 或含反斜杠；
+     * 落盘前必须削成纯文件名，否则能写到 `online/<id>/` 之外。
+     *
+     * @return null 表示这个名字不可用（空 / 含穿越片段 / 含控制字符）
+     */
+    fun safeRemoteName(raw: String): String? {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return null
+        if (trimmed.contains("..") || trimmed.contains('\\')) return null
+        val base = trimmed.substringAfterLast('/')
+        if (base.isEmpty() || base == ".") return null
+        if (base.any { it.code < 0x20 }) return null
+        return base
+    }
+
     private fun DocumentBuilderFactory.setFeatureQuietly(name: String, value: Boolean) {
         try {
             setFeature(name, value)

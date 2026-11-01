@@ -60,10 +60,20 @@ private const val MAX_ATTEMPTS = 3
 
 private sealed interface VideoState {
     data object Loading : VideoState
-    data class Playing(val url: String, val headers: Map<String, String>) : VideoState
     /**
-     * 正文里抠不出地址 → 打开文章页**嗅探**站点播放器真正请求的流
-     * （CDN 挑战页 / 403 的源只有这一条路）。
+     * **规则驱动**：`ruleContent` 输出的是 HTML，按规则渲染（h视频那类）。
+     * 这种内容只有规则知道长什么样，不能交给站点页面。[mediaUrl] 是顺带抠出的
+     * 地址（可能为空），给「加入分组」用。
+     */
+    data class RuleHtml(
+        val html: String,
+        val mediaUrl: String?,
+        val headers: Map<String, String>,
+    ) : VideoState
+
+    /**
+     * `ruleContent` 只给出一条**媒体地址**（91porn 这类）：不在本地合成播放页，
+     * 改为加载**站点自己的播放页**让站点播放器出画，地址从 DOM 读回来。
      */
     data object Sniffing : VideoState
     /** 地址拿到了但放不动（签名/网络）。 */
@@ -89,6 +99,14 @@ fun RssVideoScreen(
     var errorHandled by remember { mutableStateOf(false) }
     var articleHeaders by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var showGroupPicker by remember { mutableStateOf(false) }
+    /**
+     * 站点播放器真正在用的媒体地址（从页面 DOM 里读出来的）。
+     *
+     * 播放现在交给站点自己的页面，所以「加入分组」要的地址不能只看规则解析结果
+     * —— 站点用 `strencode2` 加密地址时，规则解不开（列表里那句"解析失败"），
+     * 但站点自己的 JS 解得开。这里存它 DOM 里真正用的那条。
+     */
+    var resolvedMediaUrl by remember(article.guid) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(article.sourceId, article.guid, attempt, directStream) {
         // 网页源在浏览器里嗅到的流：地址与请求头都现成，直接播，不再抓正文。
@@ -98,7 +116,7 @@ fun RssVideoScreen(
             articleHeaders = known.second
             mediaKey++
             errorHandled = false
-            state = VideoState.Playing(known.first, known.second)
+            state = VideoState.RuleHtml(known.first, known.first, known.second)
             return@LaunchedEffect
         }
         state = VideoState.Loading
@@ -125,10 +143,26 @@ fun RssVideoScreen(
             state = VideoState.Sniffing
             return@LaunchedEffect
         }
-        AppLog.d(TAG, "play (attempt=$attempt) for ${article.link.take(80)}: ${url.take(160)}")
-        mediaKey++
-        errorHandled = false
-        state = VideoState.Playing(url, articleHeaders)
+        // 方案 3 的分流：**两种都按规则来**，区别只在怎么渲染。
+        //  1) `ruleContent` 输出是 HTML（h视频那类，规则自己拼播放器标签）→
+        //     直接渲染规则结果；
+        //  2) 输出只是一条媒体地址（Rule34 / rou.video / 91porn 这类
+        //     "正文=一条直链"）→ 这条地址**就是规则的结果**，必须用它播；
+        //     渲染交给 WebView 自带的播放器（`loadUrl(媒体地址)`），
+        //     而不是我们合成的播放页 —— 合成那条路在这台设备上
+        //     CORS 要 XHR、blob 又 `readyState` 停在 0/1，一帧都不出。
+        // 只有规则**什么都没给**时才退到站点页面。
+        val raw = content?.html.orEmpty()
+        if (raw.contains('<')) {
+            AppLog.d(TAG, "rule content is HTML (${raw.length}B) -> render it as-is")
+            state = VideoState.RuleHtml(raw, url, articleHeaders)
+            return@LaunchedEffect
+        }
+        AppLog.d(
+            TAG,
+            "rule content is a media url -> play the RULE's url directly: ${url.take(130)}",
+        )
+        state = VideoState.RuleHtml("", url, articleHeaders)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -156,10 +190,11 @@ fun RssVideoScreen(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                // 只有拿到可播地址时才给「加入分组」：下载的就是这条地址
+                // 有可播地址时才给「加入分组」：下载的就是这条地址
                 // （m3u8 会由导入器拉全部分片再合成 mp4），没地址可存就没意义。
-                val playing = state as? VideoState.Playing
-                if (playing != null) {
+                // 地址可以来自规则解析（下面解析成功时）或站点 DOM（见 resolvedMediaUrl）。
+                val canSave = (state as? VideoState.RuleHtml)?.mediaUrl != null || resolvedMediaUrl != null
+                if (canSave) {
                     IconButton(onClick = { showGroupPicker = true }) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Outlined.PlaylistAdd,
@@ -173,50 +208,29 @@ fun RssVideoScreen(
 
         Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
             when (val current = state) {
-                is VideoState.Playing -> RssVideoPlayer(
-                    url = current.url,
-                    headers = current.headers,
-                    // 关键：把**文章**也算进播放器的 key。同一篇文章重试时地址可能
-                    // 一模一样（重新签名后 URL 不变），只按地址记忆会复用上一个
-                    // 失败实例；而换文章时若地址恰好相同（源的规则出错），也会
-                    // 沿用上一个画面 —— 用户看到的就是「视频与文章不符」。
-                    mediaKey = mediaKey * 31 + (article.guid.hashCode()),
+                // 规则输出是 HTML → 按规则渲染（h视频那类源的正路）。
+                // 规则输出是一条地址 → 仍然用规则的地址，只是交给 WebView 自带
+                // 播放器（见 RssSitePlayer 的 mediaUrl）。
+                is VideoState.RuleHtml -> RssSitePlayer(
+                    pageUrl = article.link,
                     modifier = Modifier.fillMaxSize(),
-                    onError = { reason ->
-                        // 用尽重试次数就停在这里（以前这里没判次数，报错 -> 重抓 -> 再报错
-                        // 会一直循环下去，真机上刷到过 attempt=6）。嗅到的流也不重试同一
-                        // 条地址（签名多半已经用完）。
-                        val exhausted = errorHandled || directStream != null ||
-                            attempt + 1 >= MAX_ATTEMPTS
-                        if (exhausted) {
-                            AppLog.w(
-                                TAG,
-                                "playback failed ($reason) -> give up after ${attempt + 1} attempt(s)",
-                            )
-                            state = VideoState.Failed(reason)
-                        } else {
-                            // 地址/签名可能已经过期：重抓正文再试。
-                            errorHandled = true
-                            AppLog.w(TAG, "playback failed ($reason) -> refetch and retry")
-                            attempt++
-                        }
-                    },
+                    headers = current.headers,
+                    ruleHtml = current.html.takeIf { it.isNotBlank() },
+                    mediaUrl = current.mediaUrl,
                 )
 
                 VideoState.Loading -> HiLoadingHint(
                     text = stringResource(R.string.rss_video_loading),
                 )
 
-                VideoState.Sniffing -> RssArticleBrowserScreen(
-                    article = article,
-                    onBack = onCancel,
-                    // 页面里的播放器真的拉起了流 → 交给原生播放器。
-                    onStreamFound = { url, headers ->
-                        mediaKey++
-                        errorHandled = false
-                        AppLog.d(TAG, "player from sniffed stream: ${url.take(150)}")
-                        state = VideoState.Playing(url, headers)
-                    },
+                // 规则解不出（strencode2 这类只有站点自己解得开的加密地址）→
+                // 加载**站点自己的播放页**，让站点的 JS 起播放器；
+                // 再从 DOM 里把真地址读回来给「加入分组」用。
+                VideoState.Sniffing -> RssSitePlayer(
+                    pageUrl = article.link,
+                    modifier = Modifier.fillMaxSize(),
+                    headers = articleHeaders,
+                    onStreamFound = { url, _ -> resolvedMediaUrl = url },
                 )
 
                 is VideoState.Failed -> Column(
@@ -247,8 +261,14 @@ fun RssVideoScreen(
 
     // 「加入分组」：把当前这条视频（mp4 直接下；m3u8 由导入器拉分片合成 mp4）
     // 下载进选定的壁纸分组 —— 复用订阅源那条导入管线。
-    val playing = state as? VideoState.Playing
-    if (showGroupPicker && playing != null) {
+    // 优先用**站点 DOM 里读到的地址**：站点用 `strencode2` 加密时规则那条解不开，
+    // 但站点自己的 JS 解开了，DOM 里就有真地址；规则解出来的作为兜底。
+    val playing = state as? VideoState.RuleHtml
+    // 优先用**站点 DOM 里读到的地址**（站点自己解密出来的那条）；规则顺带抠出的
+    // 地址作为兜底。
+    val pickUrl = resolvedMediaUrl ?: playing?.mediaUrl
+    if (showGroupPicker && pickUrl != null) {
+        val headers = playing?.headers ?: articleHeaders
         val groups by viewModel.groups.collectAsStateWithLifecycle()
         AlertDialog(
             onDismissRequest = { showGroupPicker = false },
@@ -261,7 +281,7 @@ fun RssVideoScreen(
                             .fillMaxWidth()
                             .clickable {
                                 viewModel.addRssImagesToGroup(
-                                    article, listOf(playing.url), 0L, playing.headers,
+                                    article, listOf(pickUrl), 0L, headers,
                                 )
                                 showGroupPicker = false
                             }
@@ -274,7 +294,7 @@ fun RssVideoScreen(
                                 .fillMaxWidth()
                                 .clickable {
                                     viewModel.addRssImagesToGroup(
-                                        article, listOf(playing.url), group.id, playing.headers,
+                                        article, listOf(pickUrl), group.id, headers,
                                     )
                                     showGroupPicker = false
                                 }

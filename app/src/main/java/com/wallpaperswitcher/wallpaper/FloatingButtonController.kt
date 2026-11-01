@@ -131,10 +131,13 @@ internal class FloatingButtonController(
                 mainHandler.post {
                     try {
                         if (host.engineDestroyed()) return@post
-                        // The floating button only lives on the desktop:
-                        // hide it whenever the wallpaper is covered (any
-                        // app open, lock screen, screen off).
-                        if (enabled && canOverlay && host.wallpaperVisible() &&
+                        // 真机（MIUI）上 WallpaperService 的 onVisibilityChanged 会
+                        // 「true 立刻 false」地抖：桌面静止时挂在 false 上，
+                        // 手指一碰又跳一次 true —— 用它当"桌面可见"的判据，
+                        // 结果就是"没触摸时按钮消失、点一下又出现"。
+                        // 现在只按「本应用是否在前台」决定：不在前台就显示（桌面/其它 App 之上），
+                        // 只有打开本应用才收起（用户要求）。
+                        if (enabled && canOverlay &&
                             !host.appInForeground()
                         ) {
                             // Visible again (or still): a hide that was only

@@ -34,7 +34,10 @@ import okhttp3.Request
 object RssMediaImporter {
 
     private const val TAG = "RssMediaImporter"
-    private const val MAX_BYTES = 30L * 1024 * 1024
+    /** 图片上限 100MB（与 WebDAV 一致）；视频不受这个常量约束（见 MAX_VIDEO_BYTES）。 */
+    private const val MAX_BYTES = 100L * 1024 * 1024
+    /** 订阅视频上限：300MB（用户要求"取消视频下载上限"后取的工程上限）。 */
+    private const val MAX_VIDEO_BYTES = 300L * 1024 * 1024
     private const val USER_AGENT = RssHttp.USER_AGENT
     private const val AUTO_GROUP_FALLBACK = "在线壁纸"
     /**
@@ -88,6 +91,8 @@ object RssMediaImporter {
         urls: List<String>,
         groupId: Long,
         extraHeaders: Map<String, String> = emptyMap(),
+        /** 每完成一张回调 (已完成, 总数)：用于在 WebDAV 页顶部显示后台进度。 */
+        onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): Report = withContext(Dispatchers.IO) {
         if (urls.isEmpty()) return@withContext Report(0, 0)
         // 订阅下载策略 (仅 Wi-Fi / 每日上限): refuse BEFORE any network traffic.
@@ -200,9 +205,16 @@ object RssMediaImporter {
                     }
                 }
             }
+            // 每完成一张就报一次进度（分组详情「添加壁纸」下面的进度条靠它推进）。
+            var finishedCount = 0
             for (job in jobs) {
                 val item = job.await()
                 if (item == null) failedCount.incrementAndGet() else prepared.add(item)
+                finishedCount++
+                try {
+                    onProgress(finishedCount, jobs.size)
+                } catch (_: Throwable) {
+                }
             }
         }
         // Charge today's counter with everything pulled from the network - the
@@ -523,7 +535,11 @@ object RssMediaImporter {
                 )
                 resumeValidators.remove(url)
             }
-            val limit = if (resume) MAX_BYTES - already else MAX_BYTES
+            // 视频用自己的上限（300MB），图片 100MB：以前两者共用 30MB，
+            // 任何成片视频都会被 too large 拒掉（91porn 那条 34MB 的 mp4 就是这样失败的）。
+            val capBytes = if (com.wallpaperswitcher.engine.MediaTypes.fromName(url) ==
+                com.wallpaperswitcher.engine.MediaTypes.VIDEO) MAX_VIDEO_BYTES else MAX_BYTES
+            val limit = if (resume) capBytes - already else capBytes
             if (limit <= 0L || body.contentLength() > limit) {
                 AppLog.w(TAG, "too large (${body.contentLength()}): ${url.takeLast(50)}")
                 if (limit <= 0L) {
@@ -577,6 +593,19 @@ object RssMediaImporter {
                         return DownloadOutcome.Transient
                     }
                     if (copied.exceededLimit) {
+                        temp.delete()
+                        return DownloadOutcome.Permanent
+                    }
+                    // 下载完整性校验：服务端给了 Content-Length 就必须下满，
+                    // 否则会留下"只有前几帧"的残缺 mp4 —— 表现就是壁纸黑屏但有声音
+                    //（playback log 里每个 pass 只有 9~10 帧、约 0.37s）。
+                    val declaredLen = body.contentLength()
+                    if (declaredLen > 0L && temp.exists() && temp.length() < declaredLen) {
+                        AppLog.w(
+                            TAG,
+                            "incomplete download (${temp.length()}/$declaredLen), dropping partial file"
+                        )
+                        return DownloadOutcome.Transient
                         temp.delete()
                         return DownloadOutcome.Permanent
                     }

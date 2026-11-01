@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.RotateRight
@@ -30,6 +31,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -78,6 +80,7 @@ fun WallpaperSettingsScreen(
     val switchTransition = state.switchTransition
     val videoSoundEnabled = state.videoSoundEnabled
     val videoPlayToEnd = state.videoPlayToEnd
+    val videoLoopEnabled = state.videoLoopEnabled
     val rotateMismatchEnabled = state.rotateMismatchEnabled
     val rotateMismatchClockwise = state.rotateMismatchClockwise
     val kenBurnsEnabled = state.kenBurnsEnabled
@@ -199,16 +202,125 @@ fun WallpaperSettingsScreen(
 
                 Divider(modifier = Modifier.padding(horizontal = 16.dp))
 
-                // 视频播完再切：定时切换不再打断长视频。
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                // 视频循环播放（默认开）：关掉后视频只播一遍，停在最后一帧。
+                SettingsSwitchItem(
+                    icon = Icons.Outlined.Loop,
+                    title = stringResource(R.string.settings_video_loop),
+                    subtitle = stringResource(R.string.settings_video_loop_hint),
+                    checked = videoLoopEnabled,
+                    onCheckedChange = { viewModel.setVideoLoopEnabled(it) }
+                )
+
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+
+                // 视频播完再切：视频播完就换一张，不依赖定时切换；
+                // 手动/解锁/双击/悬浮按钮仍立即生效。
+                // **依赖循环播放**：不循环就不会有"播完"，所以循环关掉时这一行置灰。
                 SettingsSwitchItem(
                     icon = Icons.Outlined.Movie,
                     title = stringResource(R.string.settings_video_play_to_end),
-                    subtitle = stringResource(R.string.settings_video_play_to_end_hint),
-                    checked = videoPlayToEnd,
+                    subtitle = stringResource(
+                        if (videoLoopEnabled) {
+                            R.string.settings_video_play_to_end_hint
+                        } else {
+                            R.string.settings_video_play_to_end_needs_loop
+                        }
+                    ),
+                    checked = videoPlayToEnd && videoLoopEnabled,
+                    enabled = videoLoopEnabled,
                     onCheckedChange = { viewModel.setVideoPlayToEnd(it) }
                 )
+
+                // 播几次后切换（默认 1）；只有开关打开时才出现，关掉后计数
+                // 保留（下次打开还是上次选的值）。
+                if (videoPlayToEnd && videoLoopEnabled) {
+                    Divider(modifier = Modifier.padding(horizontal = 16.dp))
+                    VideoRepeatCountRow(
+                        repeats = state.videoPlayToEndRepeats,
+                        onSelect = { viewModel.setVideoPlayToEndRepeats(it) }
+                    )
+                }
         }
 
+    }
+}
+
+/**
+ * 视频播完再切 → 「播放次数」：行右侧显示当前值，点一下弹输入框，**任意正整数**
+ * （不设上限；只有 0 和空会被挡下来，等于至少播 1 遍）。
+ */
+@Composable
+private fun VideoRepeatCountRow(
+    repeats: Int,
+    onSelect: (Int) -> Unit,
+) {
+    var dialogOpen by remember { mutableStateOf(false) }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { dialogOpen = true }
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.Repeat, contentDescription = null)
+        Spacer(modifier = Modifier.width(16.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(stringResource(R.string.settings_video_play_to_end_repeats))
+            Text(
+                text = stringResource(R.string.settings_video_play_to_end_repeats_hint),
+                style = androidx.compose.material3.MaterialTheme.typography.bodySmall,
+                color = androidx.compose.material3.MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(
+            text = stringResource(R.string.settings_video_play_to_end_repeats_value, repeats),
+            color = LocalAccentColor.current,
+        )
+    }
+    if (dialogOpen) {
+        // 输入框里只留数字：用 String 存，空串时"确定"不可点，避免把 0 存进设置。
+        var text by remember { mutableStateOf(repeats.toString()) }
+        val parsed = text.toIntOrNull()
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { dialogOpen = false },
+            title = { Text(stringResource(R.string.settings_video_play_to_end_repeats)) },
+            text = {
+                androidx.compose.material3.OutlinedTextField(
+                    value = text,
+                    onValueChange = { input ->
+                        // 只接受数字，且限制到 Int 上限（再大就存不进设置）。
+                        val digits = input.filter { it.isDigit() }.take(9)
+                        text = digits
+                    },
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
+                    ),
+                    label = { Text(stringResource(R.string.settings_video_play_to_end_repeats_input)) },
+                    isError = parsed == null || parsed < 1,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    enabled = parsed != null && parsed >= 1,
+                    onClick = {
+                        parsed?.let { if (it >= 1) onSelect(it) }
+                        dialogOpen = false
+                    },
+                ) {
+                    Text(stringResource(R.string.action_ok))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { dialogOpen = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 
@@ -303,3 +415,4 @@ internal fun rotateDirectionKey(clockwise: Boolean): String =
 
 /** 面板 key → 要写进设置的布尔值。 */
 internal fun rotateDirectionClockwise(key: String): Boolean = key == ROTATE_KEY_CW
+

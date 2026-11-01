@@ -5,6 +5,7 @@ import com.wallpaperswitcher.util.AppLog
 import com.wallpaperswitcher.util.LogText
 
 import android.app.Application
+import coil.imageLoader
 
 import android.net.Uri
 
@@ -46,6 +47,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 import com.wallpaperswitcher.engine.clearMediaCursors
 
@@ -62,6 +65,7 @@ import com.wallpaperswitcher.wallpaper.LiveWallpaperService
 import com.wallpaperswitcher.worker.FolderAutoScanWorker
 
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 import kotlinx.coroutines.*
 
@@ -74,7 +78,21 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.withContext
 
 
+
 class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
+
+    companion object {
+        private const val TAG = "WallpaperViewModel"
+        /** 页面 Flow 失去订阅 60 秒后才停（底栏来回切不再让 Flow 变冷、重查库）。 */
+        const val FLOW_STOP_TIMEOUT_MS = 60_000L
+        /** 手动设壁纸后 HOME 定时器让路的时间（够走完系统动态壁纸确认页）。 */
+        const val MANUAL_PICK_HOLD_MS = 15_000L
+        /** 最近 N 张不重复窗口的上限。 */
+        const val MAX_RECENT_NO_REPEAT = 50
+
+        /** WebDAV 目录列表缓存有效期：60 秒内返回上一级/重进目录直接复用。 */
+        private const val BROWSE_CACHE_TTL_MS = 60_000L
+    }
 
     private val db = (getApplication() as WallpaperSwitcherApp).database
     private val groupDao = db.wallpaperGroupDao()
@@ -124,29 +142,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     private fun str(@StringRes id: Int, vararg args: Any): String =
         com.wallpaperswitcher.ui.AppLocale.localized(getApplication()).getString(id, *args)
 
-    companion object {
-        private const val TAG = "WallpaperViewModel"
-        // Recursion bound for SAF folder imports (see addFolder).
-        /**
-         * How long the HOME timer is held back after an explicit iset this
-         * wallpaperi pick: just long enough to walk through the system live
-         * wallpaper confirmation screen. The lock timer never uses this hold -
-         * a manual lock pick only re-anchors its schedule by one interval.
-         */
-        const val MANUAL_PICK_HOLD_MS = 15_000L
-        /**
-         * Minimum spacing between two scan-progress publishes (see
-         * [publishScanProgress]): the import/scan loops report far more often
-         * than a human can read, and every publish reaches the UI.
-         */
-        /** Upper bound of the 最近 N 张不重复 window offered in Settings. */
-        const val MAX_RECENT_NO_REPEAT = 50
-    }
 
     // --- States ---
 
     val groups: StateFlow<List<WallpaperGroup>> = groupDao.getAllGroups()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), emptyList())
 
     // Per-group media counts for the home screen cards (image + video + GIF).
     // distinctUntilChanged suppresses identical emissions, so a batch folder
@@ -155,9 +155,39 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     val mediaCounts: StateFlow<Map<Long, Int>> = imageDao.getMediaCounts()
         .map { list -> list.associate { it.groupId to it.mediaCount } }
         .distinctUntilChanged()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyMap())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), emptyMap())
 
     /** 阅读订阅源 (Legado-compatible RSS/Atom feeds), newest first. */
+    /**
+     * 启动时预热订阅源图标（前 [count] 个）：这些图标本来要在订阅页首帧同时请求+解码，
+     * 提前丢进 Coil（参数与格子一致，命中同一份缓存），切到订阅页时通常已在内存里。
+     */
+    fun prefetchRssIcons(count: Int = 24) {
+        viewModelScope.launch {
+            val list = try {
+                rssSources.value.ifEmpty { rssSources.first() }
+            } catch (_: Throwable) {
+                emptyList()
+            }
+            if (list.isEmpty()) return@launch
+            val loader = getApplication<Application>().imageLoader
+            withContext(Dispatchers.IO) {
+                list.take(count).forEach { source ->
+                    val icon = com.wallpaperswitcher.engine.RssIcons.iconUrl(source.url)
+                        ?: return@forEach
+                    try {
+                        loader.enqueue(
+                            com.wallpaperswitcher.ui.screens.imageRequest(
+                                getApplication(), icon, null, sizePx = 160
+                            )
+                        )
+                    } catch (_: Throwable) {
+                    }
+                }
+            }
+        }
+    }
+
     val rssSources: StateFlow<List<com.wallpaperswitcher.data.RssSource>> = rss.rssSources
 
     /**
@@ -170,7 +200,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     val serviceEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.SERVICE_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: false }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), false)
 
     /**
      * 一键暂停: wall-clock ms until which both timed loops hold their ticks
@@ -179,29 +209,29 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
      */
     val pauseUntil: StateFlow<Long> = settingsDao.getValueFlow(SettingsKeys.PAUSE_UNTIL)
         .map { it?.toLongOrNull() ?: 0L }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), 0L)
 
     val doubleTapEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.DOUBLE_TAP_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: true }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), true)
 
     val unlockSwitchEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.UNLOCK_SWITCH_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: false }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), false)
 
     val floatingButtonEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.FLOATING_BUTTON_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: false }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), false)
 
 
     // Floating button appearance (base color + rest-state opacity percent).
     val floatingButtonColor: StateFlow<String> = settingsDao.getValueFlow(SettingsKeys.FLOATING_BUTTON_COLOR)
         .map { it ?: SettingsKeys.FLOATING_BUTTON_COLOR_DEFAULT }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsKeys.FLOATING_BUTTON_COLOR_DEFAULT)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), SettingsKeys.FLOATING_BUTTON_COLOR_DEFAULT)
 
     val floatingButtonAlpha: StateFlow<Int> = settingsDao.getValueFlow(SettingsKeys.FLOATING_BUTTON_ALPHA)
         .map { it?.toIntOrNull()?.coerceIn(SettingsKeys.FLOATING_BUTTON_ALPHA_MIN, 100) ?: SettingsKeys.FLOATING_BUTTON_ALPHA_DEFAULT }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsKeys.FLOATING_BUTTON_ALPHA_DEFAULT)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), SettingsKeys.FLOATING_BUTTON_ALPHA_DEFAULT)
 
     // Floating button content: a short label, or a picture that replaces it
     // (see FloatingButtonContentPolicy).
@@ -209,13 +239,13 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         .map { it ?: SettingsKeys.FLOATING_BUTTON_TEXT_DEFAULT }
         .stateIn(
             viewModelScope,
-            SharingStarted.WhileSubscribed(5000),
+            SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS),
             SettingsKeys.FLOATING_BUTTON_TEXT_DEFAULT
         )
 
     val floatingButtonImageUri: StateFlow<String> = settingsDao.getValueFlow(SettingsKeys.FLOATING_BUTTON_IMAGE_URI)
         .map { it.orEmpty() }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), "")
 
     private val _selectedGroupId = MutableStateFlow<Long?>(null)
     val selectedGroupId: StateFlow<Long?> = _selectedGroupId
@@ -224,7 +254,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     val selectedGroup: StateFlow<WallpaperGroup?> = _selectedGroupId
         .filterNotNull()
         .flatMapLatest { groupDao.getGroupByIdFlow(it) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), null)
 
     // 已加载的媒体窗口（见 engine.MediaWindow）：窗口状态由 [MediaWindowController]
     // 持有，这里只暴露 UI 需要的流。
@@ -358,6 +388,27 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Actions ---
 
+    /**
+     * 点分组时先预热首屏缩略图：分组详情第一帧只有灰占位，图要等解码回来。
+     * 这里在导航之前就把前 12 张丢给 Coil（解码参数与格子一致，命中同一份缓存）。
+     */
+    fun prefetchGroupThumbnails(groupId: Long) {
+        if (groupId <= 0L) return
+        viewModelScope.launch {
+            val images = try {
+                imageDao.getImagesByGroupSync(groupId)
+            } catch (t: Throwable) {
+                AppLog.w(TAG, "prefetch thumbs: read group failed", t)
+                return@launch
+            }
+            com.wallpaperswitcher.ui.screens.prefetchGroupThumbnails(
+                // 一台机一屏约 5 行 × 7 列 ≈ 35 格；预取 48 张覆盖一屏多一点，
+                // 滚动时才不会频繁出现"灰占位 → 图"的替换（那一下手感就是卡）。
+                getApplication(), images, 48
+            )
+        }
+    }
+
     fun selectGroup(id: Long?) {
         _selectedGroupId.value = id
         mediaWindow.reset()
@@ -428,6 +479,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+
     fun toggleUnlockSwitch(enabled: Boolean) {
         guardedWrite("切换解锁失败") {
             settingsDao.setBool(SettingsKeys.UNLOCK_SWITCH_ENABLED, enabled)
@@ -438,6 +490,33 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             // wrong ever since the static fallback was added).
             if (enabled && !LiveWallpaperService.engineRunning) {
                 _hintMessage.emit(str(R.string.hint_unlock_static_mode))
+            }
+        }
+    }
+
+    /**
+     * 「锁屏跟随动态壁纸」的一次性说明，只在 App 回到前台时检查。
+     *
+     * 触发条件三件同时成立才算这个取舍需要被点明：**从没提示过** + **桌面确实是我们的
+     * 动态壁纸** + **锁屏独立定时开着**（默认开，于是锁屏每 10s 还会单独做一次
+     * decode+encode+系统写）。关掉那个开关，锁屏就跟随动态壁纸，省掉整条写入。
+     *
+     * 一次性由 [SettingsKeys.LOCK_FOLLOW_HINT_SHOWN] 保证，且在 emit 之前就落库：
+     * 提示没显示出来（进程被杀）也不该在下次再追问一次。所有查询都在 IO 上
+     * （一次 settings 读 + 一次 wallpaper binder 查询）。
+     */
+    fun maybeShowLockFollowHint() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (settingsDao.getBool(SettingsKeys.LOCK_FOLLOW_HINT_SHOWN, false)) return@launch
+                if (!settingsDao.getBool(SettingsKeys.LOCK_TIMER_ENABLED, true)) return@launch
+                if (!LiveWallpaperService.isHomeLiveWallpaper(getApplication())) return@launch
+                settingsDao.setBool(SettingsKeys.LOCK_FOLLOW_HINT_SHOWN, true)
+                _hintMessage.emit(str(R.string.hint_lock_follow_live))
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Exception) {
+                AppLog.w(TAG, "lock-follow hint check failed", e)
             }
         }
     }
@@ -575,18 +654,16 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * 时间规则: the minutes-of-day window this group may be shown in
-     * (-1 = 全天). Out-of-window groups are skipped by the scheduler instead of
-     * being switched to.
+     * (-1 = 全天) + the weekday mask. Saved as ONE row update: two separate
+     * read-modify-writes could overwrite each other (that made 时段 randomly
+     * revert, see GroupController.setGroupActiveWindowAndDays).
      */
-    fun setGroupActiveWindow(groupId: Long, fromMinute: Int, toMinute: Int) =
-        groupOps.setGroupActiveWindow(groupId, fromMinute, toMinute)
-
-    /**
-     * 时间规则 · 星期: bitmask with bit 0 = Monday … bit 6 = Sunday.
-     * `0` or the full mask means "every day".
-     */
-    fun setGroupActiveDays(groupId: Long, daysMask: Int) =
-        groupOps.setGroupActiveDays(groupId, daysMask)
+    fun setGroupActiveWindowAndDays(
+        groupId: Long,
+        fromMinute: Int,
+        toMinute: Int,
+        daysMask: Int,
+    ) = groupOps.setGroupActiveWindowAndDays(groupId, fromMinute, toMinute, daysMask)
 
     /**
      * 分组素材类型: "" = 两者都切换, "IMAGE" = 仅图片, "MOTION" = 仅视频（含 GIF）.
@@ -652,6 +729,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     private val _previewSlot = MutableStateFlow(WallpaperTarget.SLOT_HOME)
     val previewSlot: StateFlow<String> = _previewSlot
     private var previewJob: Job? = null
+    private var nextPreviewJob: Job? = null
 
     /** 预览下一张: read-only (no cursor move, no wallpaper write). */
     fun previewNext() {
@@ -672,6 +750,23 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 首页内嵌的「下一张」预览：只取下一张是什么，不打开全屏预览、
+     * 不动游标（[com.wallpaperswitcher.engine.NextPreview.nextHome] 是只读的）。
+     */
+    fun refreshNextPreview() {
+        if (nextPreviewJob?.isActive == true) return
+        nextPreviewJob = viewModelScope.launch {
+            try {
+                _previewImage.value = com.wallpaperswitcher.engine.NextPreview.nextHome(db)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.w(TAG, "refreshNextPreview failed", e)
+            }
+        }
+    }
+
     fun dismissPreview() {
         _previewVisible.value = false
     }
@@ -682,7 +777,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         if (image != null) setImageAsWallpaper(image)
     }
 
-    // --- 新功能：回滚 / 预览 / 收藏 / 大图浏览 ---
+    // --- 回滚 / 下一张预览 ---
 
     /**
      * 「下一张预览」的带槽位版本：悬浮按钮长按时要按**那块屏**预览
@@ -745,10 +840,6 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             }
         }
 
-    /** 收藏聚合（跨分组，按 uri 去重）。 */
-    val favorites: StateFlow<List<WallpaperImage>> = imageDao.observeFavorites()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
     // --- 存储与流量守门 ---
 
     /**
@@ -777,36 +868,12 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
      */
     suspend fun cleanOrphanMedia(): StorageCleanResult = storage.cleanOrphans()
 
-    /** 收藏/取消收藏（大图浏览的双击、收藏页的按钮都走这里）。 */
-    fun setFavorite(mediaId: Long, favorite: Boolean) {
-        guardedWrite("收藏失败") {
-            imageDao.setFavorite(mediaId, favorite)
-        }
-    }
-
-    /**
-     * 收藏/取消收藏**整张图**（按 uri，覆盖它在所有分组里的行）。
-     *
-     * 界面是按 uri 判断星标的（收藏页跨分组聚合、大图浏览比对 favorites），
-     * 而同一个文件可以在多个分组里各有一行 —— 只改当前这一行，在 B 组里
-     * "取消收藏"改的是本来就 =0 的那行：星标不动，提示却说已取消，怎么点都去不掉。
-     */
-    fun setFavoriteByUri(uri: String, favorite: Boolean) {
-        guardedWrite("收藏失败") {
-            imageDao.setFavoriteByUri(uri, favorite)
-            // ★ weights feed the weighted RANDOM pick: drop the cached
-            // id/weight lists so the next switch (or preview) sees the new
-            // star immediately instead of the pre-toggle set.
-            com.wallpaperswitcher.engine.MediaPick.invalidateEnabledIds()
-        }
-    }
-
     // --- 在线壁纸源（设置里的内置选项） -------------------------------------
 
     /** 内置在线源对应的行（type/开关/上次结果），设置页按 order 列出。 */
     val onlineSources: StateFlow<List<com.wallpaperswitcher.data.OnlineSource>> =
         db.onlineSourceDao().observeAll()
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), emptyList())
 
     fun setOnlineSourceEnabled(type: String, enabled: Boolean) {
         viewModelScope.launch {
@@ -849,6 +916,454 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             }
             _toastMessage.emit(str(R.string.settings_online_source_refreshing))
         }
+    }
+
+    // --- 自定义网盘来源（WebDAV） --------------------------------------------
+
+    /**
+     * 用户自己添加的网盘来源。内置源（Bing/NASA/图站）不在这里 —— 它们的开关在
+     * [onlineSources] 里由 OnlineBuiltins 管。
+     */
+    val customOnlineSources: StateFlow<List<com.wallpaperswitcher.data.OnlineSource>> =
+        db.onlineSourceDao().observeAll()
+            .map { list ->
+                list.filter { it.type == com.wallpaperswitcher.data.OnlineSource.TYPE_WEBDAV }
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), emptyList())
+
+    /**
+     * 新建/更新一个网盘来源。
+     *
+     * @param id 0 = 新建；>0 = 更新
+     * @param password 空字符串 = **保持原口令密文**（编辑时不必重输密码）
+     * @return 保存后的 source id（0 = 失败）
+     */
+    suspend fun saveOnlineSource(
+        id: Long,
+        type: String,
+        name: String,
+        baseUrl: String,
+        path: String,
+        username: String,
+        password: String,
+        intervalMinutes: Int,
+        keepCount: Int,
+        wifiOnly: Boolean,
+        chargingOnly: Boolean,
+        enabled: Boolean,
+    ): Long = try {
+        val dao = db.onlineSourceDao()
+        val existing = if (id > 0L) dao.getById(id) else null
+        val cipher = when {
+            password.isNotEmpty() ->
+                com.wallpaperswitcher.engine.OnlineSecretStore.encrypt(password)
+            existing != null -> existing.passwordCipher
+            else -> ""
+        }
+        val row = (existing ?: com.wallpaperswitcher.data.OnlineSource(type = type)).copy(
+            type = type,
+            name = name.trim().ifEmpty { baseUrl.trim() },
+            enabled = enabled,
+            webdavUrl = baseUrl.trim(),
+            webdavPath = path.trim(),
+            username = username.trim(),
+            passwordCipher = cipher,
+            intervalMinutes = com.wallpaperswitcher.engine.OnlineSourceRules
+                .normalizeIntervalMinutes(intervalMinutes),
+            keepCount = com.wallpaperswitcher.engine.OnlineSourceRules
+                .normalizeKeepCount(keepCount),
+            wifiOnly = wifiOnly,
+            chargingOnly = chargingOnly,
+        )
+        val newId = if (existing == null) dao.insert(row) else {
+            dao.update(row)
+            row.id
+        }
+        // 开关状态决定调度：开 → 排周期 + 立刻跑一次；关 → 取消。
+        val app = getApplication<android.app.Application>()
+        if (enabled) {
+            com.wallpaperswitcher.engine.OnlineSourceScheduler.schedule(app, row.copy(id = newId))
+            com.wallpaperswitcher.engine.OnlineSourceScheduler.refreshNow(app, newId)
+        } else {
+            com.wallpaperswitcher.engine.OnlineSourceScheduler.cancel(app, newId)
+        }
+        newId
+    } catch (e: Exception) {
+        AppLog.w(TAG, "saveOnlineSource failed", e)
+        0L
+    }
+
+    /** 删除一个网盘来源：调度取消 + 行删除（文件由下一次清理任务回收）。 */
+    suspend fun deleteOnlineSource(id: Long) {
+        if (id <= 0L) return
+        try {
+            com.wallpaperswitcher.engine.OnlineSourceScheduler
+                .cancel(getApplication(), id)
+            db.onlineSourceDao().delete(id)
+        } catch (e: Exception) {
+            AppLog.w(TAG, "deleteOnlineSource failed", e)
+        }
+    }
+
+    /** 「立即更新」单个来源。 */
+    fun refreshOnlineSource(id: Long) {
+        if (id <= 0L) return
+        com.wallpaperswitcher.engine.OnlineSourceScheduler.refreshNow(getApplication(), id)
+    }
+
+    /** 「测试连接」：只探测，不写库（只支持 WebDAV）。 */
+    internal suspend fun testOnlineSource(
+        baseUrl: String,
+        path: String,
+        username: String,
+        password: String,
+    ): com.wallpaperswitcher.engine.OnlineProbe.Result =
+        com.wallpaperswitcher.engine.OnlineProbe.testWebDav(baseUrl, path, username, password)
+
+    /** 网盘下载位置（SAF 树 URI；空 = 应用私有目录）。与订阅源目录分开设置。 */
+    suspend fun webdavDownloadDirValue(): String =
+        com.wallpaperswitcher.engine.OnlineDownloadDir.load(getApplication())
+
+    fun setWebdavDownloadDir(treeUri: String) {
+        viewModelScope.launch {
+            com.wallpaperswitcher.engine.OnlineDownloadDir.save(getApplication(), treeUri)
+        }
+    }
+    /** WebDAV 浏览页显示方式："grid" | "list"。 */
+    val webdavViewMode: StateFlow<String> =
+        settingsDao.getValueFlow(SettingsKeys.WEBDAV_VIEW_MODE)
+            .map { if (it == "list") "list" else "grid" }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), "grid")
+
+
+    fun setWebdavViewMode(mode: String) {
+        guardedWrite("保存视图方式失败") {
+            settingsDao.setString(SettingsKeys.WEBDAV_VIEW_MODE, if (mode == "list") "list" else "grid")
+        }
+    }
+
+    /**
+     * 浏览网盘一层目录（浏览页用）。失败时返回 failure，带上稳定原因码，
+     * 由 UI 决定怎么显示（空目录与"连不上"必须能区分）。
+     */
+    /**
+     * 目录列表缓存：`sourceId|path` → (时间戳, 条目)。
+     *
+     * WebDAV 每次 PROPFIND 都要一次往返 + XML 解析，返回上一级/来回切目录时特别慢。
+     * 这里按 TTL 命中缓存：第一次进目录照常联网，**返回上一级**或短时间内重复进入
+     * 直接复用，列表瞬间出来。TTL 到期后静默刷新，内容不会长期陈旧。
+     */
+    private val browseCache =
+        java.util.concurrent.ConcurrentHashMap<String, Pair<Long, List<com.wallpaperswitcher.engine.OnlineBrowser.Entry>>>()
+
+    private fun browseCacheKey(sourceId: Long, path: String) = "$sourceId|$path"
+
+    /** 手动让某个源的缓存失效（编辑源、下拉刷新时调）。 */
+    fun invalidateOnlineBrowseCache(sourceId: Long? = null) {
+        if (sourceId == null) {
+            browseCache.clear()
+        } else {
+            browseCache.keys.removeAll { it.startsWith("$sourceId|") }
+        }
+    }
+
+    internal suspend fun browseOnlineSource(
+        sourceId: Long,
+        path: String,
+    ): Result<List<com.wallpaperswitcher.engine.OnlineBrowser.Entry>> {
+        val key = browseCacheKey(sourceId, path)
+        browseCache[key]?.let { cached ->
+            if (System.currentTimeMillis() - cached.first < BROWSE_CACHE_TTL_MS) {
+                return Result.success(cached.second)
+            }
+        }
+        return try {
+            val source = db.onlineSourceDao().getById(sourceId)
+            if (source == null) {
+                Result.failure(IllegalStateException("missing_source"))
+            } else {
+                val password =
+                    com.wallpaperswitcher.engine.OnlineSecretStore.decrypt(source.passwordCipher)
+                val entries =
+                    com.wallpaperswitcher.engine.OnlineBrowser.list(source, password, path)
+                browseCache[key] = System.currentTimeMillis() to entries
+                // 缓存上限：目录多、条目多时别把内存吃满（保留最近 60 个目录）。
+                if (browseCache.size > 60) {
+                    browseCache.entries
+                        .sortedBy { it.value.first }
+                        .take(browseCache.size - 60)
+                        .forEach { browseCache.remove(it.key) }
+                }
+                Result.success(entries)
+            }
+        } catch (t: Throwable) {
+            AppLog.w(TAG, "browseOnlineSource failed", t)
+            // 网络失败时，宁可给一份稍旧的缓存，也不要让用户看到"读取失败"。
+            val stale = browseCache[key]
+            if (stale != null) Result.success(stale.second) else Result.failure(t)
+        }
+    }
+
+    /**
+     * 列表缩略图用的认证头（WebDAV Basic）。只含 `Authorization`，不含口令明文。
+     */
+    internal suspend fun onlineMediaHeaders(sourceId: Long): Map<String, String> = try {
+        val source = db.onlineSourceDao().getById(sourceId)
+        if (source == null) {
+            emptyMap()
+        } else {
+            val password =
+                com.wallpaperswitcher.engine.OnlineSecretStore.decrypt(source.passwordCipher)
+            com.wallpaperswitcher.engine.OnlineSourceRules
+                .basicAuthHeader(source.username, password)
+                ?.let { mapOf("Authorization" to it) }
+                ?: emptyMap()
+        }
+    } catch (t: Throwable) {
+        AppLog.w(TAG, "onlineMediaHeaders failed", t)
+        emptyMap()
+    }
+
+    /**
+     * 在线观看：返回 (地址, 认证头)。不下载、不入库 —— 查看器直接流式读取。
+     */
+    internal suspend fun onlineMediaViewTarget(
+        sourceId: Long,
+        entry: com.wallpaperswitcher.engine.OnlineBrowser.Entry,
+    ): Pair<String, Map<String, String>>? = try {
+        val source = db.onlineSourceDao().getById(sourceId)
+        if (source == null) {
+            null
+        } else {
+            val password =
+                com.wallpaperswitcher.engine.OnlineSecretStore.decrypt(source.passwordCipher)
+            com.wallpaperswitcher.engine.OnlineBrowser.viewTarget(source, password, entry)
+        }
+    } catch (t: Throwable) {
+        AppLog.w(TAG, "onlineMediaViewTarget failed", t)
+        null
+    }
+
+    /**
+     * 「添加到分组」的**后台**执行体：跑在 viewModelScope 上，所以退出浏览页/切 Tab
+     * 也不会中断（之前 UI 用 rememberCoroutineScope，一关页面协程就被取消，下载半路死掉）。
+     */
+    /** 「添加到分组」串行队列：同时只跑一批，其余排队（不再丢弃第二次点击）。 */
+    private val importLock = Mutex()
+    private val importQueueDepth = AtomicInteger(0)
+
+    /**
+     * 写进度条状态。[queued] > 0 时在名字后面标出还有多少批在排队，用户能看出
+     * "点了两次、只有一批在跑"不是丢了。
+     */
+    private fun publishImportProgress(done: Int, total: Int, queued: Int, groupId: Long = 0L) {
+        val suffix = if (queued > 0) "  (+${queued} 排队)" else ""
+        _onlineImportProgress.value = OnlineImportProgress(
+            name = "媒体 $done/$total$suffix",
+            groupId = groupId,
+            doneBytes = done.toLong(),
+            totalBytes = total.toLong(),
+            finished = total > 0 && done >= total,
+        )
+    }
+
+    private val _onlineImportProgress = MutableStateFlow<OnlineImportProgress?>(null)
+    val onlineImportProgress: StateFlow<OnlineImportProgress?> = _onlineImportProgress
+
+    /** 上一轮「添加到分组」的结果码（UI 取走后置空）。 */
+    private val _onlineImportResult = MutableStateFlow<String?>(null)
+    val onlineImportResult: StateFlow<String?> = _onlineImportResult
+
+    fun clearOnlineImportResult() {
+        _onlineImportResult.value = null
+    }
+
+    fun importOnlineToGroup(
+        sourceId: Long,
+        entries: List<com.wallpaperswitcher.engine.OnlineBrowser.Entry>,
+        groupId: Long,
+    ) {
+        if (entries.isEmpty()) return
+        viewModelScope.launch {
+            // 同一把锁：一次只跑一批，后来的排队而不是被丢弃。
+            importQueueDepth.incrementAndGet()
+            var ok = 0
+            var failed = 0
+            try {
+                importLock.withLock {
+                    entries.forEachIndexed { index, entry ->
+                        _onlineImportProgress.value = OnlineImportProgress(
+                            name = "${index + 1}/${entries.size} ${entry.displayName}",
+                            doneBytes = 0L,
+                            totalBytes = entry.size,
+                            finished = false,
+                            groupId = groupId,
+                        )
+                        val image = com.wallpaperswitcher.engine.OnlineSync.importOne(
+                            getApplication(), sourceId, entry, targetGroupId = groupId
+                        ) { done, total ->
+                            _onlineImportProgress.value = OnlineImportProgress(
+                                name = "${index + 1}/${entries.size} ${entry.displayName}",
+                                doneBytes = done,
+                                totalBytes = if (total > 0L) total else entry.size,
+                                finished = false,
+                                groupId = groupId,
+                            )
+                        }
+                        if (image != null) ok++ else failed++
+                    }
+                }
+                _onlineImportResult.value = if (failed == 0) "added:$ok" else "added:$ok:$failed"
+            } catch (t: Throwable) {
+                _onlineImportResult.value = if (failed == 0) "added:$ok" else "added:$ok:$failed"
+                AppLog.w(TAG, "importOnlineToGroup failed", t)
+                failed = entries.size - ok
+            } finally {
+                importQueueDepth.decrementAndGet()
+                if (importQueueDepth.get() == 0) _onlineImportProgress.value = null
+            }
+        }
+    }
+
+    /** 「添加到分组」的进度（null = 没在跑）。 */
+    data class OnlineImportProgress(
+        /** 这批下载属于哪个分组（0 = 自动分组）：分组详情页只显示自己那一份进度。 */
+        val groupId: Long = 0L,
+        val name: String,
+        val doneBytes: Long,
+        val totalBytes: Long,
+        val finished: Boolean,
+    )
+
+    /** 下载浏览页里点中的那一项并入库到**指定分组**（查看器里的「添加到分组」）。 */
+    internal suspend fun importOnlineEntryToGroup(
+        sourceId: Long,
+        entry: com.wallpaperswitcher.engine.OnlineBrowser.Entry,
+        groupId: Long,
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+    ): com.wallpaperswitcher.data.WallpaperImage? =
+        com.wallpaperswitcher.engine.OnlineSync.importOne(
+            getApplication(), sourceId, entry,
+            targetGroupId = groupId,
+            onProgress = onProgress,
+        )
+    /** 下载浏览页里点中的那一项并入库；返回插入后的媒体行（失败 null）。 */
+    internal suspend fun importOnlineEntry(
+        sourceId: Long,
+        entry: com.wallpaperswitcher.engine.OnlineBrowser.Entry,
+    ): com.wallpaperswitcher.data.WallpaperImage? =
+        com.wallpaperswitcher.engine.OnlineSync.importOne(
+            getApplication(), sourceId, entry
+        )
+
+    /**
+     * 批量下载（多选 / 选文件夹）：逐项走与 [importOnlineEntry] 完全相同的逻辑。
+     *
+     * 串行而不是并发：网盘多半有并发风控，而且这是用户主动等待的操作，稳定比快重要。
+     * 单项失败不影响其余项（返回失败计数）。
+     *
+     * @param onProgress (已完成, 总数, 当前文件名)
+     * @return Pair(成功数, 失败数)
+     */
+    internal suspend fun importOnlineEntries(
+        sourceId: Long,
+        entries: List<com.wallpaperswitcher.engine.OnlineBrowser.Entry>,
+        onProgress: (done: Int, total: Int, name: String) -> Unit = { _, _, _ -> },
+    ): Pair<Int, Int> {
+        var ok = 0
+        var failed = 0
+        entries.forEachIndexed { index, entry ->
+            onProgress(index, entries.size, entry.displayName)
+            val image = importOnlineEntry(sourceId, entry)
+            if (image != null) ok++ else failed++
+        }
+        onProgress(entries.size, entries.size, "")
+        return ok to failed
+    }
+
+    /**
+     * 后台批量下载（网盘「下载整个文件夹 / 批量下载」用）。
+     *
+     * 之前是浏览页自己在 rememberCoroutineScope 里跑，**离开页面就取消**；
+     * 现在挂在 viewModelScope 上，并把进度写进 onlineImportProgress ——
+     * 进度条显示在「分组详情」的添加壁纸按钮下面（见 GroupDetailScreen）。
+     */
+    fun importOnlineEntriesBackground(
+        sourceId: Long,
+        entries: List<com.wallpaperswitcher.engine.OnlineBrowser.Entry>,
+    ) {
+        if (entries.isEmpty()) return
+        if (entries.isEmpty()) return
+        viewModelScope.launch {
+            importQueueDepth.incrementAndGet()
+            try {
+                importLock.withLock {
+                    importOnlineEntries(sourceId, entries) { done, total, name ->
+                        val queued = (importQueueDepth.get() - 1).coerceAtLeast(0)
+                        _onlineImportProgress.value = OnlineImportProgress(
+                            name = ("$done/$total $name").trim() +
+                                if (queued > 0) "  (+${queued} 排队)" else "",
+                            doneBytes = done.toLong(),
+                            totalBytes = total.toLong(),
+                            finished = done >= total,
+                            // 批量下载落"自动分组"：0 表示不限定分组，任何分组页都显示进度。
+                            groupId = 0L,
+                        )
+                    }
+                }
+            } catch (t: Throwable) {
+                AppLog.w(TAG, "importOnlineEntriesBackground failed", t)
+            } finally {
+                importQueueDepth.decrementAndGet()
+                if (importQueueDepth.get() == 0) _onlineImportProgress.value = null
+            }
+        }
+    }
+
+    /** 在子目录里递归搜索媒体（当前目录搜不到时的兜底）。 */
+    internal suspend fun searchOnlineFolder(
+        sourceId: Long,
+        path: String,
+        query: String,
+    ): Result<List<com.wallpaperswitcher.engine.OnlineBrowser.Entry>> = try {
+        val source = db.onlineSourceDao().getById(sourceId)
+        if (source == null) {
+            Result.failure(IllegalStateException("missing_source"))
+        } else {
+            val password =
+                com.wallpaperswitcher.engine.OnlineSecretStore.decrypt(source.passwordCipher)
+            Result.success(
+                com.wallpaperswitcher.engine.OnlineBrowser.searchMedia(
+                    source, password, path, query
+                )
+            )
+        }
+    } catch (t: Throwable) {
+        AppLog.w(TAG, "searchOnlineFolder failed", t)
+        Result.failure(t)
+    }
+
+    /** 递归收集目录下的媒体（「选文件夹下载」用），有层数/条数上限。 */
+    internal suspend fun collectOnlineFolder(
+        sourceId: Long,
+        path: String,
+        maxItems: Int = 200,
+    ): Result<List<com.wallpaperswitcher.engine.OnlineBrowser.Entry>> = try {
+        val source = db.onlineSourceDao().getById(sourceId)
+        if (source == null) {
+            Result.failure(IllegalStateException("missing_source"))
+        } else {
+            val password =
+                com.wallpaperswitcher.engine.OnlineSecretStore.decrypt(source.passwordCipher)
+            Result.success(
+                com.wallpaperswitcher.engine.OnlineBrowser.listMediaRecursive(
+                    source, password, path, maxItems
+                )
+            )
+        }
+    } catch (t: Throwable) {
+        AppLog.w(TAG, "collectOnlineFolder failed", t)
+        Result.failure(t)
     }
 
     // --- Settings writers (restored) ---
@@ -966,7 +1481,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     val setupWizardDone: StateFlow<Boolean> =
         settingsDao.getValueFlow(SettingsKeys.SETUP_WIZARD_DONE)
             .map { it?.toBooleanStrictOrNull() ?: false }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), true)
 
     fun markSetupWizardDone() {
         guardedWrite("保存向导状态失败") {
@@ -980,19 +1495,19 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     val rssWifiOnly: StateFlow<Boolean> =
         settingsDao.getValueFlow(SettingsKeys.RSS_WIFI_ONLY)
             .map { it?.toBooleanStrictOrNull() ?: false }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), false)
 
     /** Daily cap in MB; 0 = 不限. */
     val rssDailyLimitMb: StateFlow<Int> =
         settingsDao.getValueFlow(SettingsKeys.RSS_DAILY_LIMIT_MB)
             .map { it?.toIntOrNull() ?: 0 }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), 0)
 
     /** 残留自动清理 TTL in days; 0 = 关闭. */
     val rssOrphanTtlDays: StateFlow<Int> =
         settingsDao.getValueFlow(SettingsKeys.RSS_ORPHAN_TTL_DAYS)
             .map { it?.toIntOrNull() ?: 0 }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), 0)
 
     fun setRssWifiOnly(enabled: Boolean) {
         guardedWrite("保存下载设置失败") {
@@ -1039,7 +1554,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     val clarityEnabled: StateFlow<Boolean> =
         settingsDao.getValueFlow(SettingsKeys.CLARITY_MODE)
             .map { com.wallpaperswitcher.engine.ClarityMode.isEnabled(it) }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), true)
 
     /** 超分算法："fsr1" / "anime4k"（未知值归一到 fsr1）。 */
     val enhanceAlgo: StateFlow<String> =
@@ -1053,7 +1568,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             }
             .stateIn(
                 viewModelScope,
-                SharingStarted.WhileSubscribed(5000),
+                SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS),
                 com.wallpaperswitcher.engine.EnhanceMode.FSR1_KEY,
             )
 
@@ -1097,9 +1612,40 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** 视频循环播放（默认开）：关掉后视频只播一遍停在最后一帧。 */
+    /** 订阅 / WebDAV 图片按需加载（默认开）。 */
+    fun setRemoteOnDemand(enabled: Boolean) {
+        guardedWrite("保存按需加载设置失败") {
+            settingsDao.setBool(SettingsKeys.REMOTE_ON_DEMAND, enabled)
+        }
+    }
+
+    /** 远程图片是否参与锁屏（默认关）。 */
+    fun setRemoteLockScreen(enabled: Boolean) {
+        guardedWrite("保存远程锁屏设置失败") {
+            settingsDao.setBool(SettingsKeys.REMOTE_LOCK_SCREEN, enabled)
+        }
+    }
+
+    fun setVideoLoopEnabled(enabled: Boolean) {
+        guardedWrite("保存视频循环播放设置失败") {
+            settingsDao.setBool(SettingsKeys.VIDEO_LOOP_ENABLED, enabled)
+        }
+    }
+
     fun setVideoPlayToEnd(enabled: Boolean) {
         guardedWrite("保存视频播完再切设置失败") {
             settingsDao.setBool(SettingsKeys.VIDEO_PLAY_TO_END, enabled)
+        }
+    }
+
+    /** 视频播完再切: 播几次后切换（1..MAX，越界值夹到范围内再存）。 */
+    fun setVideoPlayToEndRepeats(repeats: Int) {
+        guardedWrite("保存视频播放次数失败") {
+            settingsDao.setLong(
+                SettingsKeys.VIDEO_PLAY_TO_END_REPEATS,
+                repeats.coerceAtLeast(1).toLong(),
+            )
         }
     }
 
@@ -1141,6 +1687,22 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun rssArticleCount(sourceId: Long) = rss.rssArticleCount(sourceId)
     suspend fun rssArticleCountOfSort(sourceId: Long, sort: String) = rss.rssArticleCountOfSort(sourceId, sort)
+    /** 后台刷新当前分类（列表已有缓存时用，不阻塞界面）。 */
+    fun launchRefreshRss(source: com.wallpaperswitcher.data.RssSource, index: Int) =
+        rss.launchRefreshRss(source, index)
+    /** 阅读编辑页菜单的「清除 Cookie」。 */
+    suspend fun rssClearCookie(source: com.wallpaperswitcher.data.RssSource) = rss.rssClearCookie(source)
+    /** 阅读的「切换布局」：articleStyle 循环 0→1→2→3→4→0（当前值从库里现读）。 */
+    suspend fun rssCycleArticleStyle(sourceId: Long): Int = rss.rssCycleArticleStyle(sourceId)
+    /** 阅读的「调试源」：抓一页并报告规则产出，不写库。 */
+    suspend fun rssDebugSource(source: com.wallpaperswitcher.data.RssSource): String =
+        rss.rssDebugSource(source)
+
+    /** 同步发一条 toast（非挂起，供 Compose 回调直接用）。 */
+    fun showToast(message: String) {
+        if (message.isNotBlank()) _toastMessage.tryEmit(message)
+    }
+
     fun clearRssSourceCache(sourceId: Long) = rss.clearRssSourceCache(sourceId)
     suspend fun rssDownloadDirValue() = rss.rssDownloadDirValue()
     fun setRssDownloadDir(treeUri: String) = rss.setRssDownloadDir(treeUri)
@@ -1171,7 +1733,30 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         urls: List<String>,
         groupId: Long,
         extraHeaders: Map<String, String> = emptyMap(),
-    ) = rss.addRssImagesToGroup(article, urls, groupId, extraHeaders)
+    ) {
+        if (urls.isEmpty()) return
+        // 排队执行：正在下一批的时候再点"添加到分组"不会再被丢弃（见 importLock）。
+        // 进度写进 onlineImportProgress，显示在「分组详情 → 添加壁纸下面」。
+        viewModelScope.launch {
+            importQueueDepth.incrementAndGet()
+            try {
+                importLock.withLock {
+                    rss.importRssImagesToGroup(
+                        article = article,
+                        urls = urls,
+                        groupId = groupId,
+                        extraHeaders = extraHeaders,
+                        onProgress = { done, total ->
+                            publishImportProgress(done, total, queued = 0, groupId = groupId)
+                        },
+                    )
+                }
+            } finally {
+                importQueueDepth.decrementAndGet()
+                if (importQueueDepth.get() == 0) _onlineImportProgress.value = null
+            }
+        }
+    }
 
     fun rssLoginEndpoint(source: com.wallpaperswitcher.data.RssSource) = rss.rssLoginEndpoint(source)
     fun rssLoginCheckJs(source: com.wallpaperswitcher.data.RssSource) = rss.rssLoginCheckJs(source)
@@ -1204,11 +1789,10 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun importSharedMedia(
         uris: List<android.net.Uri>,
         groupId: Long,
-        favorite: Boolean,
     ) {
         guardedWrite("分享入库失败") {
             val report = com.wallpaperswitcher.engine.SharedMediaImporter
-                .importMedia(getApplication(), uris, groupId, favorite)
+                .importMedia(getApplication(), uris, groupId)
             if (report.added > 0) {
                 WallpaperSwitchService.poke(getApplication())
             }
@@ -1285,14 +1869,14 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     // Theme color (stored as hex string like "#6750A4", empty = system default)
     val themeColor: StateFlow<String> = settingsDao.getValueFlow(SettingsKeys.THEME_COLOR)
         .map { it ?: "" }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), "")
 
     // Light/dark mode: "system" (follow the phone) / "light" / "dark".
     val themeMode: StateFlow<String> = settingsDao.getValueFlow(SettingsKeys.THEME_MODE)
         .map { it ?: SettingsKeys.THEME_MODE_SYSTEM }
         .stateIn(
             viewModelScope,
-            SharingStarted.WhileSubscribed(5000),
+            SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS),
             SettingsKeys.THEME_MODE_SYSTEM
         )
 
@@ -1301,7 +1885,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
         .map { it ?: SettingsKeys.LOCALE_SYSTEM }
         .stateIn(
             viewModelScope,
-            SharingStarted.WhileSubscribed(5000),
+            SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS),
             SettingsKeys.LOCALE_SYSTEM
         )
 
@@ -1324,13 +1908,13 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
      * declaration order, and `combine(...)` reads this one eagerly.
      */
     private val mediaStoreRowCount: StateFlow<Int> = imageDao.getMediaStoreRowCount()
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), 0)
 
     // --- Settings flows (rebuilt after the accidental edit that removed them) ---
 
     val globalIntervalMs: StateFlow<Long> = settingsDao.getValueFlow(SettingsKeys.GLOBAL_INTERVAL_MS)
         .map { it?.toLongOrNull() ?: 60_000L }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 60_000L)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), 60_000L)
 
     val globalSwitchMode: StateFlow<SwitchMode> = settingsDao.getValueFlow(SettingsKeys.GLOBAL_SWITCH_MODE)
         .map { name ->
@@ -1340,7 +1924,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 SwitchMode.RANDOM
             }
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SwitchMode.RANDOM)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), SwitchMode.RANDOM)
 
     val globalScaleMode: StateFlow<ScaleMode> = settingsDao.getValueFlow(SettingsKeys.GLOBAL_SCALE_MODE)
         .map { name ->
@@ -1350,58 +1934,58 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
                 ScaleMode.FIT
             }
         }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), ScaleMode.FIT)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), ScaleMode.FIT)
 
     val clarityMode: StateFlow<String> = settingsDao.getValueFlow(SettingsKeys.CLARITY_MODE)
         .map { it ?: "auto" }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "auto")
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), "auto")
 
     val switchFadeEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.SWITCH_FADE_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: true }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), true)
 
     val rotateMismatchEnabled: StateFlow<Boolean> =
         settingsDao.getValueFlow(SettingsKeys.ROTATE_MISMATCH_ENABLED)
             .map { it?.toBooleanStrictOrNull() ?: true }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), true)
 
     val rotateMismatchClockwise: StateFlow<Boolean> =
         settingsDao.getValueFlow(SettingsKeys.ROTATE_MISMATCH_CW)
             .map { it?.toBooleanStrictOrNull() ?: true }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), true)
 
     val switchTransition: StateFlow<String> =
         settingsDao.getValueFlow(SettingsKeys.SWITCH_TRANSITION)
             .map { it ?: SettingsKeys.SWITCH_TRANSITION_DEFAULT }
             .stateIn(
                 viewModelScope,
-                SharingStarted.WhileSubscribed(5000),
+                SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS),
                 SettingsKeys.SWITCH_TRANSITION_DEFAULT
             )
 
     val lockTimerEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.LOCK_TIMER_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: true }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), true)
 
     val lockIntervalMs: StateFlow<Long> = settingsDao.getValueFlow(SettingsKeys.LOCK_INTERVAL_MS)
         .map { it?.toLongOrNull() ?: 60_000L }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 60_000L)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), 60_000L)
 
     val videoSoundEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.VIDEO_SOUND_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: false }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), false)
 
     val autoScanEnabled: StateFlow<Boolean> = settingsDao.getValueFlow(SettingsKeys.AUTO_SCAN_ENABLED)
         .map { it?.toBooleanStrictOrNull() ?: false }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), false)
 
     val autoScanIntervalMs: StateFlow<Long> = settingsDao.getValueFlow(SettingsKeys.AUTO_SCAN_INTERVAL_MS)
         .map { it?.toLongOrNull() ?: 86_400_000L }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 86_400_000L)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), 86_400_000L)
 
     val autoScanLastRunAt: StateFlow<Long> = settingsDao.getValueFlow(SettingsKeys.AUTO_SCAN_LAST_RUN_AT)
         .map { it?.toLongOrNull() ?: 0L }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), 0L)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), 0L)
 
     val homeUiState: StateFlow<HomeUiState> = combine(
         groups,
@@ -1417,7 +2001,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
             lockTimerEnabled = lock,
             mediaStoreRowCount = storeRows
         )
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), HomeUiState())
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), HomeUiState())
 
     /**
      * The whole settings screen state, driven by ONE Room query over
@@ -1432,7 +2016,7 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
      */
     val settingsUiState: StateFlow<SettingsUiState> = settingsDao.getAllFlow()
         .map { rows -> SettingsProjection.of(rows.associate { it.key to it.value }) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), SettingsUiState())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), SettingsUiState())
 
     fun setThemeColor(hex: String) {
         guardedWrite("保存主题色失败") {
@@ -1465,6 +2049,10 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     fun addFolder(groupId: Long, folderUri: Uri) =
         mediaLibrary.addFolder(groupId, folderUri)
 
+    /** 「添加壁纸 → 压缩包」：解压其中的图片 / 视频并加进分组。 */
+    fun importArchives(groupId: Long, archiveUris: List<Uri>) =
+        mediaLibrary.importArchives(groupId, archiveUris)
+
     fun deleteImage(image: WallpaperImage) = mediaLibrary.deleteImage(image)
 
     fun deleteImages(images: List<WallpaperImage>) = mediaLibrary.deleteImages(images)
@@ -1486,6 +2074,11 @@ class WallpaperViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun scanBrokenMedia(groupId: Long): List<WallpaperImage> =
         mediaLibrary.scanBrokenMedia(groupId)
     fun switchNow() {
+        // 首页内嵌预览跟着更新：切换在服务里异步执行，等它落盘后再取下一张。
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(1500)
+            refreshNextPreview()
+        }
         WallpaperSwitchService.switchNow(getApplication())
     }
 

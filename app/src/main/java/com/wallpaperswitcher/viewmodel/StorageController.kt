@@ -14,6 +14,7 @@ import com.wallpaperswitcher.engine.EnhanceMode
 import com.wallpaperswitcher.engine.MediaDedupe
 import com.wallpaperswitcher.engine.OwnedMediaCleaner
 import com.wallpaperswitcher.engine.RssDownloadDir
+import com.wallpaperswitcher.engine.OnlineDownloadDir
 import com.wallpaperswitcher.service.WallpaperSwitchService
 import com.wallpaperswitcher.util.AppLog
 import java.io.File
@@ -176,68 +177,34 @@ internal class StorageController(
     }
 
     /**
-     * 订阅源导入的壁纸是下载到应用私有目录的（`files/rss/<源 id>/`、`files/online/`），
-     * 删行时必须把文件一起删掉，否则存储会一直涨。相册 / 文件夹来源的 uri 指向用户
-     * 自己的文件，**绝不能删**，所以这里只认应用私有目录下的路径。
+     * 从分组里删掉媒体时怎么处理磁盘文件：
+     * - 用户选的 SAF 目录（订阅/网盘下载位置）里的文件属于用户，**不删**；
+     * - 私有目录里的订阅/网盘缓存（`files/rss/<id>/`、`files/online/<id>/`…）也不在这里删，
+     *   统一交给「设置 → 存储 → 清理残留文件」（[OwnedMediaCleaner]），误删分组还能找回文件；
+     * - **例外：压缩包解出来的媒体（`files/archives/`）即时删除** —— 它们是一次性产物。
      */
     suspend fun deleteOwnedFiles(uris: Collection<String>) {
         if (uris.isEmpty()) return
+        // 只有**压缩包解出来**的媒体（`files/archives/`）即时删文件：
+        // 它们本来就是一次性的临时产物，留着只会白占空间。
+        // 订阅 / 网盘落在用户选的 SAF 目录里的文件不动；其它私有目录（rss/online/…）
+        // 也不在这条路径删，留给「设置 → 存储 → 清理残留文件」。
         val root = app.filesDir.absolutePath.trimEnd('/')
-        // 用户自选的订阅下载目录（SAF）里的文件也是我们创建的，同样要一起删。
-        val tree = try {
-            RssDownloadDir.load(app)
-        } catch (_: Throwable) {
-            ""
-        }
-        // 一定要在 IO 线程上删：一次选择上千张时，逐个删文件（尤其是 SAF 文档，
-        // 每个都是 binder 调用）如果跑在主线程，界面就会卡住。批量并行 + 分批
-        // yield，既快又不会把主线程堵死。
+        val archivesDir = "${root}/archives/"
         val startedAt = System.currentTimeMillis()
         var removed = 0
         withContext(Dispatchers.IO) {
-            val gate = Semaphore(8)
-            coroutineScope {
-                val jobs = uris.map { uri ->
-                    async(Dispatchers.IO) {
-                        gate.withPermit {
-                            if (deleteOneOwnedFile(root, tree, uri)) 1 else 0
-                        }
-                    }
-                }
-                for (job in jobs) removed += job.await()
-            }
-        }
-        if (removed > 0) {
-            AppLog.d(
-                "MediaDelete",
-                "deleted $removed file(s) in ${System.currentTimeMillis() - startedAt}ms",
-            )
-        }
-    }
-
-    /** 删除一个"应用自己的"文件；不属于应用目录的一律不动，返回是否真的删了。 */
-    private fun deleteOneOwnedFile(
-        root: String,
-        tree: String,
-        uri: String,
-    ): Boolean {
-        return try {
-            if (uri.startsWith("content://")) {
-                if (tree.isBlank() || !RssDownloadDir.isInside(tree, uri)) {
-                    return false
-                }
-                DocumentsContract.deleteDocument(app.contentResolver, Uri.parse(uri))
-            } else {
-                if (!uri.startsWith("file://")) return false
+            uris.forEach { uri ->
+                if (!uri.startsWith("file://")) return@forEach
                 val path = uri.removePrefix("file://")
-                if (!path.startsWith("$root/rss/") && !path.startsWith("$root/online/")) {
-                    return false
-                }
-                val file = File(path)
-                file.exists() && file.delete()
+                if (!path.startsWith(archivesDir)) return@forEach
+                if (File(path).delete()) removed++
             }
-        } catch (_: Throwable) {
-            false
         }
+        AppLog.d(
+            "MediaDelete",
+            "archives cleanup: removed $removed of ${uris.size} in " +
+                "${System.currentTimeMillis() - startedAt}ms",
+        )
     }
 }

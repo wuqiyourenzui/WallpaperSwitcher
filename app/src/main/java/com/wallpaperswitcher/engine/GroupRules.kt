@@ -138,6 +138,20 @@ object GroupRules {
     const val MEDIA_IMAGE = "IMAGE"
     const val MEDIA_VIDEO = "MOTION"
 
+    /** 顺序=新的在前: the value [WallpaperGroup.sortOrder] may carry. */
+    const val SORT_NEWEST = "NEWEST"
+
+    /**
+     * Whether this group's sequential walk runs newest → oldest
+     * ([WallpaperGroup.sortOrder] = [SORT_NEWEST]; null = screen-wide pick).
+     *
+     * Shared by the live engine, the static applier, the prefetch and
+     * 下一张预览 so every path walks a group in the same direction: the switch
+     * paths used to omit the flag entirely, which made a NEWEST group preview
+     * newest-first and then really switch id-ascending.
+     */
+    fun newestFirst(group: WallpaperGroup?): Boolean = group?.sortOrder == SORT_NEWEST
+
     /**
      * The group's media-type filter for the pick queries: "" = 两者都切换,
      * [MEDIA_IMAGE] = 仅图片, [MEDIA_VIDEO] = 仅视频（含 GIF）.

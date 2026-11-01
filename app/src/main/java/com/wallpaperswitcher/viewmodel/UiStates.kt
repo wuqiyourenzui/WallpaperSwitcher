@@ -51,10 +51,19 @@ data class SettingsUiState(
     val videoSoundEnabled: Boolean = false,
     /** 过渡动画: "fade" / "slide" / "zoom" / "none" (see SettingsKeys). */
     val switchTransition: String = SettingsKeys.SWITCH_TRANSITION_DEFAULT,
-    /** 视频播完再切: a timed switch waits for the current clip's pass to end. */
+    /**
+     * 视频播完再切: 视频每播完 [videoPlayToEndRepeats] 次就切换，**不依赖**
+     * 定时切换；手动/解锁等其它切换方式仍立即生效。
+     */
     val videoPlayToEnd: Boolean = false,
-    /** 收藏优先: favourites get a higher weight in RANDOM / SHUFFLE. */
-    val favoriteBoost: Boolean = true,
+    /** 视频循环播放（默认开）：关掉后视频只播一遍停在最后一帧。 */
+    val videoLoopEnabled: Boolean = true,
+    /** 订阅/WebDAV 图片按需加载（默认开）：只存缩略图，切到该图再下载原图。 */
+    val remoteOnDemand: Boolean = true,
+    /** 远程图片是否参与锁屏（默认关）。 */
+    val remoteLockScreen: Boolean = false,
+    /** 视频播完再切: 播几次后切换（默认 1，上限见 SettingsKeys）。 */
+    val videoPlayToEndRepeats: Int = SettingsKeys.VIDEO_PLAY_TO_END_REPEATS_DEFAULT,
     /** 最近 N 张不重复 (0 = off) for RANDOM. */
     val recentNoRepeat: Int = 0,
     /** 静态图微动效 (Ken Burns): still images slowly zoom in and out. */
@@ -117,7 +126,13 @@ internal object SettingsProjection {
             SettingsKeys.SWITCH_TRANSITION_DEFAULT
         ),
         videoPlayToEnd = values.flag(SettingsKeys.VIDEO_PLAY_TO_END, false),
-        favoriteBoost = values.flag(SettingsKeys.FAVORITE_BOOST, true),
+        videoLoopEnabled = values.flag(SettingsKeys.VIDEO_LOOP_ENABLED, true),
+        remoteOnDemand = values.flag(SettingsKeys.REMOTE_ON_DEMAND, true),
+        remoteLockScreen = values.flag(SettingsKeys.REMOTE_LOCK_SCREEN, false),
+        videoPlayToEndRepeats = values[SettingsKeys.VIDEO_PLAY_TO_END_REPEATS]
+            ?.toIntOrNull()
+            ?.coerceAtLeast(1)
+            ?: SettingsKeys.VIDEO_PLAY_TO_END_REPEATS_DEFAULT,
         recentNoRepeat = values[SettingsKeys.RECENT_NO_REPEAT]
             ?.toIntOrNull()
             ?.coerceIn(0, WallpaperViewModel.MAX_RECENT_NO_REPEAT)

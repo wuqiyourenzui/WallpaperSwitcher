@@ -37,7 +37,6 @@ object SharedMediaImporter {
         context: Context,
         uris: List<Uri>,
         groupId: Long,
-        favorite: Boolean,
     ): Report = withContext(Dispatchers.IO) {
         if (uris.isEmpty()) return@withContext Report(0, 0, 0)
         val db = AppDatabase.getInstance(context)
@@ -105,7 +104,6 @@ object SharedMediaImporter {
                         folderPath = "shared",
                         width = width,
                         height = height,
-                        isFavorite = favorite,
                     )
                 )
             } catch (t: Throwable) {

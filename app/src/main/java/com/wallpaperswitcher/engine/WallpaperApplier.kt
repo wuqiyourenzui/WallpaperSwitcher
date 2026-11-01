@@ -35,8 +35,6 @@ object WallpaperApplier {
 
     private const val TAG = "WallpaperApplier"
 
-    /** 顺序=新的在前 (see WallpaperGroup.sortOrder). */
-    private const val SORT_NEWEST = "NEWEST"
     /**
      * The user's "自动旋转适配" preferences, used for static (full-bleed) writes
      * too: the engine reads them on every live switch, and the static path used
@@ -69,6 +67,60 @@ object WallpaperApplier {
      * changes nothing on screen.
      */
     private const val WRITE_REPEAT_WINDOW_MS = 30 * 60_000L
+
+    /** Throttle for the "write blocked" log line (see [staticWriteBlocked]). */
+    private const val BLOCKED_LOG_MIN_INTERVAL_MS = 5 * 60_000L
+    private val lastBlockedLogAt = java.util.concurrent.atomic.AtomicLong(0L)
+
+    /**
+     * Whether a static write can be attempted at all, checked BEFORE the decode.
+     *
+     * The two queries are cheap binder calls; the alternative is paying a full
+     * decode + JPEG encode per timed tick and then logging a refused write that
+     * reads exactly like an unreadable file. `isWallpaperSupported` is false on
+     * a device without a system wallpaper at all, `isSetWallpaperAllowed` is
+     * false when a device policy (DPM / managed profile) forbids setting one.
+     *
+     * A query that throws never blocks the write: the attempt is exactly what
+     * happened before this gate existed.
+     *
+     * @return null when a write may be attempted, otherwise the failing check's
+     *   description (see [wallpaperRefusalName]).
+     */
+    fun staticWriteBlocked(context: Context): String? {
+        val reason = try {
+            val manager = WallpaperManager.getInstance(context)
+            wallpaperRefusalName(manager.isWallpaperSupported, manager.isSetWallpaperAllowed)
+        } catch (t: Throwable) {
+            AppLog.w(TAG, "wallpaper capability query failed; attempting the write anyway", t)
+            null
+        }
+        if (reason != null) {
+            // The refusal itself is never throttled (the return value stays
+            // truthful for every caller) - only the log line is. A restricted
+            // device ticks every 10s, and runtime.log rotates at ~10KB, so one
+            // line per tick would rotate away the switches worth reading.
+            val now = SystemClock.elapsedRealtime()
+            val last = lastBlockedLogAt.get()
+            if (now - last >= BLOCKED_LOG_MIN_INTERVAL_MS &&
+                lastBlockedLogAt.compareAndSet(last, now)
+            ) {
+                AppLog.w(TAG, "static wallpaper write blocked: $reason")
+            }
+        }
+        return reason
+    }
+
+    /**
+     * Pure mapping of the two capability flags, so the gate itself can be
+     * unit-tested without a device: reading them the wrong way round would
+     * silently stop every wallpaper switch with no error to look at.
+     */
+    internal fun wallpaperRefusalName(supported: Boolean, allowed: Boolean): String? = when {
+        !supported -> "isWallpaperSupported=false (no system wallpaper on this device)"
+        !allowed -> "isSetWallpaperAllowed=false (device policy restricts wallpaper)"
+        else -> null
+    }
 
     /**
      * JPEG quality used for the wallpaper stream handed to
@@ -209,6 +261,13 @@ object WallpaperApplier {
         rotateMismatch: Boolean = true,
         rotateClockwise: Boolean = true
     ): Boolean {
+        // Capability gate before ANY write work: a device with no system
+        // wallpaper, or one where a device policy forbids setting it, would
+        // otherwise pay the decode + encode on every timed tick and then fail
+        // with the same log line an unreadable file produces. See
+        // [staticWriteBlocked].
+        if (staticWriteBlocked(context) != null) return false
+
         // Reuse the bytes of an identical earlier write when possible: this skips
         // the decode, the flatten copy and the JPEG encode, leaving one
         // setStream() call (see jpegCache).
@@ -308,7 +367,12 @@ object WallpaperApplier {
             rememberJpeg(cacheKey, jpeg, image)
             try {
                 java.io.ByteArrayInputStream(jpeg).use { stream ->
-                    manager.setStream(stream, null, true, which)
+                    // allowBackup=false (the third argument): this app replaces
+                    // the wallpaper on a timer, so handing every write to the
+                    // system's wallpaper backup only rewrites that copy on each
+                    // switch - a restore should never bring back the image from
+                    // ten seconds ago.
+                    manager.setStream(stream, null, false, which)
                 }
                 return true
             } catch (t: Throwable) {
@@ -322,7 +386,8 @@ object WallpaperApplier {
         // refused write was indistinguishable from a success: the caller advanced
         // the cursor and told the user the wallpaper had been set while the screen
         // never changed.
-        return manager.setBitmap(bitmap, null, true, which) > 0
+        // allowBackup=false for the same reason as the setStream call above.
+        return manager.setBitmap(bitmap, null, false, which) > 0
     }
 
     /**
@@ -339,7 +404,8 @@ object WallpaperApplier {
     ): Boolean = try {
         val manager = WallpaperManager.getInstance(context)
         java.io.ByteArrayInputStream(bytes).use { stream ->
-            manager.setStream(stream, null, true, which)
+            // allowBackup=false: see the setStream call in writeWallpaper.
+            manager.setStream(stream, null, false, which)
         }
         true
     } catch (t: Throwable) {
@@ -576,10 +642,11 @@ object WallpaperApplier {
                 null
             }
         } else null
-        val scopedGroupId = scopedGroup?.id ?: 0L
+        var scopedGroupId = scopedGroup?.id ?: 0L
         val scopedFilter = scopedGroup?.let {
             com.wallpaperswitcher.engine.GroupRules.mediaFilter(it)
         } ?: ""
+        val scopedNewest = com.wallpaperswitcher.engine.GroupRules.newestFirst(scopedGroup)
         val lastId = if (scopedGroupId > 0L) {
             try {
                 db.groupScheduleDao().get(scopedGroupId, slot)?.lastMediaId ?: 0L
@@ -620,14 +687,37 @@ object WallpaperApplier {
         val favoriteWeight = PickOptions.favoriteWeight(dao)
         val recentIds = PickOptions.recentIds(db, slot, PickOptions.recentWindow(dao))
         val picked: WallpaperImage? = if (scopedGroupId > 0L) {
-            GroupPick.pick(
-                db, slot, scopedGroupId, mode, lastId, pickSeq = pickSeq,
-                filter = scopedFilter,
-                favoriteWeight = favoriteWeight,
-                recentIds = recentIds,
-            ) ?: db.groupPickDao().getFirstInGroup(
-                slot, scopedGroupId, scopedFilter
-            )
+            if (mode == SwitchMode.SEQUENTIAL) {
+                // 顺序模式（本组走完 → 下一个分组）：和实时引擎 / 预取 /
+                // 下一张预览共用同一个 walker，边界行为逐字一致（旧实现只在
+                // 本组内绕回第一张，静态模式看不到"下一组"）。
+                val walk = GroupPick.pickSequential(
+                    db, slot, scopedGroupId, lastId, pickSeq = pickSeq,
+                    favoriteWeight = favoriteWeight,
+                    recentIds = recentIds,
+                    // 顺序模式接屏幕上那张往下走（见 SwitchPicking.sequentialAnchor）：
+                    // 随机/洗牌期间分组游标不推进，只按游标会从旧位置继续。
+                    displayedId = dao.getLong(lastIdKey),
+                )
+                if (walk != null) {
+                    scopedGroupId = walk.groupId
+                    walk.image
+                } else {
+                    db.groupPickDao().getFirstInGroup(slot, scopedGroupId, scopedFilter)
+                }
+            } else {
+                GroupPick.pick(
+                    db, slot, scopedGroupId, mode, lastId, pickSeq = pickSeq,
+                    filter = scopedFilter,
+                    newestFirst = scopedNewest,
+                    favoriteWeight = favoriteWeight,
+                    recentIds = recentIds,
+                ) ?: (if (scopedNewest) {
+                    db.groupPickDao().getNewestInGroup(slot, scopedGroupId, scopedFilter)
+                } else {
+                    db.groupPickDao().getFirstInGroup(slot, scopedGroupId, scopedFilter)
+                })
+            }
         } else when (mode) {
             SwitchMode.RANDOM -> {
                 // 随机：所有启用分组（时间规则允许的）的媒体池。

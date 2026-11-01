@@ -3,6 +3,7 @@ package com.wallpaperswitcher.worker
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.wallpaperswitcher.engine.OnlineSourceScheduler
 import com.wallpaperswitcher.engine.OnlineSync
 
 /**

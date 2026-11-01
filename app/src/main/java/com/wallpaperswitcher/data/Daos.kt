@@ -87,6 +87,13 @@ interface WallpaperImageDao {
     @Query("SELECT uri FROM wallpaper_images WHERE groupId = :groupId")
     suspend fun getUrisByGroup(groupId: Long): List<String>
 
+    /** 只改地址（例如文件被挪进用户选的 SAF 目录后，把 uri 从 file:// 换成 content://）。 */
+    @Query("UPDATE wallpaper_images SET thumbPath = :thumbPath WHERE id = :id")
+    suspend fun updateThumbPath(id: Long, thumbPath: String)
+
+    @Query("UPDATE wallpaper_images SET uri = :uri WHERE id = :id")
+    suspend fun updateUri(id: Long, uri: String)
+
     /**
      * Ids of media rows carrying the synthetic folder marker of an online
      * source (`online/<sourceId>`), used to prune rows the user deleted.
@@ -180,34 +187,6 @@ interface WallpaperImageDao {
      */
     @Query("UPDATE wallpaper_images SET mediaType = :mediaType WHERE id = :id")
     suspend fun updateMediaType(id: Long, mediaType: String)
-
-    /** 收藏 (★): read by the picker's favourite weighting / 仅收藏 filter. */
-    @Query("UPDATE wallpaper_images SET isFavorite = :favorite WHERE id = :id")
-    suspend fun setFavorite(id: Long, favorite: Boolean)
-
-    /**
-     * 按 uri 批量改收藏。
-     *
-     * 同一个文件可以在多个分组里各有一行（导入只按分组去重），而收藏页/大图浏览
-     * 是按 **uri** 判断星标的（[observeFavorites] 也是按 uri 去重）。只改一行的话，
-     * 在 B 组里"取消收藏"改到的是本来就 =0 的那一行 —— 星标不动、提示却说改成功了。
-     */
-    @Query("UPDATE wallpaper_images SET isFavorite = :favorite WHERE uri = :uri")
-    suspend fun setFavoriteByUri(uri: String, favorite: Boolean)
-
-    /**
-     * 收藏聚合（跨分组）：收藏页直接看这一份，不用把每个分组都拉一遍。
-     * 同一张图被多个分组引用时只出现一次（按 uri 去重）。
-     */
-    @Query(
-        """
-        SELECT * FROM wallpaper_images
-        WHERE isFavorite = 1
-        GROUP BY uri
-        ORDER BY addedAt DESC, id DESC
-        """
-    )
-    fun observeFavorites(): Flow<List<WallpaperImage>>
 
     /** id + weight for the SCREEN-WIDE weighted random (favourites boosted). */
     @Query("""
@@ -549,8 +528,7 @@ interface GroupPickDao {
         AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
         AND (:filter = ''
              OR (:filter = 'IMAGE' AND mediaType = 'IMAGE')
-             OR (:filter = 'MOTION' AND mediaType != 'IMAGE')
-             OR (:filter = 'FAVORITE' AND isFavorite = 1))
+             OR (:filter = 'MOTION' AND mediaType != 'IMAGE'))
     """)
     suspend fun countInGroup(slot: String, groupId: Long, filter: String = ""): Int
 
@@ -584,8 +562,7 @@ interface GroupPickDao {
         AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
         AND (:filter = ''
              OR (:filter = 'IMAGE' AND mediaType = 'IMAGE')
-             OR (:filter = 'MOTION' AND mediaType != 'IMAGE')
-             OR (:filter = 'FAVORITE' AND isFavorite = 1))
+             OR (:filter = 'MOTION' AND mediaType != 'IMAGE'))
     """)
     suspend fun getInGroupById(
         slot: String,
@@ -702,17 +679,18 @@ interface GroupPickDao {
         FROM wallpaper_images
         WHERE groupId = :groupId
         AND (:slot != 'LOCK' OR mediaType = 'IMAGE')
+        AND (:excludeRemote = 0 OR sourceKind = 'LOCAL')
         AND (:filter = ''
              OR (:filter = 'IMAGE' AND mediaType = 'IMAGE')
-             OR (:filter = 'MOTION' AND mediaType != 'IMAGE')
-             OR (:filter = 'FAVORITE' AND isFavorite = 1))
+             OR (:filter = 'MOTION' AND mediaType != 'IMAGE'))
         ORDER BY id ASC
     """)
     suspend fun weightsInGroup(
         slot: String,
         groupId: Long,
         filter: String,
-        favoriteWeight: Int
+        favoriteWeight: Int,
+        excludeRemote: Int = 0,
     ): List<MediaWeight>
 }
 

@@ -30,18 +30,55 @@ object RssSourceEditor {
     val OTHER_FIELDS = listOf("jsLib", "variable", "header")
 
     /**
+     * 阅读 的编辑页把字段分四个页签（`RssSourceEditActivity.upSourceView`）：
+     * 基础 / 起始 / 列表 / WEB_VIEW。这里照抄同一分组，让同一份源在两个应用里
+     * 的编辑位置一致。
+     */
+    /** 基础页签：源身份 + 登录 + 请求 / 变量 / jsLib。 */
+    val TAB_BASE_FIELDS = listOf(
+        "sourceName", "sourceUrl", "sourceIcon", "sourceGroup", "sourceComment",
+        "searchUrl", "sortUrl",
+        "loginUrl", "loginUi", "loginCheckJs",
+        "coverDecodeJs", "header",
+        "variableComment", "concurrentRate", "jsLib",
+    )
+
+    /** 起始页签：网页型源的起始页（`startHtml` / `startStyle` / `startJs`）。 */
+    val TAB_START_FIELDS = listOf("startHtml", "startStyle", "startJs", "preloadJs")
+
+    /** 列表页签：列表与逐项规则。 */
+    val TAB_LIST_FIELDS = listOf(
+        "ruleArticles", "ruleNextPage", "ruleTitle", "rulePubDate",
+        "ruleDescription", "ruleImage", "ruleLink",
+    )
+
+    /** WEB_VIEW 页签：正文页渲染 / 拦截。 */
+    val TAB_WEB_FIELDS = listOf(
+        "ruleContent", "style", "injectJs",
+        "contentWhitelist", "contentBlacklist", "shouldOverrideUrlLoading",
+    )
+
+    /** WEB_VIEW 页签里的开关（阅读的 `EditEntity.ViewType.checkBox`）。 */
+    val WEB_BOOL_FIELDS = listOf("enableJs", "loadWithBaseUrl", "showWebLog", "cacheFirst")
+
+    /** 所有带标签的字段（"其余字段" 兜底区要排除它们）。 */
+    private val LABELLED_FIELDS = (
+        TAB_BASE_FIELDS + TAB_START_FIELDS + TAB_LIST_FIELDS + TAB_WEB_FIELDS + WEB_BOOL_FIELDS
+        ).toHashSet()
+
+    /**
      * Fields the editor renders with their own control (name / url / type /
      * enabled / cookie jar / source group). Everything else that a source JSON
      * carries is listed in the "其余字段" section so no information is hidden.
      */
     val BASIC_FIELDS = listOf(
         "sourceName", "sourceUrl", "sourceGroup",
-        "type", "enabled", "enabledCookieJar",
+        "type", "enabled", "enabledCookieJar", "articleStyle",
     )
 
     /** Keys of [rawJson] that no labelled editor section covers, in JSON order. */
     fun remainingKeys(rawJson: String): List<String> {
-        val known = (BASIC_FIELDS + RULE_FIELDS + LOGIN_FIELDS + OTHER_FIELDS).toHashSet()
+        val known = (BASIC_FIELDS.toHashSet() + LABELLED_FIELDS)
         return try {
             val map = LegadoRss.sourceFields(rawJson) ?: return emptyList()
             map.keys.mapNotNull { it as? String }.filterNot { it in known }

@@ -63,9 +63,39 @@ object RssSourceImport {
         name = incoming.name.trim().ifBlank { existing.name },
         url = incoming.url.trim(),
         type = incoming.type,
+        articleStyle = incoming.articleStyle,
         rawJson = incoming.rawJson.ifBlank { existing.rawJson },
     )
 
     private fun urlKey(url: String?): String? =
         url?.trim()?.takeIf { it.isNotEmpty() }
+
+    /**
+     * 补齐已经导入的源的 `articleStyle`。
+     *
+     * 阅读的排版一直存在源的 `rawJson` 里，只是早先的版本没有把它读进独立列，
+     * 所以老行都是 0（列表）。这里在启动时按 `rawJson` 回填一次：源怎么排版，
+     * 列表就怎么显示，不必让用户重新导入一遍。
+     *
+     * 回填是幂等的：值相同就跳过，读不到 `articleStyle` 的源（手写源）保持 0。
+     * 返回实际更新的行数。
+     */
+    suspend fun backfillArticleStyle(db: com.wallpaperswitcher.data.AppDatabase): Int {
+        val sources = try {
+            db.rssSourceDao().getAll()
+        } catch (_: Throwable) {
+            return 0
+        }
+        var updated = 0
+        for (source in sources) {
+            val style = LegadoImport.articleStyleOf(source.rawJson)
+            if (style == source.articleStyle) continue
+            try {
+                db.rssSourceDao().update(source.copy(articleStyle = style))
+                updated++
+            } catch (_: Throwable) {
+            }
+        }
+        return updated
+    }
 }

@@ -136,9 +136,14 @@ internal object ConcurrentRate {
         while (true) {
             val wait = nextWait(entry)
             if (wait <= 0L) break
+            // JS watchdog 用 Thread.interrupt() 打断跑飞的脚本；那次中断可能落在
+            // 这里，标记会留在池化线程上，让**后续**复用该线程的抓取被立刻中断
+            // ——表现为与本次规则无关的随机 CANCEL。睡之前先清掉遗留标记。
+            LegadoJsRuntime.clearStrayInterrupt()
             try {
                 Thread.sleep(wait)
             } catch (_: InterruptedException) {
+                // 真的被要求停止（协程取消）时照旧退出，不清标记。
                 Thread.currentThread().interrupt()
                 break
             }

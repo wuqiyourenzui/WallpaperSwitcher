@@ -9,7 +9,6 @@ import java.net.SocketTimeoutException
 import java.net.URI
 import java.net.URLDecoder
 import java.net.UnknownHostException
-import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
 import kotlinx.coroutines.Dispatchers
@@ -43,14 +42,15 @@ import okhttp3.Response
  */
 internal object OnlineFetcher {
 
-    const val MAX_DOWNLOAD_BYTES = 40L * 1024 * 1024
+    const val MAX_DOWNLOAD_BYTES = 100L * 1024 * 1024
+    /** 每次同步最多新增的文件数（避免一次跑满带宽/空间）。 */
     const val MAX_NEW_PER_RUN = 8
     private const val MAX_BING_ITEMS = 8
     private const val MAX_LISTING_BYTES = 4L * 1024 * 1024
     private const val CONNECT_TIMEOUT_SECONDS = 15L
     private const val READ_TIMEOUT_SECONDS = 30L
     private const val CALL_TIMEOUT_SECONDS = 90L
-    private const val USER_AGENT = "WallpaperSwitcher/1.1 (Android)"
+    
     private const val TAG = "OnlineFetcher"
 
     private const val BING_ARCHIVE_URL =
@@ -93,6 +93,11 @@ internal object OnlineFetcher {
         val url: String,
         val displayName: String,
         val lastModifiedMs: Long = 0L,
+        /**
+         * 服务端声明的字节数（0 = 未知）。WebDAV 的 getcontentlength 能给出来，用它
+         * 在**下载前**就执行体积护栏，别下完再删。
+         */
+        val size: Long = 0L,
     )
 
     sealed class Download {
@@ -226,6 +231,11 @@ internal object OnlineFetcher {
     suspend fun listWebDav(
         source: OnlineSource,
         password: String,
+        /**
+         * 是否把视频也列出来（网盘来源可开）。默认 false = 维持历史行为：内置源/
+         * 老配置只看图片，WebDAV 目录里的视频被跳过。
+         */
+        includeVideos: Boolean = false,
     ): List<RemoteItem> = withContext(Dispatchers.IO) {
         val collection = webDavCollectionUrl(source)
         val credentials = OnlineSourceRules.basicAuthHeader(source.username, password)
@@ -254,15 +264,20 @@ internal object OnlineFetcher {
             entries
                 .filter { entry ->
                     !OnlineSourceRules.looksLikeWebDavDirectory(entry.href) &&
-                        OnlineSourceRules.imageExtension(entry.href, null) != null
+                        OnlineSourceRules.mediaExtension(entry.href, null, includeVideos) != null
                 }
                 .sortedByDescending { it.lastModifiedMs }
                 .map { entry ->
                     RemoteItem(
-                        remoteKey = entry.href,
+                        // 去重键与浏览页同口径：文件名（percent-encoded，和 OnlineBrowser.Entry.path
+                        // 在"仅列一层"时的值一致），以前用 href 导致同步/手动添加互不命中。
+                        remoteKey = OnlineSourceRules.safeRemoteName(entry.href) ?: entry.href,
                         url = resolveHref(base, entry.href),
                         displayName = displayNameOf(entry.href),
                         lastModifiedMs = entry.lastModifiedMs,
+                        // PROPFIND 已经请求了 getcontentlength（见 PROPFIND_BODY），
+                        // 用它做下载前的体积护栏。
+                        size = entry.sizeBytes,
                     )
                 }
         }
@@ -386,6 +401,12 @@ internal object OnlineFetcher {
         targetDir: File,
         useValidators: Boolean,
         referer: String? = null,
+        /** 本次允许的最大字节数：图片 100MB，视频由调用方按设置给（默认 300MB）。 */
+        maxBytes: Long = MAX_DOWNLOAD_BYTES,
+        /** 允许视频容器（与 [listWebDav] 的 includeVideos 保持一致）。 */
+        includeVideos: Boolean = false,
+        /** 下载进度回调（已写字节, 总字节；总字节 0 = 服务端没给 Content-Length）。 */
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
     ): Download = withContext(Dispatchers.IO) {
         if (!targetDir.exists() && !targetDir.mkdirs()) {
             return@withContext Download.Failure("storage")
@@ -405,14 +426,16 @@ internal object OnlineFetcher {
                     throw FetchException(httpReason(response.code), response.code)
                 }
                 val body = response.body ?: throw FetchException("empty", response.code)
+                val expectedBytes = body.contentLength().coerceAtLeast(0L)
                 val extension =
-                    OnlineSourceRules.imageExtension(item.url, response.header("Content-Type"))
-                        ?: throw FetchException("not_image", response.code)
-                if (body.contentLength() > MAX_DOWNLOAD_BYTES) {
+                    OnlineSourceRules.mediaExtension(
+                        item.url, response.header("Content-Type"), includeVideos
+                    ) ?: throw FetchException("not_image", response.code)
+                if (body.contentLength() > maxBytes) {
                     throw FetchException("too_large", response.code)
                 }
                 val temp = File.createTempFile("dl_", ".tmp", targetDir)
-                val digest = MessageDigest.getInstance("SHA-256")
+                val digest = Hashes.sha256Digest()
                 var total = 0L
                 try {
                     body.byteStream().use { input ->
@@ -423,11 +446,12 @@ internal object OnlineFetcher {
                                 val read = input.read(buffer)
                                 if (read < 0) break
                                 total += read
-                                if (total > MAX_DOWNLOAD_BYTES) {
+                                if (total > maxBytes) {
                                     throw FetchException("too_large", response.code)
                                 }
                                 digest.update(buffer, 0, read)
                                 output.write(buffer, 0, read)
+                                onProgress(total, expectedBytes)
                             }
                         }
                     }
@@ -439,7 +463,7 @@ internal object OnlineFetcher {
                     temp.delete()
                     throw FetchException("empty", response.code)
                 }
-                val hash = digest.digest().joinToString("") { "%02x".format(it) }
+                val hash = Hashes.finishHex(digest)
                 Download.Success(
                     file = temp,
                     contentHash = hash,
@@ -454,6 +478,10 @@ internal object OnlineFetcher {
             Download.Failure(classify(t))
         }
     }
+
+
+    /** 共享的 OkHttp 实例（「测试连接」等探针复用，别开第二个连接池）。 */
+    internal fun httpClient(): OkHttpClient = client
 
     /** URL of a TYPE_URL source with its validators, for tests/diagnostics. */
     fun webDavCollectionUrl(source: OnlineSource): String {
@@ -478,7 +506,7 @@ internal object OnlineFetcher {
         } catch (t: Throwable) {
             throw FetchException("bad_url", cause = t)
         }
-        builder.header("User-Agent", USER_AGENT)
+        builder.header("User-Agent", WebDavProps.USER_AGENT)
         if (credentials != null) builder.header("Authorization", credentials)
         if (referer != null) builder.header("Referer", referer)
         return builder

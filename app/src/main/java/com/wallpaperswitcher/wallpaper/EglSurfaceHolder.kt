@@ -230,6 +230,21 @@ internal class EglSurfaceHolder(
     /** `eglSwapBuffers` on the current display/surface pair. */
     fun swapBuffers(): Boolean = EGL14.eglSwapBuffers(eglDisplay, eglSurface)
 
+    /**
+     * 告诉合成器这一帧"应该在什么时刻上屏"（`System.nanoTime()` 时基）。
+     *
+     * 视频帧有自己的呈现时间戳：早到的帧交给合成器排到它自己那一拍，晚到的帧立即上屏。
+     * 这样桌面上的呈现节奏就跟着 vsync 走，而不是"解码完就 swap"，抖动明显更小。
+     * 驱动/合成器不支持时这是 no-op（EGL 规范允许实现忽略它）。
+     */
+    fun setPresentationTime(nanos: Long) {
+        if (nanos <= 0L || !hasSurface || eglDisplay == EGL14.EGL_NO_DISPLAY) return
+        try {
+            android.opengl.EGLExt.eglPresentationTimeANDROID(eglDisplay, eglSurface, nanos)
+        } catch (_: Throwable) {
+        }
+    }
+
     /** Renderer teardown: destroy surface/context, terminate our own display. */
     fun release() {
         // Tell the host first: everything after this point is "no GL context",

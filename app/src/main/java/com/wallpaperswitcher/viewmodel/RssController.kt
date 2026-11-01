@@ -29,12 +29,17 @@ internal class RssController(
     private val onToast: suspend (String) -> Unit,
 ) {
 
+    companion object {
+        /** 页面 Flow 失去订阅后 60 秒才停（与 [WallpaperViewModel] 同一口径）。 */
+        const val FLOW_STOP_TIMEOUT_MS = 60_000L
+    }
+
     private val tag = "RssController"
 
     /** 阅读订阅源 (Legado-compatible RSS/Atom feeds), newest first. */
     val rssSources: StateFlow<List<com.wallpaperswitcher.data.RssSource>> =
         db.rssSourceDao().observeAll()
-            .stateIn(scope, SharingStarted.WhileSubscribed(5000), emptyList())
+            .stateIn(scope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), emptyList())
 
     /**
      * 订阅源列表的显示方式：false = 卡片列表（默认，老安装不变），
@@ -43,7 +48,7 @@ internal class RssController(
     val rssGridView: StateFlow<Boolean> =
         db.settingsDao().getValueFlow(SettingsKeys.RSS_GRID_VIEW)
             .map { it?.toBooleanStrictOrNull() ?: false }
-            .stateIn(scope, SharingStarted.WhileSubscribed(5000), false)
+            .stateIn(scope, SharingStarted.WhileSubscribed(FLOW_STOP_TIMEOUT_MS), false)
 
     fun setRssGridView(enabled: Boolean) {
         guardedWrite("保存订阅显示方式失败") {
@@ -66,8 +71,104 @@ internal class RssController(
         }
     }
 
+    /**
+     * 阅读的「调试源」（`RssSourceDebugActivity`）：抓一次当前分类的第一页，
+     * 把列表规则/逐项字段各取到多少、示例条目长什么样报出来，用于判断
+     * 「源在阅读里能显示、在这里显示不出来」到底断在哪一步。
+     *
+     * 不做任何写入：只读抓取 + 规则求值。返回文本报告（调用方直接展示）。
+     */
+    suspend fun rssDebugSource(source: com.wallpaperswitcher.data.RssSource): String =
+        withContext(Dispatchers.IO) {
+            val out = StringBuilder()
+            val rules = try {
+                com.wallpaperswitcher.engine.legado.LegadoRss.rulesFor(source)
+            } catch (t: Throwable) {
+                null
+            }
+            if (rules == null) {
+                out.appendLine(str(R.string.rss_debug_no_rules))
+                return@withContext out.toString()
+            }
+            val categories = try {
+                com.wallpaperswitcher.engine.legado.LegadoRss.sortUrls(source, rules)
+            } catch (t: Throwable) {
+                emptyList()
+            }
+            out.appendLine("${str(R.string.rss_debug_categories)}: ${categories.size}")
+            val index = try {
+                com.wallpaperswitcher.engine.legado.RssCategories
+                    .selectedIndex(app, source.id)
+            } catch (_: Throwable) {
+                0
+            }
+            val category = categories.getOrNull(index) ?: categories.firstOrNull()
+            out.appendLine("${str(R.string.rss_debug_category)}: ${category?.name.orEmpty()}")
+            val url = try {
+                com.wallpaperswitcher.engine.legado.LegadoRss.pageUrl(rules, category, 1, source.id)
+            } catch (t: Throwable) {
+                out.appendLine("pageUrl: ${t.javaClass.simpleName}")
+                return@withContext out.toString()
+            }
+            out.appendLine("URL: $url")
+            out.appendLine("ruleArticles: ${rules.ruleArticles}")
+            val page = try {
+                // 只跑「抓一页 + 求值规则」，不落库（调试不该改数据）。
+                com.wallpaperswitcher.engine.RssFetcher
+                    .fetchPages(source, index, startCursor = null, maxPages = 1)
+            } catch (t: Throwable) {
+                out.appendLine("${str(R.string.rss_debug_failed)}: ${t.message?.take(160)}")
+                return@withContext out.toString()
+            }
+            val articles = page.articles
+            out.appendLine("${str(R.string.rss_debug_items)}: ${articles.size}")
+            out.appendLine("cursor: ${page.nextCursor.orEmpty()}")
+            for ((i, article) in articles.take(3).withIndex()) {
+                out.appendLine()
+                out.appendLine("[$i] title=${article.title.take(60)}")
+                out.appendLine("    link=${article.link.take(70)}")
+                out.appendLine("    image=${article.imageUrl.take(70)}")
+                out.appendLine("    date=${article.publishedAt}")
+            }
+            out.toString()
+        }
+
+    /**
+     * 后台刷新当前分类（界面已经在显示缓存）：不阻塞调用方，抓完由房间表
+     * 自动把新内容顶到列表上。同一源的旧任务会先取消，避免并发抓同一个源。
+     */
+    fun launchRefreshRss(source: com.wallpaperswitcher.data.RssSource, index: Int) {
+        rssFetchJobs.remove(source.id)?.cancel()
+        val job = scope.launch {
+            try {
+                com.wallpaperswitcher.engine.legado.RssCategories
+                    .setSelectedIndex(app, source.id, index)
+                com.wallpaperswitcher.engine.legado.RssPaging
+                    .setCursor(app, source.id, null)
+                com.wallpaperswitcher.engine.RssSync.refresh(app, source.id, initialPages = 1)
+            } catch (_: Exception) {
+            }
+        }
+        rssFetchJobs[source.id] = job
+    }
+
     /** In-flight subscription fetch per source (cancelled when it is preempted). */
     private val rssFetchJobs = java.util.concurrent.ConcurrentHashMap<Long, Job>()
+
+    /**
+     * 进入一个源/切到一个分类时怎么开屏：有缓存就立即渲染（刷新在后台），
+     * 没缓存只能等第一次抓取。抽出来是为了能离线测这条判定。
+     */
+    internal enum class RssEnterPlan {
+        RenderFromCache,
+        WaitForFirstFetch;
+
+        companion object {
+            /** [cachedCount] 是这个分类已存的文章数。 */
+            fun decide(cachedCount: Int): RssEnterPlan =
+                if (cachedCount > 0) RenderFromCache else WaitForFirstFetch
+        }
+    }
 
     // --- 阅读订阅源 (Legado-compatible) ---
 
@@ -98,6 +199,57 @@ internal class RssController(
     suspend fun rssRefreshCategories(source: com.wallpaperswitcher.data.RssSource): List<String> =
         com.wallpaperswitcher.engine.legado.RssCategories.refreshNames(app, source)
 
+    /**
+     * 阅读编辑页菜单的「清除 Cookie」：把这个源域名下的会话清掉，下次请求重新登录。
+     */
+    suspend fun rssClearCookie(source: com.wallpaperswitcher.data.RssSource) {
+        withContext(Dispatchers.IO) {
+            try {
+                com.wallpaperswitcher.engine.RssCookieStore.clearHost(source.url)
+            } catch (_: Throwable) {
+            }
+        }
+    }
+
+    /**
+     * 「切换布局」：`articleStyle` 在 **1→2→3→4→1** 之间循环。
+     *
+     * 不含 0：0 是「没设过」（列表排版 = 单列列表），而单列列表与 1 在渲染上
+     * 没有区别，所以循环把它和 `4` 合并，少按一次、也不会出现两档看起来一样。
+     * 抽出来是为了能离线测这条循环。
+     */
+    internal object RssArticleStyleCycle {
+        /** 下一档；越界值（0、手改坏、将来加新档）统一从 1 重新开始。 */
+        fun next(current: Int): Int = when (current) {
+            in 1..3 -> current + 1
+            4 -> 1
+            else -> 1
+        }
+    }
+
+    /**
+     * 阅读的「切换布局」：把该源的 `articleStyle` 推进一档并存回源，返回新值。
+     *
+     * 当前值**从库里现读**，不用调用方传来的那份 `source`：界面上的 `source`
+     * 可能还是上一次重组时的旧值，连点两次会都从同一档算，看起来就是「点了没反应」
+     * 或「跳档」。库里读到的值永远是最新的，所以一次点击必然只走一档。
+     */
+    suspend fun rssCycleArticleStyle(sourceId: Long): Int {
+        return withContext(Dispatchers.IO) {
+            val current = try {
+                db.rssSourceDao().getById(sourceId)
+            } catch (_: Throwable) {
+                null
+            } ?: return@withContext 0
+            val next = RssArticleStyleCycle.next(current.articleStyle)
+            try {
+                db.rssSourceDao().update(current.copy(articleStyle = next))
+            } catch (_: Throwable) {
+            }
+            next
+        }
+    }
+
     /** Index of the category the user last picked for this source. */
     suspend fun rssSelectedCategory(sourceId: Long): Int =
         com.wallpaperswitcher.engine.legado.RssCategories.selectedIndex(app, sourceId)
@@ -106,8 +258,7 @@ internal class RssController(
      * Switch category: remember the choice and fetch **one** page so the list
      * appears quickly; the rest is loaded lazily by scrolling.
      */
-    suspend fun rssSelectCategory(source: com.wallpaperswitcher.data.RssSource, index: Int) {
-        // Preempt: whatever this source was fetching (previous category tap or
+    suspend fun rssSelectCategory(source: com.wallpaperswitcher.data.RssSource, index: Int) {        // Preempt: whatever this source was fetching (previous category tap or
         // a load-more) is cancelled so the new category starts immediately.
         rssFetchJobs.remove(source.id)?.cancel()
         kotlinx.coroutines.currentCoroutineContext()[Job]
@@ -118,11 +269,12 @@ internal class RssController(
         com.wallpaperswitcher.engine.legado.RssPaging
             .setCursor(app, source.id, null)
         try {
-            com.wallpaperswitcher.engine.RssSync
-                // 2 pages: index-based sources fetch page 2 concurrently with
-                // page 1 (see LegadoRss prefetch), so this is ~1 round trip
-                // while doubling the list the user sees immediately.
-                .refresh(app, source.id, initialPages = 2)
+            // **一页**先出内容（阅读也是这样：首屏只等第一页，往下翻再取下一页）。
+            // 之前这里取 2 页：源自己带 `concurrentRate`（比如 1/1000）时限流会把
+            // 「首屏」从 ~0.5 秒拖到 1–5 秒，第二页还可能是死链（有的源
+            // `ruleNextPage` 拼出来的地址站点回 502），连带把首屏一起拖住。
+            // 第二页交给列表底部的「加载更多」（RssSync.loadMore 用游标继续）。
+            com.wallpaperswitcher.engine.RssSync.refresh(app, source.id, initialPages = 1)
         } catch (_: Exception) {
         }
     }
@@ -399,29 +551,35 @@ internal class RssController(
             .loadGalleryImages(app, article, pageHtml, baseHtml)
 
     /** Download the ticked article images into [groupId] (0 = 在线壁纸 group). */
-    fun addRssImagesToGroup(
+    /**
+     * 下载选中图片/视频到 [groupId]（0 = 自动分组）。
+     *
+     * **串行版本**：直接挂起跑完（不自己 launch）。ViewModel 用一把互斥锁把多次
+     * "添加到分组"排队执行 —— 之前第二次添加会因为在跑而被直接丢弃（用户报的
+     * "正在下载时再添加就失败"）。进度回调仍然每完成一项播一次。
+     */
+    suspend fun importRssImagesToGroup(
         article: com.wallpaperswitcher.data.RssArticle,
         urls: List<String>,
         groupId: Long,
         extraHeaders: Map<String, String> = emptyMap(),
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
     ) {
-        guardedWrite("加入分组失败") {
-            val source = try {
-                db.rssSourceDao().getById(article.sourceId)
-            } catch (_: Exception) {
-                null
-            }
-            val report = com.wallpaperswitcher.engine.RssMediaImporter
-                .importImages(app, source, urls, groupId, extraHeaders)
-            val message = when {
-                report.blocked == "wifi" -> str(R.string.rss_blocked_wifi)
-                report.blocked == "limit" -> str(R.string.rss_blocked_limit)
-                report.failed > 0 ->
-                    str(R.string.rss_add_to_group_partial, report.added, report.failed)
-                else -> str(R.string.rss_add_to_group_done, report.added)
-            }
-            onToast(message)
+        val source = try {
+            db.rssSourceDao().getById(article.sourceId)
+        } catch (_: Exception) {
+            null
         }
+        val report = com.wallpaperswitcher.engine.RssMediaImporter
+            .importImages(app, source, urls, groupId, extraHeaders, onProgress)
+        val message = when {
+            report.blocked == "wifi" -> str(R.string.rss_blocked_wifi)
+            report.blocked == "limit" -> str(R.string.rss_blocked_limit)
+            report.failed > 0 ->
+                str(R.string.rss_add_to_group_partial, report.added, report.failed)
+            else -> str(R.string.rss_add_to_group_done, report.added)
+        }
+        onToast(message)
     }
 
     /** The URL the interactive login WebView should open. */

@@ -11,7 +11,9 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -52,6 +54,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.wallpaperswitcher.ui.theme.LocalAccentColor
+import com.wallpaperswitcher.ui.theme.hiPressScale
 
 /**
  * Preset colors for the floating switch button, as hex + string RESOURCE (the
@@ -82,8 +85,8 @@ fun SettingsScreen(
      * 滚动状态由调用方持有：进子页面再返回时这一页会被重建，状态放在这里才不会
      * 每次都滚回顶部（和订阅列表的 `listState` 同一个理由）。
      */
-    scrollState: androidx.compose.foundation.ScrollState =
-        androidx.compose.foundation.rememberScrollState(),
+    scrollState: androidx.compose.foundation.lazy.LazyListState =
+        androidx.compose.foundation.lazy.rememberLazyListState(),
 ) {
     // Single combined state (see settingsUiState): entering this screen used
     // to subscribe to 13 separate Room-backed flows, each emitting on the main
@@ -95,6 +98,19 @@ fun SettingsScreen(
     var rssDownloadDir by remember { mutableStateOf("") }
     LaunchedEffect(Unit) { rssDownloadDir = viewModel.rssDownloadDirValue() }
     val rssDirPickerContext = LocalContext.current
+    // 网盘下载位置（独立键，与订阅目录分开）。
+    var webdavDownloadDir by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) { webdavDownloadDir = viewModel.webdavDownloadDirValue() }
+    val webdavDirPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            com.wallpaperswitcher.engine.OnlineDownloadDir.persist(rssDirPickerContext, uri)
+            val value = uri.toString()
+            webdavDownloadDir = value
+            viewModel.setWebdavDownloadDir(value)
+        }
+    }
     val rssDirPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri: Uri? ->
@@ -161,17 +177,28 @@ fun SettingsScreen(
         }
     }
 
-    Column(
+    // LazyColumn：设置页有 8 个分区，原来 Column+verticalScroll 会一次性组合全部行；
+    // 换成懒列表后只组合可见的两三屏，进设置页首帧更轻。
+    LazyColumn(
         modifier = Modifier
-        .fillMaxSize()
-        .verticalScroll(scrollState)
-        .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+            .fillMaxSize()
+            .padding(16.dp),
+        state = scrollState,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        item {
         // Global wallpaper settings
+        }
+        item {
         // ==== 设置主界面 = 入口列表 ====
+        }
+        item {
         // 每一项设置进自己的页面（见 SettingsPageScaffold）：主界面一眼看完，不用
+        }
+        item {
         // 滚过上千行；每个设置项也各有自己的返回栈位置。
+        }
+        item {
         SettingsSection(title = stringResource(R.string.title_settings)) {
             SettingsPageEntry(
                 icon = Icons.Outlined.Wallpaper,
@@ -209,22 +236,6 @@ fun SettingsScreen(
             )
             Divider(modifier = Modifier.padding(horizontal = 16.dp))
             SettingsPageEntry(
-                icon = Icons.Outlined.CloudDownload,
-                title = stringResource(R.string.settings_online_sources),
-                subtitle = stringResource(R.string.settings_online_sources_desc),
-                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.OnlineSources) },
-            )
-            // 收藏 / 最近显示 / 存储与流量原先只有页面、没有入口（只能从大图浏览等
-            // 路径绕进去），统一挂到「外观」下面，设置页就是全部页面的索引。
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-            SettingsPageEntry(
-                icon = Icons.Outlined.FavoriteBorder,
-                title = stringResource(R.string.favorites_title),
-                subtitle = stringResource(R.string.settings_page_favorites_desc),
-                onClick = { onOpenScreen(com.wallpaperswitcher.ui.Screen.Favorites) },
-            )
-            Divider(modifier = Modifier.padding(horizontal = 16.dp))
-            SettingsPageEntry(
                 icon = Icons.Outlined.History,
                 title = stringResource(R.string.recent_title),
                 subtitle = stringResource(R.string.settings_page_recent_desc),
@@ -245,9 +256,72 @@ fun SettingsScreen(
                 onClick = onOpenWizard,
             )
         }
+        }
+        item {
         Spacer(modifier = Modifier.height(8.dp))
 
+        }
+        item {
+        // 网盘下载位置：与订阅目录分开（各一个键），样式与订阅目录一致。
+        }
+        item {
+        SettingsSection(title = stringResource(R.string.settings_webdav_download_dir)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { webdavDirPicker.launch(null) }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Outlined.CloudDownload,
+                    null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(24.dp),
+                )
+                Spacer(modifier = Modifier.width(16.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.settings_webdav_download_dir),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = if (webdavDownloadDir.isBlank()) {
+                            stringResource(R.string.settings_webdav_download_dir_default)
+                        } else {
+                            com.wallpaperswitcher.engine.OnlineDownloadDir
+                                .displayName(webdavDownloadDir)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (webdavDownloadDir.isNotBlank()) {
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
+                Text(
+                    text = stringResource(R.string.settings_webdav_download_dir_reset),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            webdavDownloadDir = ""
+                            viewModel.setWebdavDownloadDir("")
+                        }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                )
+            }
+        }
+        }
+        item {
+        Spacer(modifier = Modifier.height(8.dp))
+
+        }
+        item {
         // 订阅下载目录：原来混在「文件自动扫描」里（与扫描无关），单独成组。
+        }
+        item {
         SettingsSection(title = stringResource(R.string.settings_rss_download_dir)) {
             Row(
                 modifier = Modifier
@@ -279,18 +353,38 @@ fun SettingsScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
+            }
+            if (rssDownloadDir.isNotBlank()) {
+                Divider(modifier = Modifier.padding(horizontal = 16.dp))
                 Text(
-                    stringResource(R.string.action_modify),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = LocalAccentColor.current
+                    text = stringResource(R.string.settings_rss_download_dir_reset),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            rssDownloadDir = ""
+                            viewModel.setRssDownloadDir("")
+                        }
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                 )
             }
         }
+        }
+        item {
         Spacer(modifier = Modifier.height(8.dp))
 
+        }
+        item {
         // 配置导出 / 导入：分组 + 壁纸设置一次性导出成一个 JSON 文件。
+        }
+        item {
         // 换机、重装、或者只是想留个备份时用（导入是"新增"语义，
+        }
+        item {
         // 不会删掉现有的分组 —— 见 ConfigBackup.apply）。
+        }
+        item {
         SettingsSection(title = stringResource(R.string.settings_config_backup)) {
             val context = androidx.compose.ui.platform.LocalContext.current
             val scope = rememberCoroutineScope()
@@ -441,8 +535,12 @@ fun SettingsScreen(
                 )
             }
         }
+        }
+        item {
         Spacer(modifier = Modifier.height(8.dp))
 
+        }
+        item {
         SettingsSection(title = stringResource(R.string.settings_section_logs)) {
             val context = androidx.compose.ui.platform.LocalContext.current
             val scope = rememberCoroutineScope()
@@ -624,9 +722,15 @@ fun SettingsScreen(
                 }
             }
         }
+        }
+        item {
         Spacer(modifier = Modifier.height(8.dp))
 
+        }
+        item {
         // Usage guide
+        }
+        item {
         SettingsSection(title = stringResource(R.string.settings_section_guide)) {
             SettingsInfoItem(
                 icon = Icons.Outlined.Info,
@@ -651,9 +755,15 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.settings_power_hint)
             )
         }
+        }
+        item {
         Spacer(modifier = Modifier.height(8.dp))
 
+        }
+        item {
         // About
+        }
+        item {
         SettingsSection(title = stringResource(R.string.settings_section_about)) {
             SettingsInfoItem(
                 icon = Icons.Outlined.Info,
@@ -661,10 +771,16 @@ fun SettingsScreen(
                 subtitle = stringResource(R.string.about_desc)
             )
         }
+        }
+        item {
         Spacer(modifier = Modifier.height(80.dp))
 
 
+        }
+        item {
         // Interval picker dialog
+        }
+        item {
         if (showIntervalDialog) {
             IntervalPickerDialog(
                 currentMs = globalIntervalMs,
@@ -673,6 +789,8 @@ fun SettingsScreen(
             )
         }
 
+        }
+        item {
         if (showLockIntervalDialog) {
             IntervalPickerDialog(
                 currentMs = lockIntervalMs,
@@ -681,6 +799,8 @@ fun SettingsScreen(
             )
         }
 
+        }
+        item {
         if (showColorDialog) {
             ThemeColorPickerDialog(
                 currentHex = themeColor,
@@ -689,6 +809,8 @@ fun SettingsScreen(
             )
         }
 
+        }
+        item {
         if (showLanguageDialog) {
             LanguagePickerDialog(
                 currentTag = localeTag,
@@ -708,6 +830,8 @@ fun SettingsScreen(
             )
         }
 
+        }
+        item {
         if (showButtonColorDialog) {
             // Same picker as the theme colour, plus the translucency slider that
             // drives the button's rest opacity (the 透明度 slider above shows the
@@ -727,6 +851,8 @@ fun SettingsScreen(
             )
         }
 
+        }
+        item {
         if (showAutoScanIntervalDialog) {
             AutoScanIntervalDialog(
                 currentMs = autoScanIntervalMs,
@@ -736,6 +862,7 @@ fun SettingsScreen(
                     showAutoScanIntervalDialog = false
                 }
             )
+        }
         }
     }
 }
@@ -750,10 +877,18 @@ fun SettingsClickableItem(
     onClick: () -> Unit,
     subtitle: String? = null,
 ) {
+    // 按压反馈用的 interactionSource（与下面 clickable 共用）。
+    val rowInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            // 与卡片一致的按压反馈（设置项按下轻微收缩，松手弹簧回弹）。
+            .hiPressScale(rowInteraction, pressedScale = 0.985f)
+            .clickable(
+                interactionSource = rowInteraction,
+                indication = LocalIndication.current,
+                onClick = onClick,
+            )
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -908,12 +1043,14 @@ fun SettingsSwitchItem(
     title: String,
     subtitle: String,
     checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
+    onCheckedChange: (Boolean) -> Unit,
+    /** false = 置灰不可点（依赖项没开时用，例如"播完再切"依赖循环播放）。 */
+    enabled: Boolean = true,
 ) {
     Row(
         modifier = Modifier
         .fillMaxWidth()
-        .clickable { onCheckedChange(!checked) }
+        .clickable(enabled = enabled) { onCheckedChange(!checked) }
         // 12dp instead of 16: the rows were ~10% taller than they needed to
         // be, and this screen has ~25 of them (a full extra screen of
         // scrolling). Icons and touch targets are unchanged.
@@ -936,7 +1073,7 @@ fun SettingsSwitchItem(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
     }
 }
 

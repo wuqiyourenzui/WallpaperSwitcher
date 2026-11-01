@@ -19,6 +19,7 @@ import com.wallpaperswitcher.data.SettingsDao
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.getBool
 import com.wallpaperswitcher.data.getLong
+import com.wallpaperswitcher.data.getString
 import com.wallpaperswitcher.data.setBool
 import com.wallpaperswitcher.data.setLong
 import com.wallpaperswitcher.engine.SwitchSchedule
@@ -394,8 +395,10 @@ class WallpaperSwitchService : Service() {
                 }
 
                 // Schedule-based countdown: the next switch is due at
-                // anchor + interval. The anchor is NOT reset when the screen
-                // turns off, so the time spent locked still counts.
+                // anchor + interval. The screen-off pause does NOT count: the
+                // screen-state receiver moves both anchors (and every per-group
+                // row) to "now" on screen-on, so this loop only ever sees
+                // lateness caused by the service being killed / frozen.
                 val dao = db.settingsDao()
                 // 一键暂停 ("稍后切换") holds the tick WITHOUT consuming it, so
                 // the moment the pause expires the overdue switch fires - even
@@ -649,61 +652,28 @@ class WallpaperSwitchService : Service() {
     )
 
     /**
-     * The group this screen-wide tick should be scoped to, or null when this
-     * screen has nothing to show right now.
-     *
-     * `null` means "idle" only when a 时间规则 is what excludes every group (the
-     * loop then re-checks in [HOME_IDLE_RECHECK_MS], so the group comes back on
-     * its own when its window opens). When nothing is restricted the screen-wide
-     * pick (groupId = 0) is used, exactly as before; when several groups are
-     * inside their windows the one that waited longest goes first, so the
-     * rotation stays fair.
-     */
-    private suspend fun activeScreenGroupId(
-        db: AppDatabase,
-        dao: SettingsDao,
-        slot: String,
-        groups: List<com.wallpaperswitcher.data.WallpaperGroup>,
-        now: Long,
-    ): Long? {
-        if (groups.none { GroupRules.hasTimeRules(it) }) return 0L
-        val scopedGroups = groups.filter { GroupRules.hasTimeRules(it) }
-        val counts = try {
-            db.groupPickDao().countsForSlot(slot).associate { it.groupId to it.mediaCount }
-        } catch (e: Exception) {
-            // The counts query failed: do NOT turn the whole schedule into an
-            // idle loop over a transient database error - fall back to the
-            // screen-wide pick and let the next tick try again.
-            AppLog.w(TAG, "group counts failed (${e.javaClass.simpleName}); screen-wide pick")
-            return 0L
-        }
-        val candidates = GroupRules.screenTickCandidates(scopedGroups, counts, slot, now)
-        if (candidates.isEmpty()) return null
-        val rows = try {
-            db.groupScheduleDao().getAllForSlot(slot).associateBy { it.groupId }
-        } catch (_: Exception) {
-            emptyMap()
-        }
-        return candidates.minWithOrNull(
-            compareBy({ rows[it.id]?.lastSwitchAt ?: 0L }, { it.id })
-        )?.id ?: 0L
-    }
-
-    /**
      * The next tick of [slot].
      *
-     * The SCREEN clock drives the pacing (one anchor, one interval) and every
-     * tick carries `groupId = 0` - the screen-wide pick:
+     * The SCREEN clock drives the pacing (one anchor, one interval). **Which
+     * group this tick belongs to depends on the switch mode** (user decision):
      *
-     *  - 随机 / 洗牌 draw from ALL enabled groups (per-group filters and
-     *    时间规则 applied when the pool is built, see MediaPick.eligibleGroups);
-     *  - 顺序 walks the current group to its end, then the next one.
+     *  - 顺序 (SEQUENTIAL): the tick carries **当前图片所在分组**
+     *    ([GroupSchedulePlan.sequential] → [GroupSchedulePlan.sequentialStartGroupId]),
+     *    the same walker 下一张预览 / manual taps / unlock use, so the switch
+     *    walks that group to its end and then moves on to the next group
+     *    ("本组走完 → 下一个分组"), honouring the group's 仅图片 / 仅视频 filter
+     *    and its own media cursor. When that group cannot be resolved the tick
+     *    falls back to the screen-wide pick (groupId = 0), which walks the same
+     *    way (MediaPick.sequentialAcrossGroups) - never the per-group fairness
+     *    rotation, which made the timer hop between groups (A1→B1→A2→B2).
+     *  - 随机 / 洗牌: `groupId = 0` — the screen-wide pool. Per-group rotation must
+     *    NOT be applied here: it used to turn 随机/洗牌 into a strict group
+     *    round-robin (28→29→32→…, user report) instead of drawing from the whole
+     *    enabled set. The mode is therefore checked before any group is chosen.
      *
-     * Per-group tick rotation (GroupPacing / GroupSchedulePlan) was removed on
-     * request: it made 随机/洗牌 degenerate into a strict group round-robin
-     * (28→29→32→…) instead of drawing from the whole enabled set, and it kept
-     * 顺序 from walking group by group. 时间规则 is still honoured - inside the
-     * pick, by excluding groups that are not active right now.
+     * 时间规则 is honoured either way: the candidate check / group plan filter by
+     * [GroupRules.isActiveAt], and the screen-wide pick excludes inactive groups
+     * when it builds the pool.
      */
     private suspend fun nextScreenTick(
         db: AppDatabase,
@@ -722,14 +692,43 @@ class WallpaperSwitchService : Service() {
         val anyCandidate = try {
             val counts = db.groupPickDao().countsForSlot(slot)
                 .associate { it.groupId to it.mediaCount }
-            groups.any { group ->
-                (counts[group.id] ?: 0) > 0 && GroupRules.isActiveAt(group, now)
-            }
+            GroupRules.screenTickCandidates(groups, counts, slot, now).isNotEmpty()
         } catch (_: Exception) {
             true
         }
         if (!anyCandidate) return null
         val anchor = currentScheduleAnchor(dao, anchorKey, globalInterval)
+
+        // 顺序模式：这一跳属于「当前图片所在分组」（与下一张预览 / 手动 / 解锁
+        // 同一个 walker；本组走完由取图侧的 GroupPick.pickSequential 推进）。
+        // 随机/洗牌按上面的注释保持屏幕级池（分组轮转会退化）。
+        val mode = try {
+            com.wallpaperswitcher.data.SwitchMode.valueOf(
+                dao.getString(
+                    SettingsKeys.GLOBAL_SWITCH_MODE,
+                    com.wallpaperswitcher.data.SwitchMode.RANDOM.name,
+                )
+            )
+        } catch (_: Exception) {
+            com.wallpaperswitcher.data.SwitchMode.RANDOM
+        }
+        if (mode == com.wallpaperswitcher.data.SwitchMode.SEQUENTIAL) {
+            val plan = try {
+                GroupSchedulePlan.sequential(db, slot, globalInterval, anchor, now)
+            } catch (_: Exception) {
+                null
+            }
+            if (plan != null) {
+                return PendingTick(
+                    groupId = plan.groupId,
+                    waitMs = plan.waitMs,
+                    anchor = plan.anchor,
+                    intervalMs = plan.intervalMs,
+                    rawAnchor = plan.groupRawAnchor,
+                    usesScreenClock = plan.usesScreenClock,
+                )
+            }
+        }
         return PendingTick(
             groupId = 0L,
             waitMs = SwitchSchedule.waitMs(anchor, globalInterval, now),
@@ -1311,10 +1310,6 @@ class WallpaperSwitchService : Service() {
         // targets the lock screen). Any relevant change calls poke(), which
         // restarts the loops immediately - this is only a fallback for a missed
         // poke, so it can be long (was a 15s poll).
-        // Safety re-check while the lock timer has nothing to switch (no group
-        // targets the lock screen). Any relevant change calls poke(), which
-        // restarts the loops immediately - this is only a fallback for a missed
-        // poke, so it can be long (was a 15s poll).
         private const val LOCK_IDLE_WAIT_MS = 10 * 60_000L
         /**
          * Safety re-check while NO group can switch for a screen (every group
@@ -1605,7 +1600,6 @@ class WallpaperSwitchService : Service() {
             }
         }
 
-        /** Body of [enforceSlotsAfterLiveApply]; the caller holds the guard. */
         /** Body of [enforceSlotsAfterLiveApply]; the caller holds the guard. */
         private suspend fun enforceSlotsLocked(context: Context): Boolean {
             val gateDb = AppDatabase.getInstance(context)

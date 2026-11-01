@@ -194,6 +194,11 @@ class WallpaperSwitcherApp : Application() {
                     .build()
             }
             .diskCachePolicy(CachePolicy.ENABLED)
+            // 视频先帧：网盘浏览页的网格里，mp4 也能出缩略图（否则只能显示图标）。
+            // coil-video 的解码器只在数据源是视频时才生效，图片路径不受影响。
+            .components {
+                add(coil.decode.VideoFrameDecoder.Factory())
+            }
             .allowHardware(false) // Software bitmaps for compatibility
             .bitmapConfig(android.graphics.Bitmap.Config.RGB_565) // 16-bit for thumbnails (less memory)
             .build()
@@ -232,35 +237,12 @@ class WallpaperSwitcherApp : Application() {
                 if (dao.getValue(SettingsKeys.LOCK_TIMER_ENABLED) == null) {
                     dao.setBool(SettingsKeys.LOCK_TIMER_ENABLED, true)
                 }
-                // Built-in subscription source (好壁纸), seeded exactly once so
-                // deleting it does not bring it back.
+                // 默认订阅源（好壁纸）已取消：订阅是用户自己导入的东西，不该预置。
+                // 这里只把「已播种」标记补上，避免更早的版本再次走一遍播种逻辑；
+                // 已经存在的那一行**不删** —— 用户可能在用它或改过规则，由他自己
+                // 在订阅页删除。
                 if (dao.getValue(SettingsKeys.RSS_DEFAULT_SEEDED) == null) {
                     dao.setBool(SettingsKeys.RSS_DEFAULT_SEEDED, true)
-                    val sources = database.rssSourceDao()
-                    if (sources.getAll().isEmpty()) {
-                        // Rule source derived from haowallpaper.com's markup:
-                        // cards on /homeView, details at /homeViewLook/<id>.
-                        val raw = """
-                            {"sourceName":"好壁纸","sourceUrl":"https://haowallpaper.com/homeView",
-                             "sortUrl":"最新::/homeView",
-                             "ruleArticles":"class.card",
-                             "ruleTitle":"tag.h3@text||tag.a.0@title||class.card-content@text",
-                             "ruleLink":"tag.a.0@href",
-                             "ruleImage":"class.video-preview-poster@src||tag.img@src",
-                             "ruleContent":"{{@@tag.img@html}}",
-                             "type":0,"enabled":true}
-                        """.trimIndent()
-                        val id = sources.insert(
-                            com.wallpaperswitcher.data.RssSource(
-                                name = "好壁纸",
-                                url = "https://haowallpaper.com/homeView",
-                                type = 0,
-                                enabled = true,
-                                rawJson = raw,
-                            )
-                        )
-                        AppLog.d(TAG, "default subscription seeded (id=$id)")
-                    }
                 }
                 // Housekeeping: the "swipe / page-flip switch" feature was
                 // removed, and its toggle row was left behind in existing
@@ -271,6 +253,18 @@ class WallpaperSwitcherApp : Application() {
                         val removed = dao.deleteKey(obsolete)
                         AppLog.d(TAG, "Removed obsolete setting '$obsolete' (rows=$removed)")
                     }
+                }
+                // 阅读排版（`articleStyle`）：老版本没有把它读进独立列，已导入的源
+                // 全是 0（列表）。按源的 rawJson 回填一次，源怎么排版列表就怎么显示，
+                // 用户不用为了排版重新导入一遍。幂等（值相同就跳过）。
+                try {
+                    val filled = com.wallpaperswitcher.engine.RssSourceImport
+                        .backfillArticleStyle(database)
+                    if (filled > 0) {
+                        AppLog.d(TAG, "articleStyle backfilled for $filled subscription(s)")
+                    }
+                } catch (e: Exception) {
+                    AppLog.w(TAG, "articleStyle backfill failed: ${e.javaClass.simpleName}")
                 }
             } catch (e: Exception) {
                 AppLog.e(TAG, "initDefaultSettings failed", e)

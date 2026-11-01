@@ -132,6 +132,24 @@ class GroupRulesTest {
     }
 
     @Test
+    fun newestFirstReadsTheSortOrderColumn() {
+        // 顺序=新的在前: the switch paths, the prefetch and 下一张预览 must all
+        // read the direction from one place - the switch used to ignore the
+        // column entirely, so a NEWEST group previewed newest-first and then
+        // really switched id-ascending.
+        assertTrue(
+            GroupRules.newestFirst(
+                WallpaperGroup(name = "g", sortOrder = GroupRules.SORT_NEWEST)
+            )
+        )
+        assertFalse(GroupRules.newestFirst(WallpaperGroup(name = "g", sortOrder = "")))
+        // A legacy/unknown value must not flip the walk.
+        assertFalse(GroupRules.newestFirst(WallpaperGroup(name = "g", sortOrder = "OLDEST")))
+        // The screen-wide pick (no group) has no direction of its own.
+        assertFalse(GroupRules.newestFirst(null))
+    }
+
+    @Test
     fun mediaFilterClassifiesImagesVideosAndGifs() {
         // 仅图片 must reject both videos and GIFs; 仅视频 must accept both
         // (GIF counts as a motion media), and "" accepts everything.

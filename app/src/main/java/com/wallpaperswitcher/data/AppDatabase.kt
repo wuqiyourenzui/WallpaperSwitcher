@@ -12,7 +12,7 @@ import androidx.room.migration.Migration
         GroupSchedule::class, RecentShown::class, OnlineSource::class, OnlineItem::class,
         RssSource::class, RssArticle::class
     ],
-    version = 15,
+        version = 18,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -339,6 +339,57 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * 阅读订阅源的 `articleStyle`（0 列表 / 2 两列 / 3 瀑布流 / 4 三列）。
+         * 之前导入时丢掉了这个字段，所有源都按单列列表显示 —— 与阅读里
+         * 「同一份源、不同排版」的现象不符。
+         */
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `rss_sources` ADD COLUMN `articleStyle` INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+        }
+
+        /**
+         * 16 → 17：删掉内置「在线壁纸源」的行（Bing / NASA / Wikimedia / 彼岸 / ioliu）。
+         *
+         * 这些源已下线：不排期、不同步，留着只会在库里堆五行永远不用的配置。
+         * **只删 online_sources 的行** —— 已经下载到「在线壁纸」分组的媒体、
+         * `online_items` 索引与磁盘文件都不动（分组内容原样保留）。
+         */
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "DELETE FROM `online_sources` WHERE `type` IN " +
+                        "('BING','NASA_APOD','WIKIMEDIA','NETBIAN','IOLIU')"
+                )
+            }
+        }
+
+        /**
+         * 17 → 18：订阅 / WebDAV 图片「不落本地、按需加载」。
+         *
+         * 三个新列都是带默认值的追加列，老行保持 `LOCAL / 0 / ''`，行为不变：
+         *  - `sourceKind`  LOCAL / RSS / WEBDAV
+         *  - `sourceId`    指向 online_sources.id（取认证头用）
+         *  - `thumbPath`   本地缩略图（远程图片的占位/回退）
+         */
+        private val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE `wallpaper_images` ADD COLUMN `sourceKind` TEXT NOT NULL DEFAULT 'LOCAL'"
+                )
+                db.execSQL(
+                    "ALTER TABLE `wallpaper_images` ADD COLUMN `sourceId` INTEGER NOT NULL DEFAULT 0"
+                )
+                db.execSQL(
+                    "ALTER TABLE `wallpaper_images` ADD COLUMN `thumbPath` TEXT NOT NULL DEFAULT ''"
+                )
+            }
+        }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -350,7 +401,9 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
                         MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
                         MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
-                        MIGRATION_13_14, MIGRATION_14_15
+                        MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16,
+                        MIGRATION_16_17,
+                        MIGRATION_17_18
                     )
                     .build()
                     .also { INSTANCE = it }

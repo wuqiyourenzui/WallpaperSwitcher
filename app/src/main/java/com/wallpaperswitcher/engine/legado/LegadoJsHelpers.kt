@@ -74,10 +74,58 @@ class LegadoJsHelpers(
     fun getElements(rule: String): List<Any> = elementsProvider?.invoke(rule).orEmpty()
 
     /** `java.ajax(url)` - plain GET returning the body text. */
-    fun ajax(url: String): String = try {
-        ConcurrentRate.withLimitBlocking(sourceId) { LegadoRss.fetchTextSync(url) }
-    } catch (t: Throwable) {
-        AppLog.w(TAG, "java.ajax failed: ${t.javaClass.simpleName}")
+    fun ajax(url: String): String {
+        val host = hostOf(url)
+        if (AjaxCircuit.isOpen(host)) return ""
+        // 同一个地址问过太多次就放弃：规则可能在 JS 里对取不到的地址死循环重试
+        // （实测「秀人集」的 ruleNextPage → hot_1.html 每 0.5 秒一次、把首屏
+        // 拖到 20 秒以上）。图集规则对**不同**的 `_N.html` 探测不受影响。
+        if (AjaxCircuit.isUrlExhausted(url)) return ""
+        AjaxCircuit.onUrlAttempt(url)
+        // 阻塞式调用前后把**实际耗时**还给 JS 超时预算：源限流 + 站点慢响应
+        // 几个请求就能吃光 60 秒，watchdog 一中断，正在跑的 OkHttp 就被
+        // CANCEL 掉（`StreamResetException: stream was reset: CANCEL`），
+        // 正文永远抓不到。网络等待不该算作"规则跑飞"。
+        val startedAt = System.currentTimeMillis()
+        return try {
+            val body = ConcurrentRate.withLimitBlocking(sourceId) {
+                LegadoRss.fetchTextSync(url)
+            }
+            LegadoJsRuntime.refundTimeout(System.currentTimeMillis() - startedAt)
+            AjaxCircuit.onSuccess(host)
+            AjaxCircuit.onUrlSuccess(url)
+            body
+        } catch (t: Throwable) {
+            // 失败的那次网络等待同样要还回去（超时的判定不该由站点慢响应触发）。
+            LegadoJsRuntime.refundTimeout(System.currentTimeMillis() - startedAt)
+            // 记下**原因**（http status / 超时 / 地址），否则源的图集翻页失败时
+            // 日志里只有一行 "java.ajax failed: FetchException"，无法判断是站点
+            // 拒绝、限流还是地址拼错。
+            val reason = (t as? com.wallpaperswitcher.engine.FetchException)
+                ?.let { "reason=${it.reason} status=${it.httpStatus}" }
+                ?: "${t.javaClass.simpleName}: ${t.message?.take(80)}"
+            AppLog.w(TAG, "java.ajax failed: $reason url=${url.take(110)}")
+            // 只有**传输层**失败（连不上、超时、TLS/重置）才计入熔断。
+            // HTTP 状态码不算：图集规则会故意往后多探几页，站点对「超出图集末尾」
+            // 的 `_N.html` 一律回 502 —— 那是规则的一部分，熔断会把正常图集也掐掉
+            // （实测就会变成「只显示 5 张」）。
+            if (AjaxCircuit.isTransportFailure(t)) {
+                AjaxCircuit.onFailure(host)?.let { failures ->
+                    AppLog.w(
+                        TAG,
+                        "java.ajax circuit open for $host after $failures failures " +
+                            "(cooling down ${AjaxCircuit.COOLDOWN_MS / 1000}s)",
+                    )
+                }
+            }
+            ""
+        }
+    }
+
+    private fun hostOf(url: String): String = try {
+        val uri = java.net.URI(UrlOptions.strip(url))
+        uri.host ?: ""
+    } catch (_: Throwable) {
         ""
     }
 

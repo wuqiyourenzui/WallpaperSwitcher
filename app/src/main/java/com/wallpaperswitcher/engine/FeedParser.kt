@@ -187,6 +187,61 @@ object FeedParser {
             .trim()
     }
 
+    /**
+     * 订阅源文章列表里那一行**摘要**的文本。
+     *
+     * 与 [stripHtml] 的区别：**丢掉源规则自己生成的"抓不到"占位提示**。
+     * 有些源在规则抓不到图片时会自己拼一段占位 HTML 作为正文/摘要，例如
+     * `悄悄的看2019`：
+     *
+     * ```html
+     * <div style="padding:12px 0"><a href="https://qqdk2019.net/"
+     *   style="color:#e60000">未识别到图片，点此打开原页面</a></div>
+     * ```
+     *
+     * 这是**规则作者写给阅读用户看的调试/兜底文案**，不是文章内容 —— 一屏
+     * 几十行都挂同一句"未识别到图片"只会淹没标题（用户要求删掉）。
+     * 只在整段摘要**恰好就是**这类提示时丢弃，正文里正常出现这些字不受影响。
+     */
+    fun summaryText(description: String, content: String): String {
+        val plain = stripHtml(description.ifBlank { content })
+        return if (isPlaceholderSummary(plain)) "" else plain
+    }
+
+    /**
+     * True when [plain] 整段就是源规则生成的占位提示（见 [summaryText]）。
+     *
+     * 按**关键词**判断而不是写死整句：不同源的措辞不一样（"未识别到图片"、
+     * "未解析到图片"、"图片解析失败"…），但它们都同时含有一个"没拿到"的词
+     * 与一个"点这里去原站"的指引。
+     */
+    private fun isPlaceholderSummary(plain: String): Boolean {
+        if (plain.isBlank()) return true
+        // 太长的摘要不可能只是占位提示：避免误杀正常正文。
+        if (plain.length > PLACEHOLDER_MAX_LEN) return false
+        val missed = placeholderMissed.any { it.containsMatchIn(plain) }
+        val action = placeholderAction.containsMatchIn(plain)
+        return missed && action
+    }
+
+    /** "没拿到内容"的措辞。 */
+    private val placeholderMissed = listOf(
+        Regex("未识别到"),
+        Regex("未识别"),
+        Regex("未解析到"),
+        Regex("识别失败"),
+        Regex("解析失败"),
+        Regex("没有识别"),
+        Regex("未找到"),
+        Regex("获取失败"),
+    )
+
+    /** "去原站看"的指引。 */
+    private val placeholderAction = Regex("点此|点击|打开原页面|打开原文|原页面")
+
+    /** 超过这个长度的摘要一律当正常内容（占位提示都是一句话）。 */
+    private const val PLACEHOLDER_MAX_LEN = 60
+
     /** First `<img src>` / `<img data-src>` of an HTML fragment. */
     fun firstImageUrl(html: String): String? {
         if (html.isEmpty()) return null

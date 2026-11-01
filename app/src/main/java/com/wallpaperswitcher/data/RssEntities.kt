@@ -21,6 +21,11 @@ data class RssSource(
     val url: String = "",
     /** Legado `type`: 0 = RSS, 1 = Atom, 2 = JSON; anything else is rule-based. */
     val type: Int = 0,
+    /**
+     * 阅读 `articleStyle`: 0 = 默认列表、1 = 列表、2 = 两列网格、3 = 瀑布流、
+     * 4 = 三列网格。源怎么排版，列表就怎么排（见 SubscriptionScreen）。
+     */
+    val articleStyle: Int = 0,
     val enabled: Boolean = true,
     /** The original Legado JSON object (empty for a manually added feed). */
     val rawJson: String = "",

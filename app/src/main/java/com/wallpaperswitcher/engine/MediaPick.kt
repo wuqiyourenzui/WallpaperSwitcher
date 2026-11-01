@@ -367,6 +367,8 @@ internal object MediaPick {
         groups: List<WallpaperGroup>,
         favoriteWeight: Int,
         knownCount: Int = -1,
+        /** 远程图片（订阅/WebDAV 按需加载）是否允许进锁屏；默认不允许。 */
+        remoteLockOnLockScreen: Boolean = false,
     ): List<MediaWeight> {
         val groupsKey = groups.joinToString(",") { group ->
             "${group.id}:${GroupRules.mediaFilter(group)}"
@@ -385,7 +387,8 @@ internal object MediaPick {
         for (group in groups) {
             try {
                 rows += pickDao.weightsInGroup(
-                    slot, group.id, GroupRules.mediaFilter(group), favoriteWeight
+                    slot, group.id, GroupRules.mediaFilter(group), favoriteWeight,
+                    excludeRemote = if (slot == "LOCK" && !remoteLockOnLockScreen) 1 else 0,
                 )
             } catch (_: Exception) {
                 // A broken group must not take the whole pool down.
@@ -546,7 +549,7 @@ internal object MediaPick {
         if (count == 1) return pickDao.getRandomInGroup(slot, groupId, filter)
         if (favoriteWeight > 1 || recentIds.isNotEmpty()) {
             val rows = try {
-                pickDao.weightsInGroup(slot, groupId, filter, favoriteWeight)
+                pickDao.weightsInGroup(slot, groupId, filter, favoriteWeight, excludeRemote = 0)
             } catch (_: Exception) {
                 emptyList()
             }
@@ -589,7 +592,7 @@ internal object MediaPick {
         shownIds.retainAll(enabledIds.toHashSet())
         val favorites = if (favoriteWeight > 1) {
             try {
-                pickDao.weightsInGroup(slot, groupId, filter, favoriteWeight)
+                pickDao.weightsInGroup(slot, groupId, filter, favoriteWeight, excludeRemote = 0)
                     .filter { it.weight > 1 }.map { it.id }.toHashSet()
             } catch (_: Exception) {
                 emptySet()

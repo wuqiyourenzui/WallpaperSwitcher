@@ -204,18 +204,36 @@ object BitmapUtils {
         val target = displayTargetSize(
             meta.width, meta.height, screenW, screenH, scaleMode, rotated
         )
-        val stream = context.contentResolver.openInputStream(uri)
-        if (stream == null) {
-            AppLog.e(TAG, "openInputStream returned null for: ${LogText.short(uriStr)}")
-            return null
-        }
-        val decoded = stream.use {
-            BitmapFactory.decodeStream(it, null, decodeOptions(sample, meta.width, target))
+        // 解码走「文件描述符」而不是 InputStream：SAF/相册的 content uri 上
+        // openInputStream 是一次流式读，decodeFileDescriptor 可以按需 seek/mmap，
+        // 真机上 12MP 照片从 ~2.5s 降到明显更快（点击悬钮要"立刻"看到变化）。
+        // 拿不到 fd（少数 provider）再退回原来的流式解码。
+        val startedAt = android.os.SystemClock.elapsedRealtime()
+        val opts = decodeOptions(sample, meta.width, target)
+        // ImageDecoder（API 28+）能按目标尺寸直接缩放解码，12MP JPEG 比
+        // BitmapFactory 快不少；失败就退回 fd / 流两条 BitmapFactory 路径。
+        var usedImageDecoder = false
+        val decoded = if (android.os.Build.VERSION.SDK_INT >= 28) {
+            val fast = decodeWithImageDecoder(
+                context,
+                uri,
+                targetW = target?.get(0) ?: 0,
+                targetH = target?.get(1) ?: 0,
+            )
+            if (fast != null) usedImageDecoder = true
+            fast ?: decodeFromUri(context, uri, opts)
+        } else {
+            decodeFromUri(context, uri, opts)
         }
         if (decoded == null) {
             AppLog.e(TAG, "decodeStream returned null for: ${LogText.short(uriStr)}")
             return null
         }
+        AppLog.d(
+            TAG,
+            "Bitmap decode took ${android.os.SystemClock.elapsedRealtime() - startedAt}ms " +
+                "(${decoded.width}x${decoded.height}, sample=$sample)"
+        )
         decoded.density = Bitmap.DENSITY_NONE
         // The stored size can be stale when the file behind this URI was
         // replaced (album edit, a different image saved over it). The decoded
@@ -240,16 +258,22 @@ object BitmapUtils {
             AppLog.w(
                 TAG,
                 "Stale media metadata for ${LogText.short(uriStr)}: decoded ${decoded.width}x${decoded.height}, " +
-                    "expected ${expectedW}x$expectedH - re-reading"
+                    "expected ${expectedW}x$expectedH - using it, learning the real size"
             )
-            if (!decoded.isRecycled) decoded.recycle()
-            synchronized(metaCache) { metaCache.remove(uriStr) }
-            return decodeAndLearnSize(
-                context, uri, uriStr, screenW, screenH,
-                scaleMode, rotateMismatch, rotateClockwise
+            // 以前这里把位图丢掉、重新开流解码一次：真机上换到一张 12MP 照片
+            // 时，用户点了悬浮按钮要等 5.3 秒（两次全解码）才看到变化。
+            // 解码出来的像素本来就是这张图的真实内容 —— 直接用它，把真实尺寸
+            // 记进元数据（下一跳的 sample 就对了），因此只花一次解码。
+            rememberMeta(
+                context,
+                uriStr,
+                MediaMeta(decoded.width, decoded.height, meta.rotationDegrees),
             )
         }
-        val oriented = rotateByDegrees(decoded, uri, meta.rotationDegrees)
+        // ImageDecoder（API 28+）解码时已经按 EXIF 把图摆正了，这里不能再转一次；
+        // BitmapFactory 路径则需要手动旋转。
+        val exifRotation = if (usedImageDecoder) 0 else meta.rotationDegrees
+        val oriented = rotateByDegrees(decoded, uri, exifRotation)
         return EngineImage(
             oriented,
             fillRotationFor(oriented, screenW, screenH, rotateMismatch, rotateClockwise)
@@ -469,6 +493,65 @@ object BitmapUtils {
 
     /** Pixel size + EXIF rotation of one media item (in-memory, per process). */
     private class MediaMeta(val width: Int, val height: Int, val rotationDegrees: Int)
+
+    /**
+     * API 28+ 的快路径：ImageDecoder 直接在解码时长宽缩到目标尺寸，省掉一次
+     * 12MP 全尺寸解码（真机上 BitmapFactory 这条路要 2.5–2.7s，用户点悬钮后
+     * 干等）。注意 ImageDecoder **已经按 EXIF 摆正**，调用方不能再转一次。
+     *
+     * @return null 表示这条路径不可用（格式不支持 / provider 抛错），调用方
+     *   退回 BitmapFactory。
+     */
+    private fun decodeWithImageDecoder(
+        context: Context,
+        uri: android.net.Uri,
+        targetW: Int,
+        targetH: Int,
+    ): Bitmap? {
+        if (android.os.Build.VERSION.SDK_INT < 28) return null
+        return try {
+            val source = android.graphics.ImageDecoder.createSource(context.contentResolver, uri)
+            android.graphics.ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+                decoder.allocator = android.graphics.ImageDecoder.ALLOCATOR_SOFTWARE
+                if (targetW > 0 && targetH > 0) {
+                    decoder.setTargetSize(targetW, targetH)
+                }
+                // 壁纸图不需要颜色空间转换，直接给 sRGB。
+                decoder.setTargetColorSpace(android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.SRGB))
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * 解码一个 content/文件 uri：优先 `decodeFileDescriptor`（可 seek，比流式快），
+     * 拿不到 fd 时退回 `openInputStream`。两条路都用同一份 [opts] 的副本。
+     */
+    private fun decodeFromUri(
+        context: Context,
+        uri: android.net.Uri,
+        opts: BitmapFactory.Options,
+    ): Bitmap? {
+        val fd = try {
+            context.contentResolver.openFileDescriptor(uri, "r")
+        } catch (_: Exception) {
+            null
+        }
+        if (fd != null) {
+            try {
+                return fd.use { BitmapFactory.decodeFileDescriptor(it.fileDescriptor, null, opts) }
+            } catch (_: Exception) {
+                // 落到流式解码
+            }
+        }
+        val stream = try {
+            context.contentResolver.openInputStream(uri)
+        } catch (_: Exception) {
+            null
+        } ?: return null
+        return stream.use { BitmapFactory.decodeStream(it, null, opts) }
+    }
 
     /**
      * Remember what was just learned about [uriStr]: in memory for this process

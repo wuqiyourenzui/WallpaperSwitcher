@@ -150,6 +150,36 @@ object RssCookieStore {
         return jar.loadForRequest(httpUrl).joinToString("; ") { "${it.name}=${it.value}" }
     }
 
+    /**
+     * 清掉某个源所在主机的 Cookie（阅读编辑页菜单里的「清除 Cookie」）。
+     *
+     * 这个 jar 是按主机共享的（阅读是每源一份），所以清的是**该源域名**的
+     * 会话：同一站点下的其它源也会一起掉线，这点和阅读略有差别，比清空全部
+     * Cookie 温和得多。
+     */
+    fun clearHost(url: String): Int {
+        val host = try {
+            java.net.URI(url.trim()).host.orEmpty()
+        } catch (_: Throwable) {
+            ""
+        }
+        if (host.isBlank()) return 0
+        val removed = cookies.count { stored ->
+            stored.domain.trimStart('.').equals(host, ignoreCase = true) ||
+                host.endsWith("." + stored.domain.trimStart('.'), ignoreCase = true)
+        }
+        if (removed == 0) return 0
+        cookies.removeAll { stored ->
+            stored.domain.trimStart('.').equals(host, ignoreCase = true) ||
+                host.endsWith("." + stored.domain.trimStart('.'), ignoreCase = true)
+        }
+        persist()
+        return removed
+    }
+
+    /** Test/诊断用：当前存了多少条 Cookie。 */
+    fun size(): Int = cookies.size
+
     private fun load() {
         val raw = prefs?.getString(KEY, null) ?: return
         try {

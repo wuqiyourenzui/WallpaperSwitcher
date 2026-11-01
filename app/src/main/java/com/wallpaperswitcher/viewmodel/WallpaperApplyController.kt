@@ -10,6 +10,7 @@ import com.wallpaperswitcher.data.getLong
 import com.wallpaperswitcher.data.setLong
 import com.wallpaperswitcher.engine.LiveWallpaperPermission
 import com.wallpaperswitcher.engine.MediaTypes
+import com.wallpaperswitcher.engine.WallpaperApplier
 import com.wallpaperswitcher.engine.WallpaperTarget
 import com.wallpaperswitcher.service.StaticApplyOutcome
 import com.wallpaperswitcher.service.WallpaperSwitchService
@@ -42,6 +43,45 @@ internal class WallpaperApplyController(
 ) {
 
     private val tag = "WallpaperApply"
+
+    /**
+     * 把"用户手动设为桌面的这张"记进**它所属分组**的游标。
+     *
+     * 顺序模式（`GroupPick.pick`）取的是 `group_schedule.lastMediaId` 之后的第一张，
+     * 而手动设置只写了全局 `LAST_IMAGE_ID`。两者不一起更新，"设为桌面"这张就
+     * 不算数 —— 顺序会接着该分组上一次的旧游标走（用户反馈「应该从设置的这张图片
+     * 开始顺序切换」）。写在这里而不是只写全局游标，是因为分组游标才是顺序模式的
+     * 真源；`lastMediaId == image.id` 正好表示"下一张从这张之后开始"。
+     */
+    private suspend fun noteManualPickInGroupCursor(db: AppDatabase, image: WallpaperImage) {
+        if (image.groupId <= 0L) return
+        try {
+            val scheduleDao = db.groupScheduleDao()
+            val slot = WallpaperTarget.SLOT_HOME
+            // 旧值先读出来给动态壁纸那条路做取消回滚（见
+            // LiveWallpaperService.notePreviewPickGroupCursor）。
+            val previous = try {
+                scheduleDao.get(image.groupId, slot)?.lastMediaId ?: 0L
+            } catch (_: Throwable) {
+                0L
+            }
+            scheduleDao.ensureRow(image.groupId, slot)
+            scheduleDao.updateLastMedia(
+                image.groupId,
+                slot,
+                image.id,
+                System.currentTimeMillis(),
+            )
+            LiveWallpaperService.notePreviewPickGroupCursor(image.groupId, previous)
+            AppLog.d(
+                tag,
+                "manual pick recorded in group cursor: group=${image.groupId} media=${image.id}",
+            )
+        } catch (t: Throwable) {
+            // 记游标失败不该让"设为桌面"整体失败：壁纸已经设上了。
+            AppLog.w(tag, "group cursor note failed: ${t.javaClass.simpleName}")
+        }
+    }
 
     private suspend fun toast(id: Int, vararg args: Any) =
         onToast(localize(id, args.toList()))
@@ -167,6 +207,11 @@ internal class WallpaperApplyController(
                         // now: the cursor is the PICK, and the next engine start
                         // renders it (see pushConfirmedPickToEngine).
                         db.settingsDao().setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
+                        // 顺序模式读的是**分组游标**（`group_schedule.lastMediaId`），
+                        // 不是 LAST_IMAGE_ID。不把它一起写掉，用户在大图浏览里
+                        // "设为桌面"的那张就不算数：顺序会接着该分组上一次的旧游标
+                        // 往下走，看起来就是"没从设置的这张开始"（用户反馈）。
+                        noteManualPickInGroupCursor(db, image)
                         // A fire-and-forget broadcast used to be sent here and the
                         // result thrown away, so a stale `engineRunning`/`homeIsLive`
                         // (engine killed between the read and the send) reported
@@ -185,6 +230,9 @@ internal class WallpaperApplyController(
                             image.id,
                             android.app.WallpaperManager.FLAG_SYSTEM
                         ))
+                        // 静态路径同样要把这张记进分组游标，否则（引擎没在跑时）
+                        // 顺序模式又会接着旧游标走。
+                        noteManualPickInGroupCursor(db, image)
                     }
                 }
                 if (target.includesLock) {
@@ -228,9 +276,26 @@ internal class WallpaperApplyController(
                 }
 
                 if (!applied) {
+                    // "This device forbids wallpaper writes" must not be reported
+                    // as "the file cannot be read": the applier refuses on the
+                    // same two capability flags, so ask it here instead of
+                    // guessing. Binder round-trips stay off the main thread (same
+                    // reason as the isHomeLiveWallpaper call above).
+                    val blocked = if (busy) {
+                        null
+                    } else {
+                        withContext(Dispatchers.IO) { WallpaperApplier.staticWriteBlocked(app) }
+                    }
+                    AppLog.w(
+                        tag,
+                        "setImageAsWallpaper failed: busy=$busy blocked=${blocked ?: "none"}"
+                    )
                     toast(
-                        if (busy) R.string.toast_wallpaper_busy
-                        else R.string.toast_wallpaper_unreadable
+                        when {
+                            busy -> R.string.toast_wallpaper_busy
+                            blocked != null -> R.string.toast_wallpaper_restricted
+                            else -> R.string.toast_wallpaper_unreadable
+                        }
                     )
                     onResult?.invoke(false)
                     return@launch
@@ -290,6 +355,11 @@ internal class WallpaperApplyController(
                     // (see LiveWallpaperService.restoreHomeCursorAfterCancelledPick).
                     val previousHomeId = db.settingsDao().getLong(SettingsKeys.LAST_IMAGE_ID, 0L)
                     db.settingsDao().setLong(SettingsKeys.LAST_IMAGE_ID, image.id)
+                    // 动态壁纸这条路也要写**分组游标**：顺序模式取的是
+                    // `group_schedule.lastMediaId`，只写全局游标的话，
+                    // 「设为动态壁纸」这张不算数 —— 顺序会接着该分组上一次的旧游标
+                    // 走，而不是从这张的下一张开始（用户反馈）。
+                    noteManualPickInGroupCursor(db, image)
                     LiveWallpaperService.notePreviewPick(previousHomeId, image.id)
                 }
                 if (target.includesLock) {

@@ -1,15 +1,22 @@
 package com.wallpaperswitcher.engine
 
 import android.content.Context
+import android.net.Uri
 import android.graphics.BitmapFactory
 import com.wallpaperswitcher.R
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.OnlineItem
 import com.wallpaperswitcher.data.OnlineSource
+import com.wallpaperswitcher.data.SettingsKeys
+import com.wallpaperswitcher.data.getString
+import com.wallpaperswitcher.data.setString
 import com.wallpaperswitcher.data.WallpaperGroup
 import com.wallpaperswitcher.data.WallpaperImage
+import com.wallpaperswitcher.data.getBool
+import com.wallpaperswitcher.data.getLong
 import com.wallpaperswitcher.ui.AppLocale
 import com.wallpaperswitcher.util.AppLog
+import com.wallpaperswitcher.util.LogText
 import java.io.File
 import java.net.URLDecoder
 import kotlinx.coroutines.Dispatchers
@@ -93,8 +100,12 @@ object OnlineSync {
                     val items = OnlineFetcher.listBing()
                         .filter { it.remoteKey !in knownKeys }
                         .take(maxPerRun)
+                    val scope = SyncScope(
+                        context, db, source, groupId, password, targetDir,
+                        knownKeys, knownHashes,
+                    )
                     for (item in items) {
-                        if (store(db, source, groupId, item, password, targetDir, knownKeys, knownHashes)) {
+                        if (store(scope, item)) {
                             added++
                         } else {
                             skipped++
@@ -103,11 +114,41 @@ object OnlineSync {
                 }
 
                 OnlineSource.TYPE_WEBDAV -> {
-                    val items = OnlineFetcher.listWebDav(source, password)
+                    // 网盘来源连视频一起同步；**视频不设体积上限**（用户明确要求取消），
+                    // 图片仍走 100MB 上限（防止"图床"塞超大文件）。
+                    val includeVideos = onlineVideosEnabled(db)
+                    val items = OnlineFetcher.listWebDav(source, password, includeVideos)
                         .filter { it.remoteKey !in knownKeys }
                         .take(maxPerRun)
+                    val scope = SyncScope(
+                        context, db, source, groupId, password, targetDir,
+                        knownKeys, knownHashes,
+                    )
                     for (item in items) {
-                        if (store(db, source, groupId, item, password, targetDir, knownKeys, knownHashes)) {
+                        val isVideo = OnlineSourceRules.isVideoExtension(
+                            item.displayName.substringAfterLast('.', "").lowercase()
+                        )
+                        val cap = if (isVideo) {
+                            Long.MAX_VALUE
+                        } else {
+                            OnlineFetcher.MAX_DOWNLOAD_BYTES
+                        }
+                        // 服务端已经给了大小：超限就先跳过，别把流量和磁盘浪费掉。
+                        if (OnlineSourceRules.tooLargeToFetch(item.size, cap)) {
+                            AppLog.d(
+                                TAG,
+                                "Skip ${item.displayName}: ${item.size / 1024 / 1024}MB > " +
+                                    "${cap / 1024 / 1024}MB cap"
+                            )
+                            skipped++
+                            continue
+                        }
+                        val cappedScope = SyncScope(
+                            context, db, source, groupId, password, targetDir,
+                            knownKeys, knownHashes,
+                            maxBytes = cap, includeVideos = includeVideos,
+                        )
+                        if (store(cappedScope, item)) {
                             added++
                         } else {
                             skipped++
@@ -131,13 +172,12 @@ object OnlineSync {
                         OnlineFetcher.listMeirentu(source, knownKeys, maxPerRun)
                     }
                     val referer = OnlineSourceRules.originOf(source.url)
+                    val scopeWithReferer = SyncScope(
+                        context, db, source, groupId, password, targetDir,
+                        knownKeys, knownHashes, referer,
+                    )
                     for (item in listing.items) {
-                        if (
-                            store(
-                                db, source, groupId, item, password, targetDir,
-                                knownKeys, knownHashes, referer
-                            )
-                        ) {
+                        if (store(scopeWithReferer, item)) {
                             added++
                         } else {
                             skipped++
@@ -165,6 +205,10 @@ object OnlineSync {
                 }
 
                 OnlineSource.TYPE_URL -> {
+                    val scope = SyncScope(
+                        context, db, source, groupId, password, targetDir,
+                        knownKeys, knownHashes,
+                    )
                     val pseudo = OnlineFetcher.RemoteItem(
                         remoteKey = "",
                         url = source.url,
@@ -185,11 +229,7 @@ object OnlineSync {
                                 sourceId, result.etag, result.lastModified
                             )
                             val remoteKey = "sha256:${result.contentHash}"
-                            if (storeDownloaded(
-                                    db, source, groupId, remoteKey, pseudo.displayName,
-                                    result, knownKeys, knownHashes
-                                )
-                            ) {
+                            if (storeDownloaded(scope, remoteKey, pseudo.displayName, result)) {
                                 added++
                             } else {
                                 skipped++
@@ -214,16 +254,15 @@ object OnlineSync {
                         OnlineSource.TYPE_IOLIU -> "https://bing.ioliu.cn/"
                         else -> null
                     }
+                    val scope = SyncScope(
+                        context, db, source, groupId, password, targetDir,
+                        knownKeys, knownHashes, referer,
+                    )
                     for (item in items) {
                         // 多图源（彼岸/ioliu/Wikimedia）里单张图偶发 5xx 不应中断
                         // 整轮：记一条日志并继续下一张，其余图片照常入库。
                         try {
-                            if (
-                                store(
-                                    db, source, groupId, item, password, targetDir,
-                                    knownKeys, knownHashes, referer
-                                )
-                            ) {
+                            if (store(scope, item)) {
                                 added++
                             } else {
                                 skipped++
@@ -243,8 +282,8 @@ object OnlineSync {
                 else -> return@withContext finish(db, source, Report.error("bad_url"))
             }
 
-            pruneDeletedMedia(db, source, targetDir)
-            applyRetention(db, source)
+            pruneDeletedMedia(context, db, source, targetDir)
+            applyRetention(context, db, source)
             if (added > 0) {
                 // The screen-wide SHUFFLE/RANDOM id cache would otherwise keep
                 // serving the pre-download list until the next settings change.
@@ -279,7 +318,8 @@ object OnlineSync {
                         db.wallpaperImageDao().delete(it)
                     }
                 }
-                if (item.filePath.isNotEmpty()) File(item.filePath).delete()
+                // filePath 可能是 content://（用户选的下载目录），必须由 resolver 删。
+                deleteMediaFile(context, item.filePath)
             }
             File(context.filesDir, "online/$sourceId").deleteRecursively()
         } catch (t: Throwable) {
@@ -292,7 +332,12 @@ object OnlineSync {
      * the remote file is not downloaded again) but drop the media reference and
      * the file.
      */
-    private suspend fun pruneDeletedMedia(db: AppDatabase, source: OnlineSource, dir: File) {
+    private suspend fun pruneDeletedMedia(
+        context: Context,
+        db: AppDatabase,
+        source: OnlineSource,
+        dir: File,
+    ) {
         val items = db.onlineItemDao().getBySource(source.id)
         if (items.none { it.imageId > 0L }) return
         val liveIds = try {
@@ -304,7 +349,8 @@ object OnlineSync {
         }
         for (item in items) {
             if (item.imageId > 0L && item.imageId !in liveIds) {
-                if (item.filePath.isNotEmpty()) File(item.filePath).delete()
+                // filePath 可能是 content://（用户选的下载目录），必须由 resolver 删。
+                deleteMediaFile(context, item.filePath)
                 db.onlineItemDao().clearMedia(item.sourceId, item.remoteKey)
             }
         }
@@ -318,68 +364,286 @@ object OnlineSync {
         }
     }
 
-    private suspend fun applyRetention(db: AppDatabase, source: OnlineSource) {
+    /**
+     * 「浏览页」用：只下载用户在网盘里点中的那一项并入库，返回插入后的媒体行。
+     *
+     * 与定时同步共用 [store]，所以媒体类型判定、体积上限、去重、保留策略完全一致；
+     * 区别只是"只此一项"、不做最大条数截断。
+     */
+    suspend fun importOne(
+        context: Context,
+        sourceId: Long,
+        entry: OnlineBrowser.Entry,
+        /** 目标分组；0 = 用来源的自动分组（同步用的那个）。 */
+        targetGroupId: Long = 0L,
+        /** 下载进度（已写字节, 总字节；总字节 0 = 服务端没给长度）。 */
+        onProgress: (Long, Long) -> Unit = { _, _ -> },
+    ): WallpaperImage? = withContext(Dispatchers.IO) {
+        migrateRemoteKeysIfNeeded(context)
+        val db = AppDatabase.getInstance(context)
+        val source = try {
+            db.onlineSourceDao().getById(sourceId)
+        } catch (_: Throwable) {
+            null
+        } ?: return@withContext null
+        val password = OnlineSecretStore.decrypt(source.passwordCipher)
+        // 去重：同一 remoteKey 已经下过且文件还在，就直接复用 —— 浏览页反复点同一张图
+        // 不该每次重下一遍（3MB 的图点三次就是 9MB 流量）。
+        try {
+            val existing = db.onlineItemDao().getBySource(source.id)
+                .firstOrNull { it.remoteKey == entry.path && it.imageId > 0L }
+            if (existing != null) {
+                val image = db.wallpaperImageDao().getImageById(existing.imageId)
+                if (image != null) {
+                    val file = File(image.uri.removePrefix("file://"))
+                    if (file.exists() && file.length() > 0L) {
+                        // 已经下过：先把文件挪进当前设置的下载目录（用户换了目录后，
+                        // 老文件也要出现在那儿），再按分组需要复制一条记录，别重下。
+                        val moved = moveIntoConfiguredDir(context, db, image, entry.displayName)
+                        if (targetGroupId > 0L && moved.groupId != targetGroupId) {
+                            return@withContext copyIntoGroup(db, moved, targetGroupId)
+                        }
+                        return@withContext moved
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            AppLog.w(TAG, "dedupe check failed: ${t.javaClass.simpleName}")
+        }
+        val url = entry.url ?: return@withContext null
+        // 视频不再设体积上限（用户明确要求"取消下载视频上限"）；图片仍守 100MB，
+        // 防止某个"图床"塞一个几百兆的文件进来。
+        val isVideo = entry.mediaType == MediaTypes.VIDEO
+        if (!isVideo && OnlineSourceRules.tooLargeToFetch(entry.size, OnlineFetcher.MAX_DOWNLOAD_BYTES)) {
+            AppLog.d(TAG, "Skip ${entry.name}: image above 100MB")
+            return@withContext null
+        }
+        val groupId = if (targetGroupId > 0L) {
+            targetGroupId
+        } else {
+            resolveTargetGroup(context, db, source)
+        }
+        val targetDir = File(context.filesDir, "online/${source.id}")
+        val item = OnlineFetcher.RemoteItem(
+            remoteKey = entry.path,
+            url = url,
+            displayName = entry.name,
+            lastModifiedMs = entry.modifiedMs,
+            size = entry.size,
+        )
+        val ok = store(
+            SyncScope(
+                context, db, source, groupId, password, targetDir,
+                HashSet(), HashSet(),
+                // 视频不设上限；图片仍是 100MB（上面已经提前拦过超大图片）。
+                maxBytes = if (isVideo) Long.MAX_VALUE else OnlineFetcher.MAX_DOWNLOAD_BYTES,
+                includeVideos = true,
+                onProgress = onProgress,
+            ),
+            item,
+        )
+        if (!ok) return@withContext null
+        val row = db.onlineItemDao().getBySource(source.id)
+            .firstOrNull { it.remoteKey == item.remoteKey } ?: return@withContext null
+        if (row.imageId <= 0L) return@withContext null
+        val stored = db.wallpaperImageDao().getImageById(row.imageId) ?: return@withContext null
+        moveIntoConfiguredDir(context, db, stored, entry.displayName)
+    }
+
+    /**
+     * 用户设置了「网盘下载位置」→ 把这条媒体的文件挪进那个 SAF 目录，并把 uri 换成
+     * `content://`；挪不动（没权限/目录被删）就原样返回，绝不让已下好的文件丢失。
+     */
+    private suspend fun moveIntoConfiguredDir(
+        context: Context,
+        db: AppDatabase,
+        image: WallpaperImage,
+        displayName: String,
+    ): WallpaperImage {
+        val dirUri = OnlineDownloadDir.load(context)
+        if (dirUri.isBlank()) return image
+        val local = File(image.uri.removePrefix("file://"))
+        if (!local.exists() || local.length() <= 0L) return image
+        val mime = if (image.mediaType == MediaTypes.VIDEO) "video/*" else "image/*"
+        val moved = OnlineDownloadDir.copyIntoTree(context, dirUri, local, displayName, mime)
+            ?: return image
+        db.wallpaperImageDao().updateUri(image.id, moved.toString())
+        local.delete()
+        return db.wallpaperImageDao().getImageById(image.id) ?: image
+    }
+
+    /**
+     * 一次性迁移：旧版本把 WebDAV 的 `remoteKey` 存成 href（`/dav/%E5%AD%97/x.mp4`），
+     * 新版本统一存文件名（`x.mp4`，与浏览页 `Entry.path` 同口径）。不迁移的话，
+     * 升级后第一次同步会把每个文件重下一遍。
+     *
+     * 只是改 key：contentHash 与它指向的媒体行都不动，所以即使迁移失败也不会丢数据。
+     */
+    suspend fun migrateRemoteKeysIfNeeded(context: Context) = withContext(Dispatchers.IO) {
+        val db = AppDatabase.getInstance(context)
+        val done = try {
+            db.settingsDao().getString(SettingsKeys.ONLINE_KEY_MIGRATION, "") == "1"
+        } catch (t: Throwable) {
+            AppLog.w(TAG, "migration flag read failed: ${t.javaClass.simpleName}")
+            true
+        }
+        if (done) return@withContext
+        var renamed = 0
+        try {
+            for (row in db.onlineItemDao().getAllOnce()) {
+                if (!row.remoteKey.contains('/')) continue
+                val newKey = row.remoteKey.trimEnd('/').substringAfterLast('/')
+                if (newKey.isBlank() || newKey == row.remoteKey) continue
+                // 新 key 可能已经存在（同一个文件被新旧两套 key 各记过一次）：
+                // 那就把旧行删掉，别让唯一约束报错。
+                try {
+                    db.onlineItemDao().renameKey(row.sourceId, row.remoteKey, newKey)
+                    renamed++
+                } catch (_: Throwable) {
+                    db.onlineItemDao().delete(row.sourceId, row.remoteKey)
+                }
+            }
+            db.settingsDao().setString(SettingsKeys.ONLINE_KEY_MIGRATION, "1")
+            AppLog.d(TAG, "migrated $renamed remote keys to file-name form")
+        } catch (t: Throwable) {
+            AppLog.w(TAG, "remote key migration failed: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    /**
+     * 删除一条媒体在磁盘上的文件。
+     *
+     * 落盘位置可能是应用私有文件（`file://`），也可能是用户选的 SAF 目录
+     * （`content://`，见 [OnlineDownloadDir]）——后者必须走 ContentResolver：
+     * `File(...).delete()` 对它永远失败，旧代码于是把用户目录里的文件留成垃圾。
+     */
+    private fun deleteMediaFile(context: Context, uriOrPath: String) {
+        if (uriOrPath.isBlank()) return
+        try {
+            if (uriOrPath.startsWith("content://")) {
+                context.contentResolver.delete(Uri.parse(uriOrPath), null, null)
+            } else {
+                File(uriOrPath.removePrefix("file://")).delete()
+            }
+        } catch (t: Throwable) {
+            AppLog.w(TAG, "deleteMediaFile failed: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    private suspend fun applyRetention(
+        context: Context,
+        db: AppDatabase,
+        source: OnlineSource,
+    ) {
         val keep = OnlineSourceRules.normalizeKeepCount(source.keepCount)
         if (keep <= 0) return
+        // 正在当壁纸的那张/那条不能删：删掉后下一次切换/重绘会读不到文件。
+        val protectedIds = displayedMediaIds(db)
         val victims = try {
             db.onlineItemDao().itemsBeyond(source.id, keep)
         } catch (_: Throwable) {
             return
         }
         for (item in victims) {
+            if (item.imageId > 0L && item.imageId in protectedIds) continue
             if (item.imageId > 0L) {
                 db.wallpaperImageDao().getImageById(item.imageId)?.let {
                     db.wallpaperImageDao().delete(it)
                 }
             }
-            if (item.filePath.isNotEmpty()) File(item.filePath).delete()
+                // filePath 可能是 content://（用户选的下载目录），必须由 resolver 删。
+                deleteMediaFile(context, item.filePath)
             db.onlineItemDao().delete(item.sourceId, item.remoteKey)
         }
     }
 
+    /** 屏幕上正显示着的媒体 id（桌面/锁屏）：清理与保留策略都不能删它们。 */
+    private suspend fun displayedMediaIds(db: AppDatabase): Set<Long> = try {
+        val dao = db.settingsDao()
+        buildSet {
+            val home = dao.getLong(SettingsKeys.LAST_IMAGE_ID)
+            if (home > 0L) add(home)
+            val lock = dao.getLong(SettingsKeys.LAST_IMAGE_ID_LOCK)
+            if (lock > 0L) add(lock)
+        }
+    } catch (_: Throwable) {
+        emptySet()
+    }
+
+    /** 网盘来源是否连视频一起同步（[SettingsKeys.ONLINE_VIDEO_ENABLED]，默认开）。 */
+    private suspend fun onlineVideosEnabled(db: AppDatabase): Boolean =
+        try {
+            db.settingsDao().getBool(SettingsKeys.ONLINE_VIDEO_ENABLED, true)
+        } catch (_: Throwable) {
+            true
+        }
+
+    /**
+     * 一轮同步/一次导入的"上下文"。
+     *
+     * 这些值（db/来源/分组/密码/目标目录/已见 key/已见 hash）在 store 与 storeDownloaded
+     * 之间恒同进同出，以前是 9~11 个位置参数，读起来得靠数位置。
+     */
+    private class SyncScope(
+        val context: Context,
+        val db: AppDatabase,
+        val source: OnlineSource,
+        val groupId: Long,
+        val password: String,
+        val targetDir: File,
+        val knownKeys: MutableSet<String>,
+        val knownHashes: MutableSet<String>,
+        val referer: String? = null,
+        val maxBytes: Long = OnlineFetcher.MAX_DOWNLOAD_BYTES,
+        val includeVideos: Boolean = false,
+        val onProgress: (Long, Long) -> Unit = { _, _ -> },
+    )
+
     private suspend fun store(
-        db: AppDatabase,
-        source: OnlineSource,
-        groupId: Long,
+        scope: SyncScope,
         item: OnlineFetcher.RemoteItem,
-        password: String,
-        targetDir: File,
-        knownKeys: MutableSet<String>,
-        knownHashes: MutableSet<String>,
-        referer: String? = null,
     ): Boolean {
         return when (
             val result = OnlineFetcher.download(
-                source, password, item, targetDir, useValidators = false, referer = referer
+                scope.source,
+                scope.password,
+                item,
+                scope.targetDir,
+                useValidators = false,
+                referer = scope.referer,
+                maxBytes = scope.maxBytes,
+                includeVideos = scope.includeVideos,
+                onProgress = scope.onProgress,
             )
         ) {
             OnlineFetcher.Download.NotModified -> false
             is OnlineFetcher.Download.Failure ->
                 throw OnlineFetcher.FetchException(result.reason)
             is OnlineFetcher.Download.Success ->
-                storeDownloaded(
-                    db, source, groupId, item.remoteKey, item.displayName,
-                    result, knownKeys, knownHashes
-                )
+                storeDownloaded(scope, item.remoteKey, item.displayName, result)
         }
     }
 
     private suspend fun storeDownloaded(
-        db: AppDatabase,
-        source: OnlineSource,
-        groupId: Long,
+        scope: SyncScope,
         remoteKey: String,
         displayName: String,
         download: OnlineFetcher.Download.Success,
-        knownKeys: MutableSet<String>,
-        knownHashes: MutableSet<String>,
     ): Boolean {
+        val db = scope.db
+        val source = scope.source
+        val groupId = scope.groupId
+        val knownKeys = scope.knownKeys
+        val knownHashes = scope.knownHashes
+        val context = scope.context
         val hash = download.contentHash
         if (hash in knownHashes) {
             download.file.delete()
-            // Remember a NEW remote key pointing at the same bytes (Bing/WebDAV
-            // could re-publish the same image under a new name), but never
-            // overwrite the existing owner row: that would lose its file link.
+            // 同一份内容已经下过：
+            // - 记一条指向同内容的别名 key（Bing/网盘可能换名字重新发布），但**不覆盖**
+            //   原来的 owner 行，否则会丢掉文件链接；
+            // - 若调用方要求放进另一个分组，就把已有媒体复制过去并**返回成功**。
+            //   以前这里直接 return false，UI 把「已下过」当失败报给用户。
             if (remoteKey.isNotEmpty() && remoteKey !in knownKeys) {
                 db.onlineItemDao().insert(
                     OnlineItem(
@@ -392,14 +656,40 @@ object OnlineSync {
                 )
                 knownKeys.add(remoteKey)
             }
-            return false
+            val existing = db.onlineItemDao().getBySource(source.id)
+                .firstOrNull { it.contentHash == hash && it.imageId > 0L }
+            val reused = existing?.let { db.wallpaperImageDao().getImageById(it.imageId) }
+                ?: return false
+            if (reused.groupId == groupId) return true
+            return copyIntoGroup(db, reused, groupId) != null
         }
-
+        // 媒体类型：网盘可以下视频，图片仍是 IMAGE/GIF。
+        val mediaType = MediaTypes.fromName(displayName)
+        val isVideo = mediaType == MediaTypes.VIDEO
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(download.file.absolutePath, bounds)
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
-            download.file.delete()
-            return false
+        if (!isVideo) {
+            BitmapFactory.decodeFile(download.file.absolutePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                download.file.delete()
+                return false
+            }
+        } else {
+            // 视频别用 BitmapFactory 探尺寸（那会把整个文件当图片解，必然失败并把好文件
+            // 删掉 —— 老代码对视频就是这个下场）。用 MediaMetadataRetriever 尽力取宽高，
+            // 取不到就留 0（引擎自己会补，尺寸只影响首帧布局）。
+            val meta = android.media.MediaMetadataRetriever()
+            try {
+                meta.setDataSource(download.file.absolutePath)
+                bounds.outWidth =
+                    meta.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)
+                        ?.toIntOrNull() ?: 0
+                bounds.outHeight =
+                    meta.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)
+                        ?.toIntOrNull() ?: 0
+            } catch (_: Throwable) {
+            } finally {
+                try { meta.release() } catch (_: Throwable) {}
+            }
         }
 
         val dir = download.file.parentFile ?: return false
@@ -414,25 +704,59 @@ object OnlineSync {
                 groupId = groupId,
                 uri = "file://${finalFile.absolutePath}",
                 displayName = displayName,
-                mediaType = if (download.extension == "gif") MediaTypes.GIF else MediaTypes.IMAGE,
+                mediaType = mediaType,
                 isFromFolder = false,
                 folderPath = "online/${source.id}",
                 width = bounds.outWidth,
                 height = bounds.outHeight,
             )
         )
+        // 用户设了「网盘下载位置」→ 同步进来的文件也挪进那个 SAF 目录（与手动导入一致）。
+        var storedUri = "file://${finalFile.absolutePath}"
+        var storedPath = finalFile.absolutePath
+        val configuredDir = OnlineDownloadDir.load(context)
+        if (configuredDir.isNotBlank()) {
+            val moved = OnlineDownloadDir.copyIntoTree(
+                context,
+                configuredDir,
+                finalFile,
+                displayName,
+                if (isVideo) "video/*" else "image/*",
+            )
+            if (moved != null) {
+                storedUri = moved.toString()
+                storedPath = storedUri
+                finalFile.delete()
+                db.wallpaperImageDao().updateUri(imageId, storedUri)
+            }
+        }
         db.onlineItemDao().insert(
             OnlineItem(
                 sourceId = source.id,
                 remoteKey = remoteKey,
                 contentHash = hash,
                 imageId = imageId,
-                filePath = finalFile.absolutePath,
+                filePath = storedPath,
             )
         )
         knownKeys.add(remoteKey)
         knownHashes.add(hash)
         return true
+    }
+
+    /** 把已入库的一条媒体复制进另一个分组（同一份文件，不重新下载）。 */
+    private suspend fun copyIntoGroup(
+        db: AppDatabase,
+        image: WallpaperImage,
+        groupId: Long,
+    ): WallpaperImage? = try {
+        val newId = db.wallpaperImageDao().insert(
+            image.copy(id = 0L, groupId = groupId)
+        )
+        db.wallpaperImageDao().getImageById(newId)
+    } catch (t: Throwable) {
+        AppLog.w(TAG, "copyIntoGroup failed: ${t.javaClass.simpleName}")
+        null
     }
 
     private suspend fun resolveTargetGroup(

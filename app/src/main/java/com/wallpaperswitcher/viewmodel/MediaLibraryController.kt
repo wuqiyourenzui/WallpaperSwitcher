@@ -8,6 +8,7 @@ import com.wallpaperswitcher.data.SettingsDao
 import com.wallpaperswitcher.data.WallpaperGroupDao
 import com.wallpaperswitcher.data.WallpaperImage
 import com.wallpaperswitcher.data.WallpaperImageDao
+import com.wallpaperswitcher.engine.ArchiveImport
 import com.wallpaperswitcher.engine.MediaPick
 import com.wallpaperswitcher.engine.MediaScanner
 import com.wallpaperswitcher.engine.MediaTypes
@@ -45,6 +46,9 @@ internal class MediaLibraryController(
 ) {
 
     private val tag = "MediaLibrary"
+
+    /** 压缩包解压出来的图片 / 视频放在这里（见 [ArchiveImport]）。 */
+    private val ARCHIVE_DIR = "archives"
 
     private fun str(id: Int, vararg args: Any): String = app.getString(id, *args)
 
@@ -211,6 +215,100 @@ internal class MediaLibraryController(
      * Optimized for large folders: batch insert, progress updates, yield for UI responsiveness.
      */
     private var addFolderJob: Job? = null
+
+    /**
+     * 「添加壁纸 → 压缩包」：把选中的 zip 里的图片 / 视频解出来加进分组。
+     *
+     * 解出的文件放应用私有目录 `files/archives/`（卸载即清，不污染相册），
+     * **多选时全部拉平**到同一个目录，重名由 [ArchiveImport] 让开。
+     * 入库走和普通文件完全一样的路径（同一条去重 + mediaType 判定），所以
+     * 解出来的视频不会因为少了这一步而被当成图片。
+     */
+    private var importArchiveJob: Job? = null
+
+    fun importArchives(groupId: Long, archiveUris: List<Uri>) {
+        if (archiveUris.isEmpty()) return
+        importArchiveJob?.cancel()
+        importArchiveJob = scope.launch {
+            try {
+                if (groupDao.getGroupById(groupId) == null) return@launch
+                onToast(str(R.string.toast_archive_reading, archiveUris.size))
+                val (rows, stats) = withContext(Dispatchers.IO) {
+                    val root = java.io.File(app.filesDir, ARCHIVE_DIR)
+                    val collected = ArrayList<WallpaperImage>()
+                    val known = try {
+                        imageDao.getUrisByGroup(groupId).toHashSet()
+                    } catch (_: Exception) {
+                        HashSet()
+                    }
+                    var images = 0
+                    var videos = 0
+                    var skipped = 0
+                    var failed = 0
+                    var unreadable = 0
+                    for (uri in archiveUris) {
+                        if (!isActive) break
+                        val result = ArchiveImport.extract(
+                            open = {
+                                app.contentResolver.openInputStream(uri)
+                                    ?: throw java.io.IOException("openInputStream returned null")
+                            },
+                            rootDir = root,
+                        )
+                        if (result.openError != null) unreadable++
+                        images += result.images
+                        videos += result.videos
+                        skipped += result.skipped
+                        failed += result.failed
+                        result.uris.forEachIndexed { index, uriStr ->
+                            if (!known.add(uriStr)) return@forEachIndexed
+                            val name = result.names.getOrNull(index).orEmpty()
+                            collected += WallpaperImage(
+                                groupId = groupId,
+                                uri = uriStr,
+                                displayName = name,
+                                mediaType = MediaTypes.fromName(name),
+                            )
+                        }
+                    }
+                    // 一次事务写进去（和文件夹导入同一条路径：几百行不该几百次 fsync）。
+                    if (collected.isNotEmpty()) {
+                        collected.chunked(100).forEach { chunk -> imageDao.insertAll(chunk) }
+                    }
+                    collected to intArrayOf(
+                        collected.size, images, videos, skipped, failed, unreadable
+                    )
+                }
+                if (rows.isNotEmpty()) {
+                    onLibraryChanged(groupId)
+                    WallpaperSwitchEnginePoke()
+                }
+                val added = stats[0]
+                if (added == 0) {
+                    onToast(
+                        when {
+                            // 一个包都打不开：多半选错了文件（不是 zip）。
+                            stats[5] > 0 && stats[1] + stats[2] == 0 ->
+                                str(R.string.toast_archive_unreadable)
+                            else -> str(R.string.toast_archive_nothing)
+                        }
+                    )
+                } else {
+                    onToast(str(R.string.toast_archive_added, added, stats[1], stats[2]))
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                AppLog.e(tag, "archive import failed", e)
+                onToast(str(R.string.toast_archive_failed, e.message.orEmpty()))
+            }
+        }
+    }
+
+    /** 新媒体的加入会改变下一张的选择，唤醒定时器（和 [addImages] 一致）。 */
+    private fun WallpaperSwitchEnginePoke() {
+        WallpaperSwitchService.poke(app)
+    }
 
     fun addFolder(groupId: Long, folderUri: Uri) {
         addFolderJob?.cancel()

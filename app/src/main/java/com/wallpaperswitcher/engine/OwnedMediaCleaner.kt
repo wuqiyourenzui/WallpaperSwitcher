@@ -39,6 +39,7 @@ object OwnedMediaCleaner {
         var files = 0
         var bytes = 0L
         try {
+            rememberRoot(context.filesDir.absolutePath)
             val dao = AppDatabase.getInstance(context).wallpaperImageDao()
             val now = System.currentTimeMillis()
             for (sub in MANAGED_DIRS) {
@@ -72,6 +73,7 @@ object OwnedMediaCleaner {
         var files = 0
         var bytes = 0L
         try {
+            rememberRoot(context.filesDir.absolutePath)
             val dao = AppDatabase.getInstance(context).wallpaperImageDao()
             for (sub in MANAGED_DIRS) {
                 val root = File(context.filesDir, sub)
@@ -175,11 +177,37 @@ object OwnedMediaCleaner {
     /** `<sha256>.<ext>` - the names this app gives its downloads. */
     private val OWNED_NAME = Regex("""[0-9a-f]{64}\.[A-Za-z0-9]{2,5}""")
 
-    /** App-private media directories this cleaner owns (never user files). */
     /**
+     * App-private media directories this cleaner owns (never user files).
+     *
      * `nn` 是已取消的离线 NN 超分留下的目录（见 §4.9.156）：功能删掉了，但目录
      * 仍在清理范围内，这样设备上已经下载的模型（约 5MB，没有任何媒体行引用）和
      * 已生成但被删行的副本都能被回收。
+     *
+     * `archives` 是压缩包导入解出来的图片 / 视频（见 [ArchiveImport]）：同样
+     * 靠"没有媒体行引用"回收。
+     *
+     * **这份清单是"哪些目录归我们管"的唯一来源**：删单行媒体时也用它
+     * （[isManagedPath]）。以前删除路径另写了一份前缀判断，就是从那时漂移出去的
+     * —— `archives` 加到了这里却没加到删除白名单，于是"删分组 / 删图片立刻删文件"
+     * 对压缩包解出来的媒体不生效。
      */
-    private val MANAGED_DIRS = listOf("rss", "online", "shared", "nn")
+    internal val MANAGED_DIRS = listOf("rss", "online", "shared", "nn", "archives")
+
+    /** `filesDir` 的绝对路径前缀，[rememberRoot] 记下后 [isManagedPath] 才能用。 */
+    @Volatile private var managedRootPrefix: String? = null
+
+    /** 记录当前应用的文件根目录（`filesDir.absolutePath`）。 */
+    fun rememberRoot(filesDirAbsolutePath: String) {
+        managedRootPrefix = filesDirAbsolutePath.trimEnd('/')
+    }
+
+    /**
+     * True when [absolutePath] 落在 [MANAGED_DIRS] 之一里 —— 即"这是我们自己创建的
+     * 文件，删媒体行时可以一起删"。用户自己的文件（相册、自选目录）永远不在其中。
+     */
+    fun isManagedPath(absolutePath: String): Boolean {
+        val root = managedRootPrefix ?: return false
+        return MANAGED_DIRS.any { absolutePath.startsWith("$root/$it/") }
+    }
 }

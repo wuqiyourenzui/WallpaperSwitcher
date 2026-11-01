@@ -328,7 +328,7 @@ fun StorageScreen(
  * 顶部只有返回箭头 + 右端的「重新统计」。
  *
  * 标题不在这里重复：外层 Scaffold 的 TopAppBar 已经按 `Screen.Storage` 显示
- * [R.string.storage_title]（和 RecentScreen / FavoritesScreen 一样）。
+ * [R.string.storage_title]（和 RecentScreen 一样）。
  * 忙碌时那个位置换成一句话，否则几百个文件的目录遍历期间按钮看着像"点了没反应"。
  */
 @Composable

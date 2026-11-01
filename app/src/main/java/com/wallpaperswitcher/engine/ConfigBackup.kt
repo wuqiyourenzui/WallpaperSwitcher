@@ -52,7 +52,11 @@ object ConfigBackup {
         SettingsKeys.ENHANCE_ALGO,
         SettingsKeys.KEN_BURNS_ENABLED,
         SettingsKeys.VIDEO_PLAY_TO_END,
-        SettingsKeys.FAVORITE_BOOST,
+        SettingsKeys.VIDEO_LOOP_ENABLED,
+        SettingsKeys.REMOTE_ON_DEMAND,
+        SettingsKeys.REMOTE_CACHE_MB,
+        SettingsKeys.REMOTE_LOCK_SCREEN,
+        SettingsKeys.VIDEO_PLAY_TO_END_REPEATS,
         SettingsKeys.RECENT_NO_REPEAT,
         SettingsKeys.RSS_WIFI_ONLY,
         SettingsKeys.RSS_DAILY_LIMIT_MB,
@@ -333,6 +337,9 @@ object ConfigBackup {
                         name = source.name.trim().ifBlank { url },
                         url = url,
                         type = source.type,
+                        // 旧备份文件里没有这一项：从 rawJson 里回读阅读原文的排版，
+                        // 这样恢复出来的列表和阅读里看到的一致。
+                        articleStyle = LegadoImport.articleStyleOf(source.rawJson),
                         enabled = source.enabled,
                         rawJson = source.rawJson,
                     )

@@ -198,41 +198,38 @@ internal class GroupController(
      * 时间规则: the minutes-of-day window this group may be shown in
      * (-1 = 全天). Out-of-window groups are skipped by the scheduler instead of
      * being switched to.
+     *
+     * 时段和星期必须是**一次**读改写：以前对话框先调 setGroupActiveWindow 再调
+     * setGroupActiveDays，两条协程各自「读整行 → 改自己的字段 → 写回」，后写的
+     * 一次会用旧值把前一次覆盖掉。默认分组 activeDays = 0（每天）时每次保存都会
+     * 同时触发这两条路，于是时段**有时候**设置不上（取决于两次读写谁先落库）。
      */
-    fun setGroupActiveWindow(groupId: Long, fromMinute: Int, toMinute: Int) {
+    fun setGroupActiveWindowAndDays(
+        groupId: Long,
+        fromMinute: Int,
+        toMinute: Int,
+        daysMask: Int,
+    ) {
         guard("设置分组时段失败") {
-            val group = db.wallpaperGroupDao().getGroupById(groupId)
-                ?: return@guard
-            db.wallpaperGroupDao().update(
-                group.copy(
-                    activeFromMinute = fromMinute.coerceIn(-1, 1439),
-                    activeToMinute = toMinute.coerceIn(-1, 1439)
-                )
-            )
-            AppLog.d(tag, "setGroupActiveWindow: group=$groupId $fromMinute..$toMinute")
-            WallpaperSwitchService.poke(app)
-        }
-    }
-
-    /**
-     * 时间规则 · 星期: bitmask with bit 0 = Monday … bit 6 = Sunday.
-     * `0` or the full mask means "every day".
-     */
-    fun setGroupActiveDays(groupId: Long, daysMask: Int) {
-        guard("保存分组星期失败") {
             val group = db.wallpaperGroupDao().getGroupById(groupId)
                 ?: return@guard
             val mask = daysMask and com.wallpaperswitcher.engine.GroupRules.ALL_DAYS
             db.wallpaperGroupDao().update(
                 group.copy(
+                    activeFromMinute = fromMinute.coerceIn(-1, 1439),
+                    activeToMinute = toMinute.coerceIn(-1, 1439),
+                    // 0 = 每天 (see GroupRules.dayAllowed).
                     activeDays = if (mask == com.wallpaperswitcher.engine.GroupRules.ALL_DAYS) {
                         0
                     } else {
                         mask
-                    }
+                    },
                 )
             )
-            AppLog.d(tag, "setGroupActiveDays: group=$groupId mask=$mask")
+            AppLog.d(
+                tag,
+                "setGroupActiveWindowAndDays: group=$groupId $fromMinute..$toMinute days=$mask",
+            )
             WallpaperSwitchService.poke(app)
         }
     }

@@ -237,6 +237,9 @@ internal fun WallpaperRenderer.decodeLoop(uriStr: String, scaleMode: ScaleMode, 
                 // recordings) display with swapped width/height — needed up
                 // front to compute the FIT decode cap below.
                 val rotation = format.getIntegerSafe(MediaFormat.KEY_ROTATION)
+                // 源帧率：解码节奏地板（下面）和呈现节流（renderer.swapGapFor）都用它，
+                // 所以在这里就读出来，不再等到 decoder 建好之后。
+                val declaredFps = format.getIntegerSafe(MediaFormat.KEY_FRAME_RATE)
                 val isRotated = rotation == 90 || rotation == 270
                 val quadW = if (isRotated) videoH else videoW
                 val quadH = if (isRotated) videoW else videoH
@@ -307,7 +310,13 @@ internal fun WallpaperRenderer.decodeLoop(uriStr: String, scaleMode: ScaleMode, 
                 // recordings) and guessing 15fps for them made a 30fps clip play
                 // in slow motion while a 1.5fps clip raced through its loop
                 // every ~0.8s (a repeating "Video started" in the logs).
-                val minFrameGapNs = 16_000_000L
+                val minFrameGapNs = if (declaredFps in 1..240) {
+                    // 同一套"跟源帧率走"的规则：120fps 源要 8.3ms 的地板，否则会被
+                    // 固定在 16ms（=60fps）上砍半。
+                    (1_000_000_000L / declaredFps).coerceAtLeast(4_000_000L)
+                } else {
+                    16_000_000L
+                }
 
                 // --- Setup GL texture + SurfaceTexture on render thread ---
                 val setupLatch = CountDownLatch(1)
@@ -508,14 +517,32 @@ internal fun WallpaperRenderer.decodeLoop(uriStr: String, scaleMode: ScaleMode, 
                 }
 
                 val codecName = try { dec.name } catch (_: Exception) { "unknown" }
-                // KEY_FRAME_RATE is informational only now (pacing uses the
-                // frame timestamps), and it is missing on some containers.
-                val declaredFps = format.getIntegerSafe(MediaFormat.KEY_FRAME_RATE)
+                // KEY_FRAME_RATE is informational for pacing (pacing uses the frame
+                // timestamps); `declaredFps` was read right after the track format.
+                // 色彩元数据（C 项）：这条 GL 管线按 SDR 采样，没有任何 tonemap。
+                // SDR 源不受影响，HDR 源会发灰/偏暗 —— 以前日志里看不出来，只能靠猜。
+                val colorStd = format.getIntegerSafe(MediaFormat.KEY_COLOR_STANDARD)
+                val colorTrc = format.getIntegerSafe(MediaFormat.KEY_COLOR_TRANSFER)
+                val colorRange = format.getIntegerSafe(MediaFormat.KEY_COLOR_RANGE)
+                val colorDesc = com.wallpaperswitcher.engine.VideoColor
+                    .describe(colorStd, colorTrc, colorRange)
                 AppLog.d(
                     TAG,
                     "Video started: ${videoW}x${videoH} @ " +
-                        "${if (declaredFps > 0) "${declaredFps}fps" else "unspecified fps"} codec=$codecName"
+                        "${if (declaredFps > 0) "${declaredFps}fps" else "unspecified fps"} " +
+                        "codec=$codecName color=$colorDesc"
                 )
+                if (com.wallpaperswitcher.engine.VideoColor.needsToneMapping(colorStd, colorTrc)) {
+                    // 只报事实，不改渲染：真要做 tonemap 是另一件事（需要读回像素或
+                    // 换 Surface 配置），先把"为什么这个视频发灰"变成可诊断。
+                    AppLog.w(
+                        TAG,
+                        "HDR source without tone mapping: $colorDesc — the GL pipeline " +
+                            "samples it as SDR, so the picture may look washed out or dark"
+                    )
+                }
+                // 帧率自适应（B 项）用它做基准：源帧率未知时不参与判断。
+                resetEnhanceAdaptation(declaredFps, gen)
 
                 // --- Inner decode loop (one playback pass) ---
                 val bufferInfo = MediaCodec.BufferInfo()
@@ -778,6 +805,14 @@ internal fun WallpaperRenderer.decodeLoop(uriStr: String, scaleMode: ScaleMode, 
                 }
 
                 if (videoGeneration.get() != gen || Thread.interrupted()) break
+                // 视频循环播放关掉时：这一遍播完就停住（保留最后一帧），也不再
+                // 通知"播完"事件 —— 播完再切依赖循环播放（没有循环就没有下一次
+                // "播完"），设置里那一项也会跟着置灰。
+                if (eof && !videoLoopEnabled) {
+                    holdLastVideoFrame = true
+                    AppLog.d(TAG, "Video loop disabled: holding the last frame")
+                    break
+                }
                 // 视频播完再切: one notification per completed pass, on BOTH
                 // loop paths. The warm path (codec + GL reused, which is the
                 // normal loop of the same file) used to `continue` before the
@@ -863,7 +898,9 @@ internal fun WallpaperRenderer.decodeLoop(uriStr: String, scaleMode: ScaleMode, 
             // Posting here would race: an old decode thread that exits late could
             // clean up the NEW video's resources after its setup. The generation
             // check makes sure only the CURRENT video's thread may clean up.
-            if (videoGeneration.get() == gen && !videoCleanupDone.getAndSet(true)) {
+            if (videoGeneration.get() == gen && !holdLastVideoFrame &&
+                !videoCleanupDone.getAndSet(true)
+            ) {
                 handler.post {
                     try {
                         cleanupVideoResourcesOnRenderThread()
@@ -871,6 +908,10 @@ internal fun WallpaperRenderer.decodeLoop(uriStr: String, scaleMode: ScaleMode, 
                         AppLog.e(TAG, "Video cleanup failed", t)
                     }
                 }
+            } else if (holdLastVideoFrame) {
+                // 循环关掉：纹理/四边形要留着，否则最后一帧一起没了（黑屏）。
+                // decoder/extractor 已在上面释放，显存和文件句柄都不占。
+                AppLog.d(TAG, "Keeping the last video frame on screen")
             }
         }
     }

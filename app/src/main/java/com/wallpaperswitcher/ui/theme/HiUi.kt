@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -30,6 +33,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,6 +50,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 
 /**
  * HyperOS / MIUI 设计令牌。
@@ -306,7 +314,7 @@ fun HiNavigationBar(
     if (items.isEmpty()) return
     val accent = LocalAccentColor.current.takeIf { it != Color.Unspecified }
         ?: MaterialTheme.colorScheme.primary
-    Row(
+    Box(
         modifier = modifier
             .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 12.dp)
             .fillMaxWidth()
@@ -314,55 +322,75 @@ fun HiNavigationBar(
             .clip(RoundedCornerShape(28.dp))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f))
             .padding(4.dp),
-        verticalAlignment = Alignment.CenterVertically,
     ) {
-        val unselectedTint = MaterialTheme.colorScheme.onSurfaceVariant
-        items.forEachIndexed { index, item ->
-            // key(): 每个标签各自持有动画状态，条目增删或换序都不会串。
-            key(item.label) {
-                val selected = index == selectedIndex
-                val progress by animateFloatAsState(
-                    targetValue = if (selected) 1f else 0f,
-                    animationSpec = HiMotion.selection(),
-                    label = "hiNavProgress",
-                )
-                // 弹簧会轻微过冲（0→1 时超过 1，1→0 时低于 0），而
-                // Color.copy(alpha = v) 对越界值直接抛 IllegalArgumentException
-                // （真机上崩过一次）：给颜色用的进度必须先夹到 0..1。
-                val p = progress.coerceIn(0f, 1f)
-                // 药丸底色、图标/文字颜色、图标缩放共用同一个 progress，
-                // 三者的节奏因此完全一致（Miuix 的选中动画就是这个做法）。
-                val tint = lerp(unselectedTint, accent, p)
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxHeight()
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(accent.copy(alpha = 0.14f * p))
-                        .clickable { onSelect(index) },
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Icon(
-                        imageVector = if (selected) item.selectedIcon else item.icon,
-                        contentDescription = item.label,
-                        tint = tint,
-                        modifier = Modifier
-                            .size(22.dp)
-                            .graphicsLayer {
-                                val s = 1f + 0.08f * p
-                                scaleX = s
-                                scaleY = s
-                            },
-                    )
-                    Text(
-                        text = item.label,
-                        fontSize = 11.sp,
-                        maxLines = 1,
-                        textAlign = TextAlign.Center,
-                        color = tint,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val slotWidth = maxWidth / items.size
+            // 选中指示器是一个真正会滑动的药丸（不是每个标签各自淡入淡出）：
+            // 只有一条，位置由弹簧驱动，连点 Tab 时它会从当前位置继续滑向新目标，
+            // 这是 HyperOS / M3 NavigationBar 的手感来源。
+            val target = selectedIndex.coerceIn(0, items.lastIndex).toFloat()
+            val indicatorPos by animateFloatAsState(
+                targetValue = target,
+                animationSpec = HiMotion.spatial(),
+                label = "hiNavIndicatorPos",
+            )
+            Box(
+                modifier = Modifier
+                    .offset(x = slotWidth * indicatorPos)
+                    .width(slotWidth)
+                    .fillMaxHeight()
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(accent.copy(alpha = 0.14f)),
+            )
+            Row(modifier = Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+                val unselectedTint = MaterialTheme.colorScheme.onSurfaceVariant
+                items.forEachIndexed { index, item ->
+                    // key(): 每个标签各自持有动画状态，条目增删或换序都不会串。
+                    key(item.label) {
+                        val selected = index == selectedIndex
+                        val progress by animateFloatAsState(
+                            targetValue = if (selected) 1f else 0f,
+                            // 图标缩放/颜色用更有弹性的曲线：选中时"跳"一下。
+                            animationSpec = HiMotion.spatialFast(),
+                            label = "hiNavProgress",
+                        )
+                        // 弹簧会过冲（0→1 时超过 1，1→0 时低于 0），Color.copy 对越界
+                        // alpha 会直接抛异常（真机崩过），颜色用的进度先夹到 0..1。
+                        val p = progress.coerceIn(0f, 1f)
+                        val tint = lerp(unselectedTint, accent, p)
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .clip(RoundedCornerShape(24.dp))
+                                .clickable { onSelect(index) },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                        ) {
+                            Icon(
+                                imageVector = if (selected) item.selectedIcon else item.icon,
+                                contentDescription = item.label,
+                                tint = tint,
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .graphicsLayer {
+                                        // 12% 放大 + 触摸不到的轻微上移，看起来像"弹起来"。
+                                        val s = 1f + 0.12f * p
+                                        scaleX = s
+                                        scaleY = s
+                                        translationY = -1.5.dp.toPx() * p
+                                    },
+                            )
+                            Text(
+                                text = item.label,
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                textAlign = TextAlign.Center,
+                                color = tint,
+                                modifier = Modifier.padding(top = 2.dp),
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -432,4 +460,53 @@ fun HiStatusCard(
             )
         }
     }
+}
+
+/**
+ * 按压反馈修饰符：按下时轻微收缩（0.97），松手用弹簧回弹。
+ *
+ * Material 3 Expressive 的"tactile"做法：这类反馈只走 transform（graphicsLayer），
+ * 不触发重新布局，也不额外产生绘制层。给那些不是 [HiCard] 的可点区域（列表行、
+ * 网格卡片、设置项）复用同一条曲线，避免各处手感不一致。
+ *
+ * @param interactionSource 必须和外面 `clickable` 用的是同一个，否则收不到按下事件。
+ */
+@Composable
+fun Modifier.hiPressScale(
+    interactionSource: androidx.compose.foundation.interaction.InteractionSource,
+    pressedScale: Float = 0.97f,
+): Modifier {
+    val pressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) pressedScale else 1f,
+        animationSpec = HiMotion.spatialFast(),
+        label = "hiPressScale",
+    )
+    return this.graphicsLayer {
+        scaleX = scale
+        scaleY = scale
+    }
+}
+
+/**
+ * 条目进场淡入：返回 0→1 的 alpha，配合 `Modifier.graphicsLayer { alpha = ... }` 用。
+ *
+ * Compose 1.6 的 `animateItemPlacement` 只管"位移让位"，没有 1.7 `animateItem(fadeInSpec)`
+ * 的淡入。这里用一帧延迟 + animateFloatAsState 复刻同样的语义：条目**第一次被组合**
+ * （新插入、或滚进视野）时淡入，之后不再重放（remember 跟随该条目自己的 key）。
+ */
+@Composable
+fun rememberEnterAlpha(durationMs: Int = 160): Float {
+    var target by remember { mutableStateOf(0f) }
+    LaunchedEffect(Unit) {
+        // 先让本帧画出来（alpha=0），下一帧再起动画，避免首帧就"闪白"。
+        withFrameNanos { }
+        target = 1f
+    }
+    val alpha by animateFloatAsState(
+        targetValue = target,
+        animationSpec = tween(durationMs, easing = HiMotion.EmphasizedDecelerate),
+        label = "hiEnterAlpha",
+    )
+    return alpha.coerceIn(0f, 1f)
 }

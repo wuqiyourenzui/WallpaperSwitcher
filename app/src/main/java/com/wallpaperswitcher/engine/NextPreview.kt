@@ -4,7 +4,6 @@ import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.data.SettingsKeys
 import com.wallpaperswitcher.data.WallpaperImage
-import com.wallpaperswitcher.data.WallpaperGroup
 import com.wallpaperswitcher.data.getLong
 import com.wallpaperswitcher.data.getString
 
@@ -56,10 +55,44 @@ internal object NextPreview {
         val recentIds = PickOptions.recentIds(
             db, slot, PickOptions.recentWindow(db.settingsDao())
         )
-        // The preview mirrors the switch itself: 随机 / 洗牌 draw from all
-        // enabled groups, 顺序 walks them group by group - the same
-        // screen-wide pick the timer and the taps now use (no per-tap group
-        // resolution any more, see MediaPick.eligibleGroups).
+        // 顺序模式：这一跳属于「当前图片所在分组」，预览因此调用与定时 / 手动 /
+        // 静态 / 预取**完全相同**的 walker（含 本组走完 → 下一个分组），预览和
+        // 真正的切换逐字一致。walker 在 SEQUENTIAL 下只做只读查询，不写状态。
+        // 随机 / 洗牌不做这一步：它们的切换本来就是屏幕级的
+        // （分组轮转会退化，见 WallpaperSwitchService.nextScreenTick）。
+        if (globalMode == SwitchMode.SEQUENTIAL) {
+            val groupId = try {
+                GroupSchedulePlan.nextGroupId(db, slot, nowMs)
+            } catch (_: Exception) {
+                0L
+            }
+            if (groupId > 0L) {
+                val lastId = try {
+                    db.groupScheduleDao().get(groupId, slot)?.lastMediaId ?: 0L
+                } catch (_: Exception) {
+                    0L
+                }
+                val walk = GroupPick.pickSequential(
+                    db, slot, groupId, lastId,
+                    pickSeq = pickSeq,
+                    favoriteWeight = favoriteWeight,
+                    recentIds = recentIds,
+                    // 预览必须和真正的切换落在同一张：顺序模式的参考点同样是
+                    // 屏幕上那张（见 SwitchPicking.sequentialAnchor）。
+                    displayedId = try {
+                        db.settingsDao().getLong(
+                            if (slot == WallpaperTarget.SLOT_LOCK) SettingsKeys.LAST_IMAGE_ID_LOCK
+                            else SettingsKeys.LAST_IMAGE_ID
+                        )
+                    } catch (_: Exception) {
+                        0L
+                    },
+                )
+                if (walk != null) return walk.image
+                // 兜底：本组一张都取不到时落到下面的屏幕级挑选
+                // （它至少和"无分组可切"时的切换行为一致）。
+            }
+        }
         val lastId = try {
             db.settingsDao().getLong(
                 if (slot == WallpaperTarget.SLOT_LOCK) SettingsKeys.LAST_IMAGE_ID_LOCK
@@ -145,58 +178,4 @@ internal object NextPreview {
         }
     }
 
-    /** Read-only in-group pick. */
-    private suspend fun peekInGroup(
-        db: AppDatabase,
-        slot: String,
-        groupId: Long,
-        mode: SwitchMode,
-        lastId: Long,
-        pickSeq: Long,
-        filter: String,
-        newestFirst: Boolean,
-        favoriteWeight: Int,
-        recentIds: Collection<Long>,
-    ): WallpaperImage? {
-        val pickDao = db.groupPickDao()
-        val imageDao = db.wallpaperImageDao()
-        return when (mode) {
-            SwitchMode.RANDOM ->
-                MediaPick.randomInGroup(
-                    pickDao, slot, groupId, lastId, pickSeq,
-                    filter, favoriteWeight, recentIds
-                )
-            SwitchMode.SEQUENTIAL ->
-                if (pickDao.countInGroup(slot, groupId, filter) == 0) null
-                else if (lastId > 0L) {
-                    if (newestFirst) {
-                        pickDao.getSequentialInGroupBefore(slot, groupId, lastId, filter)
-                            ?: pickDao.getNewestInGroup(slot, groupId, filter)
-                    } else {
-                        pickDao.getSequentialInGroupAfter(slot, groupId, lastId, filter)
-                            ?: pickDao.getFirstInGroup(slot, groupId, filter)
-                    }
-                } else {
-                    if (newestFirst) pickDao.getNewestInGroup(slot, groupId, filter)
-                    else pickDao.getFirstInGroup(slot, groupId, filter)
-                }
-            SwitchMode.SHUFFLE -> {
-                val total = pickDao.countInGroup(slot, groupId, filter)
-                if (total == 0) null else {
-                    val shown = db.shuffleDao().getShownIds(slot, groupId).toMutableSet()
-                    if (SwitchPicking.shouldResetShuffleDeck(shown.size, total)) {
-                        shown.clear()
-                    }
-                    MediaPick.shuffleUnseenInGroup(
-                        pickDao, imageDao, slot, groupId, shown, lastId, pickSeq,
-                        filter, favoriteWeight
-                    ) ?: pickDao.getRandomInGroupExcluding(slot, groupId, lastId, filter)
-                        ?: pickDao.getRandomInGroup(slot, groupId, filter)
-                }
-            }
-        }
-    }
-
-    /** 顺序=新的在前 (see WallpaperGroup.sortOrder). */
-    private const val SORT_NEWEST = "NEWEST"
 }

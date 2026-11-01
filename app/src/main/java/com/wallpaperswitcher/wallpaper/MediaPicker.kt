@@ -4,6 +4,7 @@ import android.content.Context
 import com.wallpaperswitcher.data.AppDatabase
 import com.wallpaperswitcher.data.SettingsDao
 import com.wallpaperswitcher.data.SettingsKeys
+import com.wallpaperswitcher.data.getBool
 import com.wallpaperswitcher.data.ShuffleShown
 import com.wallpaperswitcher.data.SwitchMode
 import com.wallpaperswitcher.data.WallpaperImage
@@ -142,9 +143,18 @@ internal class MediaPicker(
         // 洗牌：牌堆就是所有启用分组（时间规则允许的）的媒体池 —— 一轮里
         // 每个分组、每张媒体都会出一次，而不是"一个分组抽完才轮到下一个"。
         val groups = MediaPick.eligibleGroups(db, slot)
+        // 远程图片（订阅 / WebDAV 按需加载）默认不参与锁屏；设置里可以打开。
+        val remoteLock = try {
+            kotlinx.coroutines.runBlocking {
+                db.settingsDao().getBool(SettingsKeys.REMOTE_LOCK_SCREEN, false)
+            }
+        } catch (_: Exception) {
+            false
+        }
         val poolRows = MediaPick.poolFor(
             imageDao, db.groupPickDao(), slot, groups,
             favoriteWeight, knownCount = enabledCount,
+            remoteLockOnLockScreen = remoteLock,
         )
         val totalCount = poolRows.size
         if (totalCount == 0) return null

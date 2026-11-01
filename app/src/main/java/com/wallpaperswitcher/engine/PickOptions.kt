@@ -6,20 +6,18 @@ import com.wallpaperswitcher.data.SettingsDao
 import com.wallpaperswitcher.data.SettingsKeys
 
 /**
- * The two optional pick knobs, read the same way by every switch path (live
- * engine, static applier, 下一张预览) so all three agree:
+ * Pick knobs read the same way by every switch path (live engine, static
+ * applier, 下一张预览) so all three agree. Both optional knobs the app used to
+ * carry are off by their own request now:
  *
- *  - 收藏优先 ([SettingsKeys.FAVORITE_BOOST]): favourites draw
- *    [SettingsKeys.FAVORITE_WEIGHT]× as often in RANDOM / SHUFFLE;
- *  - 最近 N 张不重复 ([SettingsKeys.RECENT_NO_REPEAT]): RANDOM avoids the last
- *    N media of the screen, and every applied switch extends that window.
+ *  - 收藏优先: removed together with the favourites feature;
+ *  - 最近 N 张不重复: always off.
  */
 internal object PickOptions {
 
     /**
-     * 收藏优先 was removed on request: every media draws with weight 1 again,
-     * whatever old value the setting still holds (the favourite UI is gone, so
-     * nobody can turn it on any more).
+     * 收藏优先 was removed with the favourites feature: every media draws with
+     * weight 1 again, whatever old value the setting still holds.
      */
     @Suppress("UNUSED_PARAMETER")
     suspend fun favoriteWeight(dao: SettingsDao): Int = 1

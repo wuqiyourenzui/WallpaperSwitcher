@@ -44,9 +44,10 @@ class VideoSoundTest {
 
     @Test
     fun bufferCoversTheVideoRestartGap() {
-        // 44100Hz stereo 16-bit = 176400 B/s -> 350ms = 61740 bytes, which is
-        // well above any platform minimum and covers the video codec restart
-        // between loops.
+        // 44100Hz stereo 16-bit = 176400 B/s -> 350ms = 61740 bytes, well above
+        // any platform minimum. Measured on device: raising this to 700ms did
+        // NOT shrink the loop gap (still 95-121ms) - the gap is the video's own
+        // restart, so the buffer stays at the original 350ms.
         assertEquals(61_740, VideoSound.bufferBytesFor(1_024, 44_100, 2))
     }
 

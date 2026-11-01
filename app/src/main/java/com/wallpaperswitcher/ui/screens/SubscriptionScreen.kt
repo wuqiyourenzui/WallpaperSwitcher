@@ -1,8 +1,10 @@
 package com.wallpaperswitcher.ui.screens
 
+import android.content.res.Configuration
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.animation.AnimatedVisibility
@@ -27,7 +29,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
+import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
+import androidx.compose.foundation.lazy.staggeredgrid.items
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
@@ -37,6 +44,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.MenuBook
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.outlined.Delete
@@ -66,6 +74,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -76,7 +85,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -85,6 +96,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
+import coil.compose.SubcomposeAsyncImage
 import coil.imageLoader
 import com.wallpaperswitcher.R
 import com.wallpaperswitcher.data.RssArticle
@@ -94,6 +106,7 @@ import com.wallpaperswitcher.engine.OnlineSourceRules
 import com.wallpaperswitcher.ui.theme.HiEmptyState
 import com.wallpaperswitcher.ui.theme.HiLoadingHint
 import com.wallpaperswitcher.ui.theme.HiMotion
+import com.wallpaperswitcher.ui.theme.hiPressScale
 import com.wallpaperswitcher.ui.theme.LocalAccentColor
 import com.wallpaperswitcher.ui.theme.hiCardColor
 import com.wallpaperswitcher.viewmodel.WallpaperViewModel
@@ -116,6 +129,7 @@ private const val PICKER_GRID_MIN_LAZY = 9
  * import 阅读 (Legado) subscription sources (JSON / share link), then open a
  * source to read its articles.
  */
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun SubscriptionScreen(
     viewModel: WallpaperViewModel,
@@ -216,6 +230,13 @@ fun SubscriptionScreen(
                     selectionMode = true
                 }
             }
+            // 首帧先画骨架：图标（每格一个 AsyncImage）推迟一帧再组合 —— framestats 显示
+            // 最慢帧里"重组"占 60ms 量级，主要就是每格的组合开销。
+            var iconsReady by remember { mutableStateOf(false) }
+            LaunchedEffect(Unit) {
+                withFrameNanos { }
+                iconsReady = true
+            }
             if (gridView) {
                 // 缩略图网格：站点图标 + 名称（订阅源不缓存文章，见 engine.RssIcons）。
                 LazyVerticalGrid(
@@ -225,14 +246,18 @@ fun SubscriptionScreen(
                     horizontalArrangement = Arrangement.spacedBy(GRID_SPACING),
                     verticalArrangement = Arrangement.spacedBy(GRID_SPACING),
                 ) {
-                    items(sources, key = { it.id }) { source ->
+                    // contentType 让 Compose 复用同一类条目的组合（滚动/切换视图时更稳）
+                    items(sources, key = { it.id }, contentType = { "rss-source" }) { source ->
                         RssSourceTile(
+                            // 订阅源增删时条目平移让位（1.6 的 animateItemPlacement）。
+                            modifier = Modifier.animateItemPlacement(HiMotion.spatial()),
                             source = source,
                             selectionMode = selectionMode,
                             isSelected = selectedIds.containsKey(source.id),
                             onOpen = { onOpen(source) },
                             onLongClick = { onLongClick(source) },
                             onDelete = { deleteTarget = source },
+                            loadIcon = iconsReady,
                             onOpenInBrowser = { onOpenBrowser(source) },
                         )
                     }
@@ -246,8 +271,11 @@ fun SubscriptionScreen(
                     contentPadding = PaddingValues(16.dp, 4.dp, 16.dp, 96.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    items(sources, key = { it.id }) { source ->
+                    // contentType 让 Compose 复用同一类条目的组合（滚动/切换视图时更稳）
+                    items(sources, key = { it.id }, contentType = { "rss-source" }) { source ->
                         RssSourceCard(
+                            // 订阅源增删时条目平移让位（1.6 的 animateItemPlacement）。
+                            modifier = Modifier.animateItemPlacement(HiMotion.spatial()),
                             source = source,
                             selectionMode = selectionMode,
                             isSelected = selectedIds.containsKey(source.id),
@@ -357,6 +385,7 @@ fun SubscriptionScreen(
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 private fun RssSourceCard(
     source: RssSource,
+    modifier: Modifier = Modifier,
     selectionMode: Boolean = false,
     isSelected: Boolean = false,
     onOpen: () -> Unit,
@@ -365,8 +394,14 @@ private fun RssSourceCard(
     /** 直接用应用内浏览器打开这个源的站点（不经过规则抓取）。 */
     onOpenInBrowser: () -> Unit = {},
 ) {
+    // 结果码的 JSON 解析只做一次（原来每次重组都解析一遍）。
+    val decodedInfo = remember(source.lastResult) {
+        com.wallpaperswitcher.engine.OnlineSourceRules.decodeResult(source.lastResult)
+    }
+    val enterAlpha = com.wallpaperswitcher.ui.theme.rememberEnterAlpha()
+    val statusText = rssStatusText(source, decodedInfo)
     Card(
-        modifier = Modifier
+        modifier = modifier.graphicsLayer { alpha = enterAlpha }
             .fillMaxWidth()
             .combinedClickable(onClick = onOpen, onLongClick = onLongClick),
         shape = RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner),
@@ -467,11 +502,14 @@ private fun RssSourceCard(
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 private fun RssSourceTile(
     source: RssSource,
+    modifier: Modifier = Modifier,
     selectionMode: Boolean = false,
     isSelected: Boolean = false,
     onOpen: () -> Unit,
     onLongClick: () -> Unit = {},
     onDelete: () -> Unit,
+    /** 首帧先不组合图标（每格一个 AsyncImage），下一帧再置 true。 */
+    loadIcon: Boolean = true,
     onOpenInBrowser: () -> Unit = {},
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -479,38 +517,36 @@ private fun RssSourceTile(
     val iconUrl = remember(source.url) {
         com.wallpaperswitcher.engine.RssIcons.iconUrl(source.url)
     }
-    // 网格/列表滚动时格子会被复用：把 Coil 请求记住，避免每次重组都重建一个
-    // ImageRequest（同 RecentScreen / GroupDetailScreen 的缩略图写法）。
+    // 图标只有 52dp：按 160px 解码足够，别按原图解（帧统计里解码已不是瓶颈，但省一点是一点）。
     val iconRequest = remember(context, iconUrl) {
-        imageRequest(context, iconUrl ?: "", null)
+        imageRequest(context, iconUrl ?: "", null, sizePx = 160)
     }
-    val browserOnly = remember(source.id, source.rawJson) {
-        com.wallpaperswitcher.engine.legado.LegadoRss.isBrowseOnly(source)
-    }
-    Card(
-        modifier = Modifier
+    // 按压反馈：与下面的 combinedClickable 共用同一个 interactionSource。
+    val enterAlpha = com.wallpaperswitcher.ui.theme.rememberEnterAlpha()
+    val tileInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+    val shape = RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner)
+    // 网格格子刻意不用 Material 的 Card/Surface：它带一层 elevation + ripple host，
+    // 十几个格子叠起来在首帧要多花十几毫秒的绘制记录（framestats 实测 drawToSwap 16ms）。
+    // 这里用 Box + background + clip，观感一致，组合/绘制都更轻。
+    Box(
+        modifier = modifier.graphicsLayer { alpha = enterAlpha }
             .fillMaxWidth()
-            .combinedClickable(onClick = onOpen, onLongClick = onLongClick)
+            .clip(shape)
+            .background(
+                if (isSelected) MaterialTheme.colorScheme.secondaryContainer
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+            )
             .then(
-                if (isSelected) {
-                    Modifier.border(
-                        2.dp,
-                        LocalAccentColor.current,
-                        RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner),
-                    )
-                } else {
-                    Modifier
-                }
+                if (isSelected) Modifier.border(2.dp, LocalAccentColor.current, shape)
+                else Modifier
+            )
+            .hiPressScale(tileInteraction)
+            .combinedClickable(
+                interactionSource = tileInteraction,
+                indication = LocalIndication.current,
+                onClick = onOpen,
+                onLongClick = onLongClick,
             ),
-        shape = RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) {
-                MaterialTheme.colorScheme.secondaryContainer
-            } else {
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
-            }
-        )
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
             Box(
@@ -520,7 +556,7 @@ private fun RssSourceTile(
                     .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f)),
                 contentAlignment = Alignment.Center,
             ) {
-                if (iconUrl != null) {
+                if (loadIcon && iconUrl != null) {
                     AsyncImage(
                         model = iconRequest,
                         contentDescription = null,
@@ -560,52 +596,42 @@ private fun RssSourceTile(
                                 modifier = Modifier.size(18.dp),
                             )
                         }
-                        DropdownMenu(
-                            expanded = showMenu,
-                            onDismissRequest = { showMenu = false },
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.rss_open_in_browser)) },
-                                onClick = {
-                                    showMenu = false
-                                    onOpenInBrowser()
-                                },
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.action_delete)) },
-                                onClick = {
-                                    showMenu = false
-                                    onDelete()
-                                },
-                            )
+                        // 只有真打开时才组合菜单：未展开时每个格子都挂一个 popup 宿主是白费。
+                        if (showMenu) {
+                            DropdownMenu(
+                                expanded = true,
+                                onDismissRequest = { showMenu = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.rss_open_in_browser)) },
+                                    onClick = {
+                                        showMenu = false
+                                        onOpenInBrowser()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.action_delete)) },
+                                    onClick = {
+                                        showMenu = false
+                                        onDelete()
+                                    },
+                                )
+                            }
                         }
                     }
                 }
             }
-            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
-                Text(
-                    source.name,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    if (browserOnly) OnlineSourceRules.logSafeHost(source.url)
-                    else rssStatusText(source),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (source.lastErrorAt > 0L && !browserOnly) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            // 网格模式只留一行标题：状态文案在列表模式里看（少一段文本就少一次测量与绘制）。
+            Text(
+                text = source.name,
+                style = MaterialTheme.typography.titleSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+            )
         }
     }
 }
-
 @Composable
 private fun RssAddDialog(
     onDismiss: () -> Unit,
@@ -733,11 +759,14 @@ private fun RssImportDialog(
 fun SubscriptionArticlesScreen(
     viewModel: WallpaperViewModel,
     sourceId: Long,
+    /** 编辑源保存后 +1：回到列表时用它当 key 重新抓一次（阅读保存后同样重载）。 */
+    editorReloadKey: Int = 0,
     onOpenWeb: (RssArticle) -> Unit = {},
     /** 文章本身是视频（规则输出一条媒体地址）时走这条路：全屏播放页。 */
     onOpenVideo: (RssArticle) -> Unit = onOpenWeb,
 ) {
     val sources by viewModel.rssSources.collectAsStateWithLifecycle()
+    val context = LocalContext.current
     val source = sources.firstOrNull { it.id == sourceId }
     var categories by remember(sourceId) { mutableStateOf<List<String>>(emptyList()) }
     var selected by remember(sourceId) { mutableStateOf(0) }
@@ -750,7 +779,7 @@ fun SubscriptionArticlesScreen(
     val scope = rememberCoroutineScope()
 
     // 点击进去就加载: pick up the remembered category and refresh once.
-    LaunchedEffect(sourceId, source?.rawJson, reloadKey) {
+    LaunchedEffect(sourceId, source?.rawJson, reloadKey, editorReloadKey) {
         val current = source ?: return@LaunchedEffect
         // Entering a source must NOT evaluate its `<js>` sortUrl: only the
         // persisted category names are read (a plain DB read), so the list
@@ -768,11 +797,23 @@ fun SubscriptionArticlesScreen(
         val sort = cached.getOrNull(index)
         sortName = sort
         hasMore = viewModel.rssHasMore(sourceId)
-        // 订阅源不缓存正文/列表：每次进入都实时抓当前分类（订阅内容不占存储），
-        // 离开这个界面时再把这次抓到的行删掉（见下面的 DisposableEffect）。
-        loading = true
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            viewModel.rssSelectCategory(current, index)
+        // 订阅列表**默认缓存**（和阅读一样）：有缓存就先把上次抓到的文章显示出来
+        // （`observeBySourceSort` 是流水线，房间表里有就立刻出），刷新在后台跑；
+        // 只有这个分类还没抓过任何东西时才等一次抓取，避免白屏，
+        // 也避免「每次进入都重新下载整个列表」那种慢。
+        val stored = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            viewModel.rssArticleCountOfSort(sourceId, sort.orEmpty())
+        }
+        val plan = com.wallpaperswitcher.viewmodel.RssController.RssEnterPlan.decide(stored)
+        loading = plan == com.wallpaperswitcher.viewmodel.RssController.RssEnterPlan.WaitForFirstFetch
+        if (plan == com.wallpaperswitcher.viewmodel.RssController.RssEnterPlan.RenderFromCache) {
+            // 后台刷新：界面已经拿旧列表在显示，抓完由房间表自动顶上来。
+            viewModel.launchRefreshRss(current, index)
+        } else {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                viewModel.rssSelectCategory(current, index)
+            }
+            loading = false
         }
         if (cached.isEmpty()) {
             // First visit: the chip row appears as soon as the source's
@@ -783,13 +824,6 @@ fun SubscriptionArticlesScreen(
             if (fresh.isNotEmpty()) categories = fresh
         }
         hasMore = viewModel.rssHasMore(sourceId)
-        loading = false
-    }
-
-    // 离开源（返回源列表、切标签页）即丢弃本次抓取的列表与正文缓存，
-    // 只保留用户主动加入分组的壁纸文件。
-    androidx.compose.runtime.DisposableEffect(sourceId) {
-        onDispose { viewModel.clearRssSourceCache(sourceId) }
     }
 
     val articles by remember(sourceId, sortName) {
@@ -867,7 +901,8 @@ fun SubscriptionArticlesScreen(
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
                     .padding(horizontal = 12.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
                 categories.forEachIndexed { index, name ->
                     FilterChip(
@@ -884,6 +919,40 @@ fun SubscriptionArticlesScreen(
                             }
                         },
                         label = { Text(name) }
+                    )
+                }
+                // 阅读的 `menu_refresh_sort`：重算 `sortUrl` 分类并重建页签。
+                // 源用 `<js>` 生成分类时，缓存一旦是旧的就再也没有刷新入口，
+                // 所以这个按钮是唯一的自救手段。
+                TextButton(onClick = {
+                    val current = source ?: return@TextButton
+                    scope.launch {
+                        val fresh = kotlinx.coroutines.withContext(
+                            kotlinx.coroutines.Dispatchers.IO
+                        ) {
+                            viewModel.rssRefreshCategories(current)
+                        }
+                        if (fresh.isEmpty()) {
+                            viewModel.showToast(
+                                context.getString(R.string.rss_categories_refresh_failed)
+                            )
+                        } else {
+                            categories = fresh
+                            viewModel.showToast(
+                                context.getString(R.string.rss_categories_refreshed, fresh.size)
+                            )
+                        }
+                    }
+                }) {
+                    Icon(
+                        Icons.Outlined.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        stringResource(R.string.rss_refresh_categories),
+                        style = MaterialTheme.typography.labelMedium
                     )
                 }
             }
@@ -1019,63 +1088,82 @@ fun SubscriptionArticlesScreen(
                 }
             }
         } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                items(articles, key = { it.sourceId to it.guid }) { article ->
-                    RssArticleRow(article, imageHeaders) {
-                        viewModel.markRssArticleRead(sourceId, article.guid)
-                        pendingArticle = article
-                        viewModel.rssBrowserArticle = article
-                        // 视频还是图片不在这里判：文章打开后由正文内容决定
-                        // （见 RssArticleScreen）。这里只是"打开这篇文章"。
-                        onOpenVideo(article)
-                    }
-                }
-                item(key = "load_more") {
-                    // 阅读 loads pages lazily; composing the footer means the
-                    // user reached the end, so continue from the cursor.
-                    LaunchedEffect(hasMore, articles.size) {
-                        if (hasMore && !loadingMore) {
-                            // Debounce: only load once the user has actually
-                            // rested at the bottom, not on every recomposition.
-                            kotlinx.coroutines.delay(400)
-                            if (hasMore && !loadingMore) {
-                                loadingMore = true
-                                // Runs in the ViewModel scope: scrolling the
-                                // footer away must not cancel the fetch.
-                                viewModel.requestRssLoadMore(sourceId) { more ->
-                                    hasMore = more
-                                    loadingMore = false
-                                }
+            if (RssArticleStyle.isGrid(source?.articleStyle)) {
+                // 阅读 `articleStyle` 2 / 3 / 4：网格排版。之前这里对所有源都用单列
+                // 长条列表，同一份源在阅读里是网格、在这里就"显示得不一样"。
+                val configuration = LocalConfiguration.current
+                val landscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+                val columns = RssArticleStyle.gridColumns(source?.articleStyle, landscape)
+                val staggered = source?.articleStyle == RssArticleStyle.GRID_STAGGERED
+                if (staggered) {
+                    // 瀑布流：两列高度错落。用专门的错落网格，而不是普通网格 ——
+                    // 普通网格每格等高，看起来就和「两列网格」一模一样。
+                    LazyVerticalStaggeredGrid(
+                        columns = StaggeredGridCells.Fixed(columns),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(8.dp),
+                        verticalItemSpacing = 8.dp,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(articles, key = { it.sourceId to it.guid }) { article ->
+                            RssArticleCell(article, imageHeaders, staggered = true) {
+                                viewModel.markRssArticleRead(sourceId, article.guid)
+                                pendingArticle = article
+                                viewModel.rssBrowserArticle = article
+                                onOpenVideo(article)
+                            }
+                        }
+                        item(key = "load_more", span = StaggeredGridItemSpan.FullLine) {
+                            RssLoadMoreFooter(hasMore, loadingMore, viewModel, sourceId) { more, busy ->
+                                hasMore = more
+                                loadingMore = busy
                             }
                         }
                     }
-                    Row(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(columns),
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(8.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        when {
-                            loadingMore -> HiLoadingHint(
-                                text = stringResource(R.string.rss_content_loading)
-                            )
-                            hasMore -> TextButton(onClick = {
-                                loadingMore = true
-                                viewModel.requestRssLoadMore(sourceId) { more ->
-                                    hasMore = more
-                                    loadingMore = false
-                                }
-                            }) {
-                                Text(stringResource(R.string.rss_load_more))
+                        items(articles, key = { it.sourceId to it.guid }) { article ->
+                            RssArticleCell(article, imageHeaders) {
+                                viewModel.markRssArticleRead(sourceId, article.guid)
+                                pendingArticle = article
+                                viewModel.rssBrowserArticle = article
+                                onOpenVideo(article)
                             }
-                            else -> Text(
-                                stringResource(R.string.rss_no_more),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                        }
+                        item(key = "load_more", span = { GridItemSpan(maxLineSpan) }) {
+                            RssLoadMoreFooter(hasMore, loadingMore, viewModel, sourceId) { more, busy ->
+                                hasMore = more
+                                loadingMore = busy
+                            }
+                        }
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(articles, key = { it.sourceId to it.guid }) { article ->
+                        RssArticleRow(article, imageHeaders) {
+                            viewModel.markRssArticleRead(sourceId, article.guid)
+                            pendingArticle = article
+                            viewModel.rssBrowserArticle = article
+                            // 视频还是图片不在这里判：文章打开后由正文内容决定
+                            // （见 RssArticleScreen）。这里只是"打开这篇文章"。
+                            onOpenVideo(article)
+                        }
+                    }
+                    item(key = "load_more") {
+                        RssLoadMoreFooter(hasMore, loadingMore, viewModel, sourceId) { more, busy ->
+                            hasMore = more
+                            loadingMore = busy
                         }
                     }
                 }
@@ -1098,6 +1186,178 @@ fun SubscriptionArticlesScreen(
 
 }
 
+/**
+ * 阅读 `articleStyle` 的列表排版：源怎么写，列表就怎么排（legado-E
+ * `RssArticlesFragment.initView`）。0 / 1 是列表，2 是两列网格，3 是瀑布流
+ * （横屏三列），4 是三列网格。
+ */
+internal object RssArticleStyle {
+
+    /** 两列网格（阅读 `articleStyle == 2`）。 */
+    const val GRID_TWO = 2
+
+    /** 瀑布流：横屏三列、竖屏两列（阅读 `articleStyle == 3`）。 */
+    const val GRID_STAGGERED = 3
+
+    /** 三列网格（阅读 `articleStyle == 4`）。 */
+    const val GRID_THREE = 4
+
+    fun isGrid(articleStyle: Int?): Boolean =
+        articleStyle == GRID_TWO || articleStyle == GRID_STAGGERED || articleStyle == GRID_THREE
+
+    /** 列数：与阅读一致，[GRID_STAGGERED] 横屏三列、竖屏两列。 */
+    fun gridColumns(articleStyle: Int?, landscape: Boolean = false): Int = when (articleStyle) {
+        GRID_THREE -> 3
+        GRID_STAGGERED -> if (landscape) 3 else 2
+        else -> 2
+    }
+}
+
+/**
+ * 列表底部的「加载更多」。阅读按需翻页，所以脚注被组合出来就说明用户滚到了
+ * 底部，此时用存下的游标继续抓下一页。网格与列表两套排版共用。
+ */
+@Composable
+private fun RssLoadMoreFooter(
+    hasMore: Boolean,
+    loadingMore: Boolean,
+    viewModel: WallpaperViewModel,
+    sourceId: Long,
+    onChange: (hasMore: Boolean, loadingMore: Boolean) -> Unit,
+) {
+    LaunchedEffect(hasMore, loadingMore) {
+        if (hasMore && !loadingMore) {
+            // Debounce: only load once the user has actually rested at the
+            // bottom, not on every recomposition.
+            kotlinx.coroutines.delay(400)
+            if (hasMore && !loadingMore) {
+                onChange(hasMore, true)
+                // Runs in the ViewModel scope: scrolling the footer away must
+                // not cancel the fetch.
+                viewModel.requestRssLoadMore(sourceId) { more -> onChange(more, false) }
+            }
+        }
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        when {
+            loadingMore -> HiLoadingHint(text = stringResource(R.string.rss_content_loading))
+            hasMore -> TextButton(onClick = {
+                onChange(hasMore, true)
+                viewModel.requestRssLoadMore(sourceId) { more -> onChange(more, false) }
+            }) {
+                Text(stringResource(R.string.rss_load_more))
+            }
+            else -> Text(
+                stringResource(R.string.rss_no_more),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** 网格排版里的一格：封面在上、标题在下（阅读的 `RssArticlesAdapter2` 观感）。 */
+@Composable
+private fun RssArticleCell(
+    article: RssArticle,
+    imageHeaders: Map<String, String>,
+    /** 瀑布流（`articleStyle == 3`）：封面按自身比例撑高，格子高度因此错落。 */
+    staggered: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val headers = rssArticleHeaders(article, imageHeaders)
+    val context = LocalContext.current
+    val coverRequest = remember(context, article.imageUrl, headers) {
+        imageRequest(context, article.imageUrl, null, headers)
+    }
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        shape = RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+        )
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            if (article.imageUrl.isNotBlank()) {
+                if (staggered) {
+                    // 不锁宽高比：让封面按**自身比例**撑高，每格高度因此不同 ——
+                    // 这正是瀑布流与两列网格的区别（都是两列，但高度错落）。
+                    SubcomposeAsyncImage(
+                        model = coverRequest,
+                        contentDescription = null,
+                        contentScale = ContentScale.FillWidth,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surface),
+                    )
+                } else {
+                    AsyncImage(
+                        model = coverRequest,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(1f)
+                            .background(MaterialTheme.colorScheme.surface)
+                    )
+                }
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(if (staggered) 0.75f else 1f)
+                        .background(MaterialTheme.colorScheme.surface),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Outlined.MenuBook,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
+            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                Text(
+                    article.title.ifBlank { article.link },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = if (article.isRead) FontWeight.Normal else FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (article.publishedAt > 0L) {
+                    Text(
+                        formatAgo(article.publishedAt),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 封面抓取要带的请求头：源的 `header` 之外，文章链接选项里存的请求头
+ * （阅读 `URL,{headers:…}`）也要带上，否则要求 Referer 的图床只剩占位图。
+ */
+@Composable
+private fun rssArticleHeaders(
+    article: RssArticle,
+    imageHeaders: Map<String, String>,
+): Map<String, String> = remember(article.requestHeaders, imageHeaders) {
+    if (article.requestHeaders.isBlank()) {
+        imageHeaders
+    } else {
+        imageHeaders + com.wallpaperswitcher.engine.legado.LegadoRss.requestHeaders(article)
+    }
+}
+
 @Composable
 private fun RssArticleRow(
     article: RssArticle,
@@ -1106,13 +1366,7 @@ private fun RssArticleRow(
 ) {
     // 文章链接选项里的请求头（阅读 `URL,{headers:…}`）也用于封面抓取：
     // 一些图床要求带 Referer，否则 403 只剩占位图。
-    val headers = remember(article.requestHeaders, imageHeaders) {
-        if (article.requestHeaders.isBlank()) {
-            imageHeaders
-        } else {
-            imageHeaders + com.wallpaperswitcher.engine.legado.LegadoRss.requestHeaders(article)
-        }
-    }
+    val headers = rssArticleHeaders(article, imageHeaders)
     val context = LocalContext.current
     // 列表滚动中每一行都会反复重组：封面请求记住，避免重建 ImageRequest。
     val coverRequest = remember(context, article.imageUrl, headers) {
@@ -1160,8 +1414,10 @@ private fun RssArticleRow(
                 }
                 // stripHtml 内部每次都会编译 4 个 Regex（FeedParser 不改）：按正文
                 // 记住结果，滚动中反复重组这一行时不再重复解析。
+                // 用 summaryText 而不是 stripHtml：源规则抓不到图片时会自己拼一句
+                // "未识别到图片，点此打开原页面" 当摘要，一屏几十行全是它（用户要求删掉）。
                 val preview = remember(article.description, article.content) {
-                    FeedParser.stripHtml(article.description.ifBlank { article.content })
+                    FeedParser.summaryText(article.description, article.content)
                 }
                 if (preview.isNotBlank()) {
                     Text(
@@ -1554,7 +1810,12 @@ private fun RssArticleDetailDialog(
 }
 
 @Composable
-private fun rssStatusText(source: RssSource): String {
+private fun rssStatusText(
+    source: RssSource,
+    /** 调用方 remember 好的结果码（解析 JSON 不便宜，别每次重组都解析）。 */
+    decoded: com.wallpaperswitcher.engine.OnlineSourceRules.ResultInfo? =
+        com.wallpaperswitcher.engine.OnlineSourceRules.decodeResult(source.lastResult),
+): String {
     // 单 URL / 网页型源不抓取，只提示点开用浏览器。
     if (com.wallpaperswitcher.engine.legado.LegadoRss.isBrowseOnly(source)) {
         return stringResource(R.string.rss_browse_source)
@@ -1605,7 +1866,8 @@ private fun RssPickerTile(
             .clickable(onClick = onClick)
     ) {
         AsyncImage(
-            model = imageRequest(context, url, referer, headers),
+            // 全屏看图：不限制解码尺寸。
+            model = imageRequest(context, url, referer, headers, sizePx = 0),
             contentDescription = null,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()

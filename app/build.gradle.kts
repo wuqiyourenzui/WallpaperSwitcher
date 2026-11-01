@@ -85,6 +85,9 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
+    // 瀑布流排版（阅读 `articleStyle == 3`）用 LazyVerticalStaggeredGrid，它在
+    // foundation 里；BOM 已管理版本，所以不写版本号。
+    implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     // Pin the animation core version: M3 1.2.x progress indicators call

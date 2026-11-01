@@ -39,7 +39,12 @@ internal fun configureArticleWebView(view: WebView) {
     }
     // 播放页的视频 surface 要在 WebView 的硬件层里合成（「浏览器收集」对话框
     // 早就这么做，否则会出现「有声音/在缓冲，但画面全黑」）。文章页里播放视频的
-    // 情况越来越多（自有播放页 + 我们合成的 hls.js 播放页），所以这条放到共享配置里。
+    // 情况越来越多（站点自有播放页 + 「浏览器收集」里合成的播放页），所以这条放到共享配置里。
+    //
+    // 注意：试过把它关成 LAYER_TYPE_NONE 去修"合成播放页不出画"，**无效**，
+    // 而且对视频只会更糟（WebView 播放视频需要硬件层合成）。别为
+    // `readyState` 停在 0/1 去动这一行 —— 那个问题的解法是不再自己合成播放页
+    // （见 RssSitePlayer：规则是 HTML 就按规则渲染，只给地址就加载站点真页面）。
     view.setLayerType(View.LAYER_TYPE_HARDWARE, null)
     CookieManager.getInstance().setAcceptCookie(true)
     CookieManager.getInstance().setAcceptThirdPartyCookies(view, true)

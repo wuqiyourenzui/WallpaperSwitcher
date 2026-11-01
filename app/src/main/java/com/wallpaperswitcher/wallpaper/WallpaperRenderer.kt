@@ -65,6 +65,20 @@ class WallpaperRenderer(
 ) {
     companion object {
         private const val TAG = "WallpaperRenderer"
+        /** 帧率自适应的采样窗口（3s：够短能追上掉帧，够长不误判）。 */
+        private const val ADAPT_WINDOW_MS = 3_000L
+        /** 低于源帧率的这个比例就认为"跟不上"（实测 60fps 源出 44.8fps）。 */
+        private const val ADAPT_LOW_FRACTION = 0.90f
+        /** 回到源帧率的这个比例才升回增强（留滞回，避免来回抖）。 */
+        private const val ADAPT_HIGH_FRACTION = 0.95f
+        private const val ADAPT_LOW_STREAK = 2
+        private const val ADAPT_HIGH_STREAK = 3
+        /** 新视频开头的预热窗口数（3s×2 = 6s），这段时间不判档。 */
+        private const val ADAPT_WARMUP_WINDOWS = 2
+        /** 呈现时间戳允许"提前"多少（否则重新锚定；一帧 16ms，100ms 足够宽）。 */
+        private const val MAX_PRESENT_AHEAD_NS = 100_000_000L
+        /** 呈现时间戳允许"滞后"多少（超过就重新锚定，避免一串过期时间戳）。 */
+        private const val MAX_PRESENT_BEHIND_NS = 200_000_000L
         /**
          * Hard ceiling for the one-off "provider is not seekable" copy into
          * cacheDir. Without it a multi-GB cloud video was copied in full even
@@ -191,6 +205,28 @@ class WallpaperRenderer(
      * 1 = FSR1 EASU/RCAS、2 = Anime4K）。只在增强分支（uEnhance > 0）里生效。
      */
     @Volatile private var enhanceMode: Int = 0
+    /**
+     * 帧率自适应（B 项）。源帧率由 [decodeLoop] 写入；实际渲染帧率每 [ADAPT_WINDOW_MS]
+     * 采一次样：
+     *  - 连续 [ADAPT_LOW_STREAK] 个窗口低于源帧率的 90% → 把增强**临时**关掉
+     *    （[enhanceAutoOff]，用户设置不动），先保证不顿；
+     *  - 连续 [ADAPT_HIGH_STREAK] 个窗口回到 95% 以上 → 自动打开。
+     * 每次切换都打一行日志，否则"画质有时好有时差"无从验证。
+     */
+    @Volatile internal var videoSourceFps: Int = 0
+    @Volatile private var enhanceAutoOff = false
+    /** 自适应基准所属的视频代次（同一个视频的后续 pass 不重置状态）。 */
+    private var adaptGen = -1
+    private var adaptWindowStart = 0L
+    private var adaptFrames = 0
+    private var adaptLowStreak = 0
+    private var adaptHighStreak = 0
+    /**
+     * 新视频开头的预热窗口数：冷启动/切换后的前几秒解码器还在爬坡，帧率本来就低。
+     * 这段时间不参与自适应，否则每次切视频都会「降档→再升回」，用户看到的是清晰度
+     * 闪一下（实测冷启动出现过 50.6fps → degraded → 59.4fps → restored）。
+     */
+    private var adaptWarmupWindows = 0
     /** 静态图的降噪强度（CPU 小样检测，随新图重算）。 */
     private var lastImageDenoise = 0f
     private var lastDenoiseBitmap: Bitmap? = null
@@ -356,6 +392,16 @@ class WallpaperRenderer(
     @Volatile var autoRotateMismatch = true
     // Direction used when autoRotateMismatch is on.
     @Volatile var autoRotateClockwise = true
+    /**
+     * 视频循环播放（默认开，对应设置里的开关）。关掉时解码线程播完一遍就退出，
+     * 并且**保留最后一帧**（不清理 GL/纹理），画面停在最后那一帧。
+     */
+    @Volatile var videoLoopEnabled = true
+    /**
+     * 已经决定"停在最后一帧"：解码线程的 finally 里不要再清理视频 GL 资源，
+     * 否则最后一帧会被一起清掉（黑屏）。
+     */
+    @Volatile internal var holdLastVideoFrame = false
     // True when the current video's quad covers the whole viewport (FILL /
     // STRETCH, or FIT with a matching aspect). Only read/written on the render
     // thread; when false the letterbox needs the black backing quad.
@@ -393,6 +439,18 @@ class WallpaperRenderer(
     private var audioMutedForOwnUi = false
         private set
     /**
+     * 让位静音（见 [OtherMediaMonitor]）：别的 App 在放媒体时壁纸声音让开。
+     * 与 [audioMutedForOwnUi] 分开记 —— 两个理由都解除后才允许恢复声音。
+     */
+    @Volatile private var audioDuckedForOtherMedia = false
+    private val otherMediaMonitor by lazy {
+        OtherMediaMonitor(
+            context = context,
+            tag = TAG,
+            weArePlaying = { audio.isPlaying() },
+        ) { others -> setAudioDucked(others) }
+    }
+    /**
      * Where the next `decodeLoop` pass 1 must start (µs). Set by [startVideo] and
      * consumed by the first round of the decode loop; later rounds always rewind
      * to 0 so the clip still loops from the beginning.
@@ -418,6 +476,9 @@ class WallpaperRenderer(
         generation = { videoGeneration.get() },
         cachePath = { currentVideoCachePath },
         powerSavePaused = { powerSaveMode },
+        videoPositionUs = { lastVideoPositionUs },
+            // 循环关闭、视频停在最后一帧时，音频线程也要退出（否则画面静止声音还在响）。
+            holdingLastFrame = { holdLastVideoFrame },
         waitWhilePaused = {
             // Same monitor the video loop waits on: the power-save setter
             // notifies it, so a hidden wallpaper costs zero wakeups.
@@ -513,8 +574,39 @@ class WallpaperRenderer(
     // normal 30/60fps clip is presented at exactly its own rate, while an
     // unusually fast source cannot spin the render thread. Screen-off /
     // not-visible power saving is handled by the decode loop (~1fps), not here.
-    private val minVideoSwapGapMs = 16L
+    // Render-side presentation floor, **derived from the source frame rate**
+    // (see [swapGapFor]).
+    //
+    // It used to be a fixed 33ms (~30fps), which threw away every other frame of
+    // a 50/60fps video; then a fixed 16ms, which is still an arbitrary ceiling:
+    // a 60fps source arrives every 16.67ms, so any jitter puts the next frame
+    // inside the 16ms window and it is dropped (measured on device: 50.4-54.8fps
+    // presented for a 60fps source, swapGap=16ms). The display is 120Hz, so the
+    // only correct ceiling is "one frame per source frame, minus a little slack
+    // for jitter". Screen-off / not-visible power saving is handled by the
+    // decode loop (~1fps), not here.
+    @Volatile private var minVideoSwapGapMs = 16L
     private var lastVideoFrameSwappedAt = 0L
+    /**
+     * 每条视频的"实际呈现帧率"统计（每 10s 一行 + 视频结束时一行）。
+     *
+     * 回答"帧率能不能和源一致"必须有这个数：`Video render rate` 那个 60s 窗口会跨
+     * 多条视频（30fps/60fps 混在一起），不能用来判定单条视频是否掉帧。
+     */
+    private var videoPresentFrames = 0L
+    private var videoPresentWindowStart = 0L
+    /** 窗口内相邻呈现帧的最小/最大间隔（ms）与上一次呈现时刻：抖动的客观证据。 */
+    private var videoPresentMinGapMs = Long.MAX_VALUE
+    private var videoPresentMaxGapMs = 0L
+    private var lastPresentAtMs = 0L
+    /**
+     * 帧呈现时间基准：把解码帧的媒体时间戳映射到 `System.nanoTime()` 时基。
+     *
+     * 首帧以"现在"为锚点，之后每帧的目标时刻 = 锚点 + 媒体时间差；早到的帧交给
+     * 合成器排到它自己那一拍（[EglSurfaceHolder.setPresentationTime]），晚到的立即上屏。
+     * 没有它时呈现时刻完全由"解码何时产出"决定，抖动直接落在 vsync 网格之外。
+     */
+    private var ptsAnchorNanos = 0L
     /**
      * How far behind its own presentation time a frame may be before the
      * playback clock is re-anchored instead of "catching up".
@@ -716,6 +808,10 @@ class WallpaperRenderer(
             sharpnessScale = scale
             qualityEnhance = qualityBoost
             enhanceMode = mode.coerceIn(0, 2)
+            // 用户刚做了选择：清掉自适应降级的痕迹，别让"临时关掉"看起来像设置没生效。
+            enhanceAutoOff = false
+            adaptLowStreak = 0
+            adaptHighStreak = 0
             if (!surfaceReady || !egl.hasSurface) return@postToRenderThread
             // Same texture-side guard as applyScaleMode: re-present from the
             // GPU when the CPU bitmap has been released for memory.
@@ -739,8 +835,158 @@ class WallpaperRenderer(
      */
     fun setEnhanceMode(mode: Int) {
         enhanceMode = mode.coerceIn(0, 2)
+        // 见 applyClarity：用户的选择优先于自适应的临时降级。
+        enhanceAutoOff = false
+        adaptLowStreak = 0
+        adaptHighStreak = 0
         postToRenderThread {
             if (lastRenderWasImage) renderImageFromTexture()
+        }
+    }
+
+    /**
+     * 视频换了：重设帧率自适应的基准（源帧率未知时传 0，自适应就不参与）。
+     * 由 [decodeLoop] 读 `MediaFormat.KEY_FRAME_RATE` 后调用。
+     *
+     * 注意：短视频每个 pass 都会重进 decodeLoop（同一个视频、同一个 gen），那种情况
+     * 必须**保留**自适应状态 —— 否则每 8 秒清一次窗口/连击，判据永远攒不起来。
+     */
+    /**
+     * 这一帧的理想呈现时刻（`System.nanoTime()` 时基，0 = 不指定）。
+     *
+     * 首帧以"现在"为锚点，之后 = 锚点 + 媒体时间差。偏差过大（换 pass、重新对齐、
+     * 从省电恢复）时重新锚定，否则会排一串"过去的时间"进去，合成器只能全部立即显示。
+     * 只在渲染线程调用。
+     */
+    private fun targetPresentationNanos(): Long {
+        val mediaUs = lastVideoPositionUs
+        if (mediaUs <= 0L) return 0L
+        val now = System.nanoTime()
+        if (ptsAnchorNanos == 0L) {
+            ptsAnchorNanos = now - mediaUs * 1_000L
+            return now
+        }
+        val target = ptsAnchorNanos + mediaUs * 1_000L
+        if (target - now > MAX_PRESENT_AHEAD_NS || now - target > MAX_PRESENT_BEHIND_NS) {
+            ptsAnchorNanos = now - mediaUs * 1_000L
+            return now
+        }
+        return if (target < now) now else target
+    }
+
+    /**
+     * 把源帧率告诉系统（API 30+）：让面板按内容切刷新率（120Hz 屏放 30fps 视频时
+     * 降到 30/60Hz），既省电又减少"等 vsync 白等"的抖动。失败无副作用。
+     */
+    private fun applySurfaceFrameRate(fps: Int) {
+        if (android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.R) return
+        try {
+            val s = holder.surface
+            if (!s.isValid) return
+            if (fps in 1..240) {
+                s.setFrameRate(
+                    fps.toFloat(),
+                    android.view.Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE
+                )
+            } else {
+                // 0 = 无偏好（回到图片/未知帧率时别把面板钉在某个值上）。
+                s.setFrameRate(0f, android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT)
+            }
+        } catch (_: Throwable) {
+        }
+    }
+
+    internal fun resetEnhanceAdaptation(sourceFps: Int, gen: Int) {
+        if (gen == adaptGen) {
+            // 同一个视频的下一个 pass：只更新源帧率（容器不会变），窗口与连击保留。
+            videoSourceFps = sourceFps
+            return
+        }
+        adaptGen = gen
+        videoSourceFps = sourceFps
+        // 呈现节流跟着源帧率走：60fps 源拿 14ms 而不是 16ms（见 swapGapFor）。
+        minVideoSwapGapMs = swapGapFor(sourceFps)
+        // 新视频：呈现时间戳重新锚定 + 把帧率告诉系统（面板按内容切刷新率）。
+        ptsAnchorNanos = 0L
+        applySurfaceFrameRate(sourceFps)
+        adaptWindowStart = 0L
+        adaptFrames = 0
+        adaptLowStreak = 0
+        adaptHighStreak = 0
+        adaptWarmupWindows = ADAPT_WARMUP_WINDOWS
+    }
+
+    /**
+     * 呈现节流：源帧率的一帧时长减去抖动余量。
+     *
+     * 60fps → 14ms（原来固定 16ms，容不下 16.67ms 的帧 + 抖动）；120fps → 6ms；
+     * 30fps → 31ms。源帧率不可信（0/负/离谱）时退回 16ms。
+     */
+    private fun swapGapFor(fps: Int): Long =
+        if (fps in 1..240) ((1_000L / fps) - 2L).coerceIn(4L, 40L) else 16L
+
+    /** 视频实际用的增强档：自适应降级期间为 0（用户设置保持不变）。 */
+    private fun effectiveVideoEnhanceMode(): Int = if (enhanceAutoOff) 0 else enhanceMode
+
+    /**
+     * 每 [ADAPT_WINDOW_MS] 用"实际呈现的帧数"算一次 fps，并按源帧率决定要不要临时
+     * 关掉增强。只在渲染线程（[renderVideoFrame]）里调用。
+     */
+    private fun sampleRenderFpsForAdaptation(now: Long) {
+        if (adaptWindowStart == 0L) {
+            adaptWindowStart = now
+            adaptFrames = 0
+            return
+        }
+        adaptFrames++
+        val elapsed = now - adaptWindowStart
+        if (elapsed < ADAPT_WINDOW_MS) return
+        val fps = adaptFrames * 1000f / elapsed
+        adaptWindowStart = now
+        adaptFrames = 0
+        val source = videoSourceFps
+        if (source <= 0 || powerSaveMode) {
+            // 源帧率未知（容器没声明）或省电模式（本来就不出画）：不参与判断。
+            adaptLowStreak = 0
+            adaptHighStreak = 0
+            return
+        }
+        if (adaptWarmupWindows > 0) {
+            // 冷启动/切换后的解码预热窗口：只清连击，不判档（见 adaptWarmupWindows）。
+            adaptWarmupWindows--
+            adaptLowStreak = 0
+            return
+        }
+        if (effectiveVideoEnhanceMode() > 0) {
+            if (fps < source * ADAPT_LOW_FRACTION) {
+                adaptLowStreak++
+                adaptHighStreak = 0
+                if (!enhanceAutoOff && adaptLowStreak >= ADAPT_LOW_STREAK) {
+                    enhanceAutoOff = true
+                    AppLog.d(
+                        TAG,
+                        "Enhance degraded: %.1ffps < 90%% of %dfps source (mode=%d) -> off"
+                            .format(fps, source, enhanceMode)
+                    )
+                }
+            } else {
+                adaptLowStreak = 0
+            }
+        } else if (enhanceMode > 0) {
+            // 只有"用户开着、但被我们临时关掉"这一种情况才尝试升回去。
+            if (fps >= source * ADAPT_HIGH_FRACTION) {
+                adaptHighStreak++
+                if (adaptHighStreak >= ADAPT_HIGH_STREAK) {
+                    enhanceAutoOff = false
+                    adaptHighStreak = 0
+                    AppLog.d(
+                        TAG,
+                        "Enhance restored: %.1ffps >= 95%% of %dfps source".format(fps, source)
+                    )
+                }
+            } else {
+                adaptHighStreak = 0
+            }
         }
     }
 
@@ -788,6 +1034,8 @@ class WallpaperRenderer(
         currentVideoUri = null
         currentVideoCachePath = null
         audioMutedForOwnUi = false
+        audioDuckedForOtherMedia = false
+        otherMediaMonitor.stop()
         audio.release()
         val handler = renderHandler
         handler?.removeCallbacks(kenBurnsRunnable)
@@ -1482,6 +1730,9 @@ class WallpaperRenderer(
         audioMutedForOwnUi = false
         // First stop any existing video
         stopVideoInternal()
+        // 新视频：帧率统计从零开始（上一段的数字不能混进来）。
+        videoPresentFrames = 0
+        videoPresentWindowStart = 0L
 
         // Give the old decode thread a short grace period to exit. It is NOT
         // mandatory to wait: the generation guard in decodeLoop's finally block
@@ -1500,6 +1751,9 @@ class WallpaperRenderer(
         // Reset cleanup flag for the new video
         videoCleanupDone.set(false)
         val gen = videoGeneration.incrementAndGet()
+        // 新视频开始：上一段可能停在最后一帧，这里把"冻结"状态清掉，否则
+        // 新视频的音频会被当成"已冻结"直接不播。
+        holdLastVideoFrame = false
         isVideoPlaying = true
         // Playback passes are counted per video: the audio thread waits for the
         // FIRST pass of this video before it makes any sound. Without the reset
@@ -1532,9 +1786,11 @@ class WallpaperRenderer(
         currentVideoUri = uriStr
         // Not while our own UI is open: a media switch triggered from inside the
         // app must not start playing audio behind it (see muteAudioKeepingVideo).
-        if (videoSoundEnabled && !audioMutedForOwnUi) {
+        if (videoSoundEnabled && !audioMutedForOwnUi && !audioDuckedForOtherMedia) {
             audio.start(uriStr, gen, startPositionUs.coerceAtLeast(0L))
         }
+        // 让位静音只在需要时旁听系统的播放配置；注册本身很便宜，但没必要每帧都试。
+        otherMediaMonitor.start()
         // The watchdog covers the window where this start was skipped because
         // of the UI mute and the unmute later failed to restart the thread.
         scheduleAudioWatchdog()
@@ -1603,6 +1859,9 @@ class WallpaperRenderer(
         isVideoPlaying = false
         videoCleanupDone.set(true)
         audio.stop()
+        // 视频结束：不再有呈现时间戳，也撤掉帧率偏好（图片/未知内容别把面板钉在 30/60Hz）。
+        ptsAnchorNanos = 0L
+        applySurfaceFrameRate(0)
 
         videoDecodeThread?.interrupt()
 
@@ -1697,6 +1956,28 @@ class WallpaperRenderer(
     }
 
     /**
+     * 让位静音：别的 App 在放媒体 -> 壁纸安静（画面继续）；它停了 -> 回到画面当前位置。
+     *
+     * 不抢音频焦点是有意的：抢焦点会打断用户正在听的音乐。这里只是"让开"。
+     */
+    private fun setAudioDucked(duck: Boolean) {
+        if (duck) {
+            if (!videoSoundEnabled) return
+            audioDuckedForOtherMedia = true
+            audio.muteForPolicy()
+            audio.stop()
+            AppLog.d(TAG, "Audio ducked for another app's media")
+        } else {
+            audioDuckedForOtherMedia = false
+            // 还有别的静音理由（自己的 UI / 省电暂停）时不恢复；它们解除后会各自
+            // 调用 unmuteAudioReanchored。
+            if (audioMutedForOwnUi || powerSaveMode) return
+            unmuteAudioReanchored()
+            AppLog.d(TAG, "Audio restored: no other app is playing media")
+        }
+    }
+
+    /**
      * Undo [muteAudioKeepingVideo]. The audio starts at the picture's CURRENT
      * position: while it was muted the video kept advancing, so continuing the
      * audio where it stopped would leave the sound behind the picture by the
@@ -1710,8 +1991,10 @@ class WallpaperRenderer(
         // 的就是“过一会才有声音”。这里先清掉，空转的线程下一轮 ensurePlaying
         // 就会真正播放。
         audio.clearPolicyMute()
-        if (!audioMutedForOwnUi) return
         audioMutedForOwnUi = false
+        // 让位静音期间不要恢复：别的 App 还在放媒体，恢复就是把两层声音叠在一起。
+        // 解除让位时（见 setAudioDucked）会再走一遍这里。
+        if (audioDuckedForOtherMedia) return
         if (!videoSoundEnabled) return
         // 不要在这里判断 powerSaveMode / isVideoPlaying：两者都由别的线程异步
         // 应用，此刻可能仍是旧值（刚起播、刚切换、刚从 power-save 恢复）。
@@ -1758,7 +2041,7 @@ class WallpaperRenderer(
     private fun evaluateAudioWatchdog() {
         val uri = currentVideoUri
         val shouldPlay = uri != null && videoSoundEnabled && !audioMutedForOwnUi &&
-            !powerSaveMode && isVideoPlaying
+            !audioDuckedForOtherMedia && !powerSaveMode && isVideoPlaying
         if (!shouldPlay) {
             audioSilentSince = 0L
             audioWatchdogRestarts = 0
@@ -1900,6 +2183,34 @@ class WallpaperRenderer(
                 renderFpsWindowStart = now
                 renderFpsCount = 0
             }
+            // 帧率自适应：用同一个"已呈现帧"计数节奏，按 3s 窗口决定要不要临时
+            // 关掉增强（见 sampleRenderFpsForAdaptation）。
+            sampleRenderFpsForAdaptation(now)
+            // 每条视频自己的呈现帧率（10s 一行），判"是否与源帧率一致"用。
+            if (videoPresentWindowStart == 0L) videoPresentWindowStart = now
+            if (lastPresentAtMs > 0L) {
+                val gap = now - lastPresentAtMs
+                if (gap in 1 until videoPresentMinGapMs) videoPresentMinGapMs = gap
+                if (gap > videoPresentMaxGapMs) videoPresentMaxGapMs = gap
+            }
+            lastPresentAtMs = now
+            videoPresentFrames++
+            val presentElapsed = now - videoPresentWindowStart
+            if (presentElapsed >= 10_000L) {
+                val presentedFps = videoPresentFrames * 1000f / presentElapsed
+                AppLog.d(
+                    TAG,
+                    "Video present: %.1ffps over %ds (source %dfps, swapGap=%dms, frameGap %d-%dms)".format(
+                        presentedFps, presentElapsed / 1000, videoSourceFps, minVideoSwapGapMs,
+                        if (videoPresentMinGapMs == Long.MAX_VALUE) 0L else videoPresentMinGapMs,
+                        videoPresentMaxGapMs
+                    )
+                )
+                videoPresentWindowStart = now
+                videoPresentFrames = 0
+                videoPresentMinGapMs = Long.MAX_VALUE
+                videoPresentMaxGapMs = 0L
+            }
             if (now - lastRenderLogAt > 5000L) {
                 lastRenderLogAt = now
                 AppLog.d(TAG, "Video frame rendered: tex=$videoTexId screen=${screenW.toInt()}x${screenH.toInt()} last=$lastVideoFrameAt")
@@ -1958,7 +2269,8 @@ class WallpaperRenderer(
             val videoDrawnW = (videoQuadHalfW * screenW).coerceAtLeast(1f)
             val videoDrawnH =
                 (kotlin.math.abs(videoQuadHalfH) * screenH).coerceAtLeast(1f)
-            GLES20.glUniform1f(gl.videoEnhanceModeLoc, enhanceMode.toFloat())
+            // 自适应降级期间这里给 0（等效"关闭增强"），用户设置本身不变。
+            GLES20.glUniform1f(gl.videoEnhanceModeLoc, effectiveVideoEnhanceMode().toFloat())
             GLES20.glUniform2f(
                 gl.videoEasuScaleLoc,
                 if (videoSrcW > 0f) videoSrcW / videoDrawnW else 0f,
@@ -1979,6 +2291,8 @@ class WallpaperRenderer(
 
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             if (fadeAlpha > 0f) drawFadeOverlayNoSwap(fadeAlpha)
+            // vsync 对齐：把这一帧的"理想呈现时刻"告诉合成器（见 targetPresentationNanos）。
+            egl.setPresentationTime(targetPresentationNanos())
             val swapped = egl.swapBuffers()
             if (swapped) {
                 lastVideoFrameAt = now

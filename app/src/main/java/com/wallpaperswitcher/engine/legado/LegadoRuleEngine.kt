@@ -515,7 +515,12 @@ internal class LegadoRuleEngine(
         // source's jsLib scope is reused (阅读's scriptCache / SharedJsScope).
         val result = LegadoJs.run(
             script = script,
-            bindings = mapOf("result" to initial),
+            // 阅读 binds both names in `AnalyzeRule.evalJS` (AnalyzeRule.kt:835-839):
+            // `result` is the value being processed and `src` is the content it
+            // belongs to. Sources rely on `src`: 「秀人集」的 ruleContent 是
+            // `var h=String(src||'')`（抓正文页里的图），只给 `result` 会直接
+            // ReferenceError，正文一张图都出不来。
+            bindings = mapOf("result" to initial, "src" to initial),
             baseUrl = baseUrl,
             sourceId = sourceId,
             textProvider = { rule ->
@@ -533,10 +538,17 @@ internal class LegadoRuleEngine(
             errors.add(RuleError(script.take(80), "js failed: ${result.error}"))
             return null
         }
-        if (result.value == null) {
+        if (result.value == null && result.raw == null) {
             errors.add(RuleError(script.take(60), "js produced no value"))
         }
-        return result.value
+        // 只有**集合**才用原始值：`ruleArticles` 用 `@js:` 返回数组时，字符串化会
+        // 把它压成一条，列表就只剩 1 条（91porn 源"打开无内容"的根因）。
+        // 其它值一律走 `value`，那是已经做过整数格式化的文本（JS 的数字都是 double，
+        // 直接返回原始值会让 `2` 变成 `2.0`，阅读里显示的是 `2`）。
+        return when (val raw = result.raw) {
+            is List<*> -> raw
+            else -> result.value
+        }
     }
 
     private fun analyzeCss(content: Any?, rule: String): Any? {

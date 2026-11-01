@@ -22,6 +22,34 @@ object LegadoImport {
 
     data class Result(val sources: List<RssSource>, val skipped: Int)
 
+    /**
+     * 阅读 `articleStyle`：0 列表 / 1 列表 / 2 两列网格 / 3 瀑布流 / 4 三列网格。
+     * 源的原始 JSON 里带着它，列表就按它排版 —— 所有导入路径都走这里取，
+     * 免得只有一条路记得映射、另一条路又把排版丢了。
+     *
+     * 只认 0..4：读到别的值（手改坏了、将来阅读加了新值）按默认列表处理，
+     * 不能猜成一个网格 —— 那会把列表排版改得面目全非。
+     */
+    fun articleStyleOf(rawJson: String?): Int {
+        if (rawJson.isNullOrBlank()) return 0
+        val map = try {
+            when (val root = Json.parse(rawJson)) {
+                is Map<*, *> -> root
+                is List<*> -> root.firstOrNull() as? Map<*, *>
+                else -> null
+            }
+        } catch (_: Exception) {
+            null
+        } ?: return 0
+        val style = when (val value = map["articleStyle"]) {
+            is Long -> value.toInt()
+            is Int -> value
+            is Double -> value.toInt()
+            else -> 0
+        }
+        return if (style in 0..4) style else 0
+    }
+
     fun parse(text: String): Result {
         val json = extractJson(text.trim()) ?: return Result(emptyList(), 0)
         val root = try {
@@ -57,11 +85,15 @@ object LegadoImport {
             }
             val type = (map["type"] as? Long)?.toInt() ?: 0
             val enabled = (map["enabled"] as? Boolean) ?: true
+            // 阅读 `articleStyle`：源自己决定列表排版（0 列表 / 2 两列 / 3 瀑布流 /
+            // 4 三列）。丢了它，同一份源在阅读里是网格、在这里却是长条列表。
+            val articleStyle = articleStyleOf(Json.encode(map))
             out.add(
                 RssSource(
                     name = name.ifBlank { url.substringAfterLast('/').ifBlank { url } },
                     url = url,
                     type = type,
+                    articleStyle = articleStyle,
                     enabled = enabled,
                     rawJson = Json.encode(map),
                 )

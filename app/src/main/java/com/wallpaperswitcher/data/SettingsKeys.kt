@@ -94,6 +94,12 @@ object SettingsKeys {
      * "not done" and shows it once.
      */
     const val SETUP_WIZARD_DONE = "setup_wizard_done"
+    /**
+     * 「锁屏跟随动态壁纸更省电」的一次性说明（见
+     * `WallpaperViewModel.maybeShowLockFollowHint`）：用户第一次带着已生效的动态壁纸
+     * 回到 App、并且「锁屏独立定时」开着的那一瞬间提示这个取舍。缺行 = 没提示过。
+     */
+    const val LOCK_FOLLOW_HINT_SHOWN = "lock_follow_hint_shown"
     /** 静态图微动效 (Ken Burns): slow zoom while a still image is displayed. */
     const val KEN_BURNS_ENABLED = "ken_burns_enabled"
     /**
@@ -138,7 +144,17 @@ object SettingsKeys {
     const val GLOBAL_SCALE_MODE = "global_scale_mode"
     // 清晰度增强（开/关）: "on"（默认；历史值 auto/super/strong 都按开处理）| "off"。
     const val CLARITY_MODE = "clarity_mode"
-    // FILL/STRETCH: rotate media whose orientation mismatches the screen 90° so
+    /**
+     * 网盘（WebDAV）来源是否把视频也同步进壁纸库（默认开）。
+     *
+     * 历史行为是"只下图片，视频跳过"；这一项是给用户显式关闭的开关，内置源
+     * （Bing/NASA/图站）永远只图片，不受它影响。
+     */
+    const val ONLINE_VIDEO_ENABLED = "online_video_enabled"
+    /** WebDAV 浏览页显示方式：`grid`（缩略图网格，默认）| `list`（一行一条）。 */
+    /** 一次性迁移标记：旧 href 形态的 remoteKey 已归一为文件名形态。 */
+    const val ONLINE_KEY_MIGRATION = "online_key_migration_v1"
+    const val WEBDAV_VIEW_MODE = "webdav_view_mode"
     // more of it shows (instead of a thin perpendicular strip). On by default.
     const val ROTATE_MISMATCH_ENABLED = "rotate_mismatch_enabled"
     // Direction used by the auto-rotate feature: "cw" (default) | "ccw".
@@ -165,19 +181,36 @@ object SettingsKeys {
     // first switch to a video must not suddenly make noise).
     const val VIDEO_SOUND_ENABLED = "video_sound_enabled"
     /**
-     * 视频播完再切: a timed switch that arrives while a video is playing waits
-     * for the current pass to finish instead of cutting the video off. Manual
-     * switches ignore it (a tap must act immediately).
+     * 视频播完再切: 视频每播完 [VIDEO_PLAY_TO_END_REPEATS] 次就换一张。
+     *
+     * 这条**不依赖定时切换**：定时关着也照样播完就切；手动/解锁/双击/悬浮
+     * 按钮等其它切换方式仍立即生效。开定时时，定时 tick 撞上正在播的视频会
+     * 等这一段播完再切（见 SwitchPicking.videoEndHold），而不是把它切掉。
      */
     const val VIDEO_PLAY_TO_END = "video_play_to_end"
     /**
-     * 收藏优先: favourites (★) are drawn [FAVORITE_WEIGHT]× as often in
-     * RANDOM / SHUFFLE. On by default - favouriting is an explicit user action -
-     * and can be switched off for a flat distribution.
+     * 视频循环播放（默认开）：关掉后视频只播一遍就停在最后一帧。
+     *
+     * 「视频播完再切」依赖它：不循环就没有"播完"这个事件，所以循环关掉时
+     * 播完再切不生效（设置里那一项也会置灰）。
      */
-    const val FAVORITE_BOOST = "favorite_boost"
-    /** Extra weight a favourite gets while [FAVORITE_BOOST] is on. */
-    const val FAVORITE_WEIGHT = 3
+    const val VIDEO_LOOP_ENABLED = "video_loop_enabled"
+    /**
+     * 订阅 / WebDAV 图片「按需加载」（默认开）：导入时只存缩略图，切到这张
+     * 图时再从远端取原图（走 cacheDir/remote 的 LRU 缓存）。关掉就回到旧行为：
+     * 导入时整张下载到 filesDir，分组里用本地文件。
+     */
+    const val REMOTE_ON_DEMAND = "remote_on_demand"
+    /** 远程图片缓存上限（MB，默认 300）。 */
+    const val REMOTE_CACHE_MB = "remote_cache_mb"
+    /**
+     * 远程图是否参与锁屏（默认关）。锁屏是静态写入，未命中缓存时要同步下载，
+     * 会让换图变慢，所以默认不让远程图进锁屏。
+     */
+    const val REMOTE_LOCK_SCREEN = "remote_lock_screen"
+    /** 视频播完再切: 播几次后切换（任意正整数，默认 1；只夹下限 1，不设上限）。 */
+    const val VIDEO_PLAY_TO_END_REPEATS = "video_play_to_end_repeats"
+    const val VIDEO_PLAY_TO_END_REPEATS_DEFAULT = 1
     /**
      * 最近 N 张不重复: how many recently shown media RANDOM avoids per screen
      * (0 = off, the default). SHUFFLE already plays a full pass without

@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
@@ -48,7 +47,6 @@ fun ShareImportDialog(
     val home by viewModel.homeUiState.collectAsStateWithLifecycle()
     val groups = home.groups
     var selectedId by remember(groups) { mutableStateOf(groups.firstOrNull()?.id) }
-    var favorite by remember { mutableStateOf(false) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -107,15 +105,6 @@ fun ShareImportDialog(
                         }
                     }
                 }
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { favorite = !favorite },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Checkbox(checked = favorite, onCheckedChange = { favorite = it })
-                    Text(stringResource(R.string.share_import_favorite))
-                }
             }
         },
         confirmButton = {
@@ -123,7 +112,7 @@ fun ShareImportDialog(
                 enabled = groups.isNotEmpty() && selectedId != null,
                 onClick = {
                     val groupId = selectedId ?: return@TextButton
-                    viewModel.importSharedMedia(uris, groupId, favorite)
+                    viewModel.importSharedMedia(uris, groupId)
                     onDismiss()
                 },
             ) {

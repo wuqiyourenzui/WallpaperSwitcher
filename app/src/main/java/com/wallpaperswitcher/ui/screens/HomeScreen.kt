@@ -14,6 +14,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -28,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
@@ -37,6 +39,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
+import coil.compose.AsyncImage
+import coil.request.videoFramePercent
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
@@ -52,6 +56,7 @@ import com.wallpaperswitcher.ui.theme.HiEmptyState
 import com.wallpaperswitcher.ui.theme.HiLoadingHint
 import com.wallpaperswitcher.ui.theme.HiMotion
 import com.wallpaperswitcher.ui.theme.LocalAccentColor
+import com.wallpaperswitcher.ui.theme.hiPressScale
 
 /** How often the home screen re-checks whether the live wallpaper engine is alive. */
 private const val ENGINE_STATE_POLL_MS = 5_000L
@@ -60,11 +65,11 @@ private const val ENGINE_STATE_POLL_MS = 5_000L
 private const val MAX_SNOOZE_MINUTES = 7L * 24 * 60
 
 @Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun HomeScreen(
     viewModel: WallpaperViewModel,
     onGroupClick: (Long) -> Unit,
     /** 卡片上的「浏览」小按钮：进大图预览（点卡片仍然是进分组网格）。 */
-    onGroupBrowse: (Long) -> Unit = {},
 ) {
     // Single combined state: entering the home screen subscribes to ONE flow
     // and recomposes once, instead of once per Room-backed flow (the media
@@ -79,6 +84,15 @@ fun HomeScreen(
     // its five-flow overload, and its "已暂停到 HH:mm" line recomposes on its
     // own with this flow.
     val pauseUntil by viewModel.pauseUntil.collectAsStateWithLifecycle()
+    // 首页内嵌「下一张」预览：读 VM 里同一份只读结果（不影响轮换游标）。
+    val nextPreview by viewModel.previewImage.collectAsStateWithLifecycle()
+    // 每 5 秒刷新一次「下一张」：定时/播完切换会让它变化，卡上必须是当前那张。
+    LaunchedEffect(Unit) {
+        while (true) {
+            viewModel.refreshNextPreview()
+            kotlinx.coroutines.delay(5_000)
+        }
+    }
     val mediaStoreRowCount = homeUiState.mediaStoreRowCount
     val context = androidx.compose.ui.platform.LocalContext.current
     // Missing READ_MEDIA_* is invisible otherwise: the switch simply keeps the
@@ -96,6 +110,8 @@ fun HomeScreen(
     val selectedGroupIds =
         remember { androidx.compose.runtime.snapshots.SnapshotStateMap<Long, Boolean>() }
     var confirmDeleteGroups by remember { mutableStateOf(false) }
+    // 引擎运行状态要早于卡片用，所以提到 Column 之前（卡片里要显示"运行信息"）。
+    var engineRunning by remember { mutableStateOf(LiveWallpaperService.engineRunning) }
 
     Column(
         modifier = Modifier
@@ -107,12 +123,13 @@ fun HomeScreen(
             serviceEnabled = serviceEnabled,
             lockTimerEnabled = lockTimerEnabled,
             pauseUntil = pauseUntil,
-            onToggle = { viewModel.toggleService(it) },
+            engineRunning = engineRunning,
             onSwitchNow = { viewModel.switchNow() },
             onSnooze = { viewModel.snooze(it) },
             onSnoozeUntilMorning = { viewModel.snoozeUntilMorning() },
             onResumeNow = { viewModel.resumeNow() },
-            onPreviewNext = { viewModel.previewNext() }
+            // 首页直接内嵌「下一张」预览卡（不再有「预览下一张」按钮）。
+            nextPreview = nextPreview
         )
 
         // The live wallpaper engine is what actually receives timer /
@@ -126,7 +143,6 @@ fun HomeScreen(
         // live-wallpaper picker) so the warning disappears once the engine
         // actually starts.
         val lifecycleOwner = LocalLifecycleOwner.current
-        var engineRunning by remember { mutableStateOf(LiveWallpaperService.engineRunning) }
         DisposableEffect(lifecycleOwner) {
             val observer = LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_RESUME) {
@@ -376,6 +392,8 @@ fun HomeScreen(
             ) {
                 items(groups, key = { it.id }) { group ->
                     GroupCard(
+                        // 分组增删/重排时旧卡片平移让位（1.6 的 animateItemPlacement）。
+                        modifier = Modifier.animateItemPlacement(HiMotion.spatial()),
                         group = group,
                         mediaCount = mediaCounts[group.id] ?: 0,
                         selectionMode = groupSelectionMode,
@@ -401,7 +419,6 @@ fun HomeScreen(
                             }
                         },
                         onToggle = { viewModel.toggleGroupEnabled(group.id, it) },
-                        onBrowse = { onGroupBrowse(group.id) },
                     )
                 }
             }
@@ -488,8 +505,9 @@ fun HomeScreen(
                             // the group grid uses, at a larger size.
                             val request = coil.request.ImageRequest.Builder(context)
                                 .data(android.net.Uri.parse(image.uri))
-                                .size(640, 640)
-                                .crossfade(120)
+                                // 首页预览只需要屏幕上那块大小：640 解码在切回首页那一帧
+                                // 仍要花时间，降到 480 视觉无差。
+                                .size(480, 480)
                                 .apply {
                                     if (image.mediaType == com.wallpaperswitcher.engine.MediaTypes.VIDEO) {
                                         decoderFactory(coil.decode.VideoFrameDecoder.Factory())
@@ -536,12 +554,14 @@ private fun ServiceControlCard(
     serviceEnabled: Boolean,
     lockTimerEnabled: Boolean,
     pauseUntil: Long,
-    onToggle: (Boolean) -> Unit,
     onSwitchNow: () -> Unit,
     onSnooze: (Long) -> Unit,
     onSnoozeUntilMorning: () -> Unit,
     onResumeNow: () -> Unit,
-    onPreviewNext: () -> Unit
+    /** 首页内嵌的「下一张」预览（不再有「预览下一张」按钮）。 */
+    nextPreview: com.wallpaperswitcher.data.WallpaperImage?,
+    /** 壁纸引擎是否在跑（运行信息里显示）。 */
+    engineRunning: Boolean,
 ) {
     // Recompose once a minute so the "已暂停到 14:30" line stays honest without
     // a permanent ticker (a paused timer changes nothing in between).
@@ -654,100 +674,82 @@ private fun ServiceControlCard(
                                     MaterialTheme.colorScheme.onSurface
                             )
                         }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            if (paused) stringResource(
-                                R.string.pause_active_until,
-                                java.text.SimpleDateFormat(
-                                    "HH:mm", java.util.Locale.getDefault()
-                                ).format(java.util.Date(pauseUntil))
-                            )
-                            else if (serviceEnabled) stringResource(R.string.home_hint_running)
-                            else if (lockTimerEnabled) stringResource(R.string.home_hint_lock_only)
-                            else stringResource(R.string.home_hint_stopped),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (serviceEnabled)
-                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f)
-                            else
-                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
-                        )
+                        // 状态说明不再挂在这里：和标题合并成第一行的右侧灰字
+                        // （见 header 的 statusInfo）。
                     }
-                    Switch(
-                        checked = serviceEnabled,
-                        onCheckedChange = onToggle,
-                        thumbContent = {
-                            Icon(
-                                if (serviceEnabled) Icons.Filled.PlayArrow else Icons.Filled.Close,
-                                contentDescription = null,
-                                modifier = Modifier.size(SwitchDefaults.IconSize)
-                            )
-                        }
+                    // 运行信息与状态标题合并到同一行：右侧一小段灰字，形如
+                    // 「自动切换中（仅桌面） · 引擎未运行」。
+                    val stateText = when {
+                        paused -> stringResource(
+                            R.string.home_info_state_paused,
+                            java.text.SimpleDateFormat(
+                                "HH:mm", java.util.Locale.getDefault()
+                            ).format(java.util.Date(pauseUntil))
+                        )
+                        serviceEnabled && lockTimerEnabled ->
+                            stringResource(R.string.home_info_state_home_lock)
+                        serviceEnabled -> stringResource(R.string.home_info_state_home)
+                        lockTimerEnabled -> stringResource(R.string.home_info_state_lock)
+                        else -> stringResource(R.string.home_info_state_stopped)
+                    }
+                    val engineText = if (engineRunning) {
+                        stringResource(R.string.home_info_engine_on_short)
+                    } else {
+                        stringResource(R.string.home_info_engine_off_short)
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Text(
+                        text = "$stateText · $engineText",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (serviceEnabled || lockTimerEnabled)
+                            MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.72f)
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                        textAlign = TextAlign.End,
+                        modifier = Modifier.widthIn(max = 220.dp),
                     )
                 }
 
-                // The manual button also works in static mode, and it is useful
-                // whenever either timer runs.
-                AnimatedVisibility(
-                    visible = serviceEnabled || lockTimerEnabled,
-                    enter = fadeIn(HiMotion.enter()) + expandVertically(HiMotion.enter()),
-                    exit = fadeOut(HiMotion.exit()) + shrinkVertically(HiMotion.exit()),
+                // 排版（用户要求）：
+                //   第一行：状态标题 + 运行信息（合并成一行，右侧灰字）
+                //   缩略图：独占一行（宽图）
+                //   名称 + 「视频」标记：缩略图下面
+                //   立即切换壁纸 / 暂停：缩略图下面
+                Spacer(modifier = Modifier.height(12.dp))
+                NextPreviewCard(nextPreview)
+
+                Spacer(modifier = Modifier.height(12.dp))
+                FilledTonalButton(
+                    onClick = onSwitchNow,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp)
                 ) {
-                    Column {
-                        Spacer(modifier = Modifier.height(14.dp))
-                        FilledTonalButton(
-                            onClick = onSwitchNow,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(16.dp)
-                        ) {
-                            Icon(
-                                Icons.Filled.Refresh,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(stringResource(R.string.action_switch_now))
-                        }
-                        Spacer(modifier = Modifier.height(8.dp))
-                        // 一键暂停 / 下一张预览: both are one tap away from the
-                        // home screen because they are the two things users do
-                        // while looking at the wallpaper right now.
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            FilledTonalButton(
-                                onClick = {
-                                    if (paused) onResumeNow() else showSnoozeDialog = true
-                                },
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(
-                                    if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(
-                                    if (paused) stringResource(R.string.pause_resume_now)
-                                    else stringResource(R.string.home_pause_button)
-                                )
-                            }
-                            FilledTonalButton(
-                                onClick = onPreviewNext,
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Icon(
-                                    Icons.Filled.Visibility,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(stringResource(R.string.home_preview_button))
-                            }
-                        }
-                    }
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(stringResource(R.string.action_switch_now))
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                FilledTonalButton(
+                    onClick = {
+                        if (paused) onResumeNow() else showSnoozeDialog = true
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(
+                        if (paused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        if (paused) stringResource(R.string.pause_resume_now)
+                        else stringResource(R.string.home_pause_button)
+                    )
                 }
             }
         }
@@ -845,20 +847,31 @@ private fun ServiceControlCard(
 @Composable
 private fun GroupCard(
     group: WallpaperGroup,
+    modifier: Modifier = Modifier,
     mediaCount: Int,
     selectionMode: Boolean = false,
     isSelected: Boolean = false,
     onClick: () -> Unit,
     onLongClick: () -> Unit = {},
     onToggle: (Boolean) -> Unit,
-    onBrowse: () -> Unit = {},
 ) {
+    // 按压反馈用的 interactionSource（与下面 combinedClickable 共用）。
+    // 进场淡入（新插入的分组/滚进视野的卡片）。
+    val enterAlpha = com.wallpaperswitcher.ui.theme.rememberEnterAlpha()
+    val cardInteraction = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
     Card(
-        modifier = Modifier
+        modifier = modifier.graphicsLayer { alpha = enterAlpha }
             .fillMaxWidth()
             // Long-press is the usual way into a multi-select list; a plain tap
             // still opens the group (or ticks it while selecting).
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick),
+            // 按压反馈与 HiCard 一致：按下缩到 0.975，松手弹簧回弹（只走 transform）。
+            .hiPressScale(cardInteraction)
+            .combinedClickable(
+                interactionSource = cardInteraction,
+                indication = LocalIndication.current,
+                onClick = onClick,
+                onLongClick = onLongClick,
+            ),
         // HyperOS/Miuix：16dp 圆角、纯色卡片、无描边无阴影，状态靠底色区分。
         shape = RoundedCornerShape(com.wallpaperswitcher.ui.theme.HiDims.CardCorner),
         colors = CardDefaults.cardColors(
@@ -965,16 +978,6 @@ private fun GroupCard(
                 // card's selection toggle.
                 Checkbox(checked = isSelected, onCheckedChange = null)
             } else {
-                // 「浏览」：点卡片进九宫格（整理），点这个小按钮进大图预览
-                // （一张一张挑）。放在开关左边，避免和"启用"这个开关抢注意力。
-                if (mediaCount > 0) {
-                    IconButton(onClick = onBrowse) {
-                        Icon(
-                            Icons.Outlined.PlayCircleOutline,
-                            contentDescription = stringResource(R.string.browse_entry),
-                        )
-                    }
-                }
                 Switch(
                     checked = group.isEnabled,
                     onCheckedChange = onToggle
@@ -1036,3 +1039,119 @@ fun CreateGroupDialog(
         }
     )
 }
+
+/**
+ * 首页内嵌的「下一张」预览卡：直接显示下一张的缩略图，不再有「预览下一张」
+ * 按钮（用户要求）。视频取第 10% 的一帧做封面，避免黑帧。
+ */
+@Composable
+private fun NextPreviewCard(image: com.wallpaperswitcher.data.WallpaperImage?) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val isVideo = image != null && image.mediaType.equals("VIDEO", ignoreCase = true)
+    // 缩略图尺寸跟素材走，而不是写死一个 200dp 的框：
+    //  1) 优先用库里记的 width/height（图片导入时就有）；
+    //  2) 库里没有（视频/老旧行）时，用 Coil 真正解码出来的那张缩略图尺寸，
+    //     拿到后立刻改成对应的宽高比 —— 竖视频就是竖框，横视频就是横框；
+    //  3) 高度再夹到 [PREVIEW_MIN_H, PREVIEW_MAX_H]，竖图不会把整张卡片撑爆。
+    var loadedAspect by remember(image?.uri) { mutableStateOf<Float?>(null) }
+    val aspect = (
+        loadedAspect
+            ?: if (image != null && image.width > 0 && image.height > 0) {
+                image.width.toFloat() / image.height.toFloat()
+            } else {
+                16f / 9f
+            }
+        ).coerceIn(PREVIEW_MIN_ASPECT, PREVIEW_MAX_ASPECT)
+    Column(modifier = Modifier.fillMaxWidth()) {
+        androidx.compose.foundation.layout.BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            // 先按"铺满宽度"算理想高度；超过上限就高度封顶、宽度一起收窄，
+            // 这样缩略图的框始终等于素材宽高比，不会出现左右/上下大片空白。
+            val idealH = maxWidth / aspect
+            val boxH = idealH.coerceAtMost(PREVIEW_MAX_H).coerceAtLeast(PREVIEW_MIN_H)
+            val boxW = (boxH * aspect).coerceAtMost(maxWidth)
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    // 缩略图独占一行：框=素材比例，居中显示。
+                    modifier = Modifier
+                        .width(boxW)
+                        .height(boxH)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surface),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (image != null) {
+                        AsyncImage(
+                            model = coil.request.ImageRequest.Builder(context)
+                        // 远程图片（订阅/WebDAV）：预览卡读本地 480px 缩略图 ——
+                        // 直接给 http 地址会 401（WebDAV 需要 Basic 认证）导致白屏。
+                        .data(
+                            image.thumbPath.takeIf { it.isNotBlank() }
+                                ?.let { java.io.File(it) }
+                                ?: image.uri
+                        )
+                                .apply { if (isVideo) videoFramePercent(0.1) }
+                                .crossfade(true)
+                                .build(),
+                            contentDescription = null,
+                            contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                            // 拿到真实缩略图后按它的宽高比调整框：视频原件常常没有
+                            // 宽高元数据，只有解码出来才知道是竖屏还是横屏。
+                            onSuccess = { success ->
+                                val d = success.result.drawable
+                                if (d.intrinsicWidth > 0 && d.intrinsicHeight > 0) {
+                                    loadedAspect =
+                                        d.intrinsicWidth.toFloat() / d.intrinsicHeight.toFloat()
+                                }
+                            },
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+            }
+        }
+        // 名称 + 「视频」标记：缩略图下面一行。
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = stringResource(R.string.home_next_preview_title),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = image?.displayName?.takeIf { it.isNotBlank() }
+                    ?: stringResource(R.string.home_next_preview_unknown),
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f, fill = false),
+            )
+            if (isVideo) {
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    text = stringResource(R.string.home_next_preview_video),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.12f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 首页「运行信息」：只看不改。原来那个自动切换开关已移除，改为把当前状态
+ * 摊开写在这里（暂停到几点、引擎在不在跑）。
+ */
+
+/** 首页「下一张」缩略图的高度与宽高比范围：竖图不至于撑爆卡片，横图不至于太扁。 */
+private val PREVIEW_MIN_H = 140.dp
+private val PREVIEW_MAX_H = 280.dp
+private const val PREVIEW_MIN_ASPECT = 0.5f   // 1:2 竖图
+private const val PREVIEW_MAX_ASPECT = 2.4f   // ~21:9 横图

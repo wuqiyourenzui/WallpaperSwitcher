@@ -21,10 +21,14 @@ internal object VideoSound {
     private const val MIN_SAMPLE_RATE = 8_000
     private const val MAX_SAMPLE_RATE = 192_000
     /**
-     * Target buffer length. Long enough to cover the video decoder's per-loop
-     * restart (the audio keeps playing from the buffer while the video codec is
-     * rebuilt, which is what makes the loop gapless) and to absorb scheduling
-     * jitter, short enough that a stop/pause is still felt as immediate.
+     * Target buffer length. Long enough to cover scheduling jitter and the
+     * moment between an audio pass ending and the next one starting, short
+     * enough that a stop/pause is still felt as immediate.
+     *
+     * 实测结论（别再靠加大缓冲去补循环缝）：350 与 700 两档跑同一条 8.7s 循环短片，
+     * 边界处"等视频重启"的时长会跟着缓冲一起变长（350 → waited 440ms；700 →
+     * waited 768ms），**缺口恒定 ≈ 视频重启时间 95–121ms**。缺口来自视频侧重启，
+     * 不是缓冲不够；补它要靠边界继续预写（见 VideoAudioPlayer）。
      */
     private const val TARGET_BUFFER_MS = 350
 

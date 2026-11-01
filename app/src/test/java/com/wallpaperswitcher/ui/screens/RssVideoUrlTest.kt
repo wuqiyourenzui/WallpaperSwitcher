@@ -43,7 +43,7 @@ class RssVideoUrlTest {
 
     /** 正文是一整段 HTML（h视频）：从标记里抠出那条地址。 */
     @Test
-    fun playerPageHtmlYieldsTheEmbeddedUrl() {
+    fun playerTaggedHtmlYieldsTheEmbeddedUrl() {
         val html = """
             <html><head>
               <meta name="referrer" content="never"/>

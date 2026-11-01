@@ -64,9 +64,11 @@ data class WallpaperGroup(
      */
     val activeThemeMode: String = "",
     /**
-     * 每分组的筛选: "" = 全部, "IMAGE" = 仅图片, "MOTION" = 仅视频/GIF,
-     * "FAVORITE" = 仅收藏. Applied to the switching queries (and to the group
-     * grid), so a group can be a "videos only" or "favourites only" rotation.
+     * 每分组的筛选: "" = 全部, "IMAGE" = 仅图片, "MOTION" = 仅视频/GIF.
+     * Applied to the switching queries (and to the group grid), so a group can
+     * be a "videos only" rotation. (An old "FAVORITE" value is normalised to ""
+     * by GroupRules.mediaFilter - the 仅收藏 filter was removed with the
+     * favourites feature.)
      */
     val filterMode: String = "",
     /**
@@ -145,12 +147,31 @@ data class WallpaperImage(
     /** EXIF rotation in degrees (0/90/180/270); 0 = none or unknown. */
     val rotationDegrees: Int = 0,
     /**
-     * 收藏: marked by the user (★). 随机/洗牌 can give favourites a higher
-     * weight (see SettingsKeys.FAVORITE_BOOST), and a group can be filtered to
-     * favourites only ([WallpaperGroup.filterMode]).
+     * 收藏列（历史遗留）: the favourites feature was removed, so nothing reads
+     * or writes this any more. It stays in the schema (with its index and the
+     * migrations that created it) because dropping a column would need a full
+     * table rebuild on every existing install - see AppDatabase.
      */
-    val isFavorite: Boolean = false
+    val isFavorite: Boolean = false,
+    /**
+     * 来源：`LOCAL`（本地文件/相册，默认）/ `RSS` / `WEBDAV`。
+     *
+     * 后两种在「图片按需加载」打开时**不入库原图**：`uri` 存远端地址、
+     * `thumbPath` 存本地缩略图；切到这张图时再按需下载（见 RemoteMedia）。
+     */
+    val sourceKind: String = "LOCAL",
+    /** 对应的在线源 id（`online_sources.id`）；本地媒体为 0，用来取认证头。 */
+    val sourceId: Long = 0L,
+    /** 本地缩略图路径（远程图片用；本地媒体为空）。 */
+    val thumbPath: String = "",
 )
+
+/** [WallpaperImage.sourceKind] 的取值。 */
+object MediaSourceKind {
+    const val LOCAL = "LOCAL"
+    const val RSS = "RSS"
+    const val WEBDAV = "WEBDAV"
+}
 
 /**
  * The last media shown on [slot], for "最近 N 张不重复"

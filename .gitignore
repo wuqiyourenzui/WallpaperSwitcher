@@ -15,6 +15,8 @@ local.properties
 /.recover/
 /kt_probe/
 /dsh-fix/
+# legado-E 鍙傝�冨壇鏈細涓婃父 GPL-3.0 浠ｇ爜锛屽彧鐢ㄤ簬鏈湴閫愭瀵圭収锛屼笉闅忔湰椤圭洰鍒嗗彂
+/.legado-e-ref/
 # 璁惧鏃ュ織 / UI dump / 鎴浘 / 鎺㈤拡杈撳嚭
 /emu_*
 /tablet_*.log
@@ -38,3 +40,9 @@ local.properties
 /docs/performance/
 # 绌虹殑鏁ｈ惤鏂囦欢
 /MediaPickTest.kt
+
+# 本地调试产物（不提交）
+.rss-api-usage.txt
+.rss-src-dump.txt
+classes.dex
+

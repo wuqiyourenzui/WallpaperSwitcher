@@ -36,9 +36,27 @@ internal object LegadoRss {
     /** Pages fetched per refresh, so one sync stays cheap. */
     private const val MAX_PAGES_PER_REFRESH = 3
     private const val USER_AGENT = com.wallpaperswitcher.engine.RssHttp.USER_AGENT
+    /** Prefix of an index-based next-page cursor (see [pageCursor]). */
+    private const val PAGE_CURSOR = "page:"
+    /** Separates the next-page address from its page number (see [urlCursor]). */
+    private const val CURSOR_PAGE_SEPARATOR = "|page:"
 
     /** Resolved per request so a proxy change takes effect immediately. */
     private val client: OkHttpClient get() = com.wallpaperswitcher.engine.RssHttp.client
+
+    /**
+     * 给阻塞式 `java.ajax` 兜底用的 client：**独立连接 + 只走 HTTP/1.1**。
+     *
+     * 单连接 HTTP/1.1 没有多路复用，因此不会出现"流被复位"
+     * （`StreamResetException: CANCEL`）。只在共享 client 失败后使用，见
+     * [fetchTextSync]。
+     */
+    private val syncClient: OkHttpClient by lazy {
+        com.wallpaperswitcher.engine.RssHttp.client.newBuilder()
+            .protocols(java.util.Collections.singletonList(okhttp3.Protocol.HTTP_1_1))
+            .connectionPool(okhttp3.ConnectionPool(1, 5, java.util.concurrent.TimeUnit.MINUTES))
+            .build()
+    }
 
     data class Rules(
         val sourceUrl: String,
@@ -275,10 +293,10 @@ internal object LegadoRss {
      * lazily; we mirror that with a cursor so "load more" continues exactly
      * where the previous call stopped.
      *
-     * The cursor is either `page:<n>` (index-based sources: `{{page}}` /
-     * `<a,b,c>` lists / the `PAGE` next-page keyword) or an absolute page URL
-     * (sources whose `ruleNextPage` extracts the next link from the page).
-     * A null [PageResult.nextCursor] means the source has no more pages.
+     * The cursor (see [parseCursor]) is `page:<n>` for index-based sources
+     * (`{{page}}` / `<a,b,c>` lists / the `PAGE` next-page keyword) or
+     * `<url>|page:<n>` when `ruleNextPage` extracts the next address from the
+     * page. A null [PageResult.nextCursor] means the source has no more pages.
      */
     suspend fun fetchPages(
         source: RssSource,
@@ -295,52 +313,47 @@ internal object LegadoRss {
             val category = categories.getOrNull(categoryIndex) ?: categories.firstOrNull()
             val sortName = category?.name.orEmpty()
             val collected = LinkedHashMap<String, FeedParser.ParsedArticle>()
+            // Keyed by "url#page": a `PAGE` source legitimately repeats the same
+            // address for page 2 and 3 (only the page counter moves), so a bare
+            // URL set would stop that pagination on the second page.
             val visited = HashSet<String>()
             val cursor = startCursor?.takeIf { it.isNotBlank() }
-            var page = cursorPage(cursor) ?: 1
-            var currentUrl = cursorUrl(cursor) ?: pageUrl(rules, category, page, source.id)
+            val startAt = parseCursor(cursor)
+            // The page number to fetch first: a `page:<n>` cursor (either the
+            // caller's "load more" cursor or the one this call hands back) names
+            // the page its URL stands for, so it is used as it is.
+            var page = startAt.page ?: 1
+            var currentUrl = startAt.url ?: pageUrl(rules, category, page, source.id)
             // Sites reorganise their categories ("Video Cosplay" now 404s on
             // cosplaytele) and a dead category URL used to leave the whole
             // source empty. Retry the source's own page once, the way 阅读
             // shows the home feed, so the list still has something to show.
             val homeUrl = source.url.trim().takeIf { it.isNotBlank() }
             var usedHomeFallback = false
-            // Index-based sources already know the next URL, so page 2 is
-            // fetched in parallel with page 1 (saves one round trip); the
-            // result is only used when the loop really reaches that page.
-            val pageBased = cursor == null || cursorPage(cursor) != null
-            val parallelRule = category?.nextPageRule?.takeIf { it.isNotBlank() }
-                ?: rules.ruleNextPage
-            val prefetchUrl = if (
-                pageBased && maxPages >= 2 &&
-                parallelRule?.equals("PAGE", ignoreCase = true) == true
-            ) {
-                pageUrl(rules, category, page + 1, source.id)
-            } else {
-                null
-            }
-            val prefetched = prefetchUrl?.let { url ->
-                async(Dispatchers.IO) {
-                    runCatching {
-                        httpGet(
-                            url,
-                            rules.header,
-                            category?.requestJson,
-                            sourceId = source.id,
-                            cookies = rules.enabledCookieJar,
-                        )
-                    }.getOrNull()
-                }
-            }
             var nextCursor: String? = null
+            /** Pages really fetched with HTTP. */
             var fetched = 0
-            while (fetched < maxPages && currentUrl.isNotBlank()) {
+            // The home fallback is a "this category URL is dead" rescue: it runs
+            // at most once per call, only on a fresh read (a "load more" must keep
+            // paging the category the user is looking at) and only for the first
+            // page — a later page that parses empty must not splice the home feed
+            // into the middle of the list.
+            fun canUseHomeFallback(): Boolean =
+                !usedHomeFallback && cursor == null && nextCursor == null &&
+                    homeUrl != null && !samePageUrl(currentUrl, homeUrl)
+            // The fallback round is the one fetch that may exceed the page budget:
+            // an empty first page otherwise consumed the only slot of a
+            // `maxPages = 1` read and the caller got an empty list.
+            var fetchingHomeFallback = false
+            while (
+                (fetched < maxPages || fetchingHomeFallback) &&
+                currentUrl.isNotBlank()
+            ) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
-                if (!visited.add(currentUrl)) {
+                if (!visited.add("$currentUrl#$page")) {
                     nextCursor = null
                     break
                 }
-                fetched++
                 when (OnlineSourceRules.endpointPolicy(currentUrl, allowCleartext = true)) {
                     OnlineSourceRules.EndpointPolicy.NEEDS_HTTPS ->
                         throw FetchException("https_required")
@@ -349,39 +362,47 @@ internal object LegadoRss {
                     OnlineSourceRules.EndpointPolicy.OK -> Unit
                 }
                 val body = try {
-                    if (prefetchUrl != null && currentUrl == prefetchUrl) {
-                        prefetched?.await() ?: httpGet(
-                            currentUrl,
-                            rules.header,
-                            category?.requestJson,
-                            sourceId = source.id,
-                            cookies = rules.enabledCookieJar,
-                        )
-                    } else {
-                        httpGet(
-                            currentUrl,
-                            rules.header,
-                            category?.requestJson,
-                            sourceId = source.id,
-                            cookies = rules.enabledCookieJar,
-                        )
-                    }
+                    // 阅读 fetches one page at a time and never guesses the next
+                    // address: a `PAGE` source's next page is the *same* URL with
+                    // the next `{{page}}`, so a parallel prefetch of "page + 1"
+                    // would download an address the loop may never request.
+                    httpGet(
+                        currentUrl,
+                        rules.header,
+                        category?.requestJson,
+                        sourceId = source.id,
+                        cookies = rules.enabledCookieJar,
+                    ).also { fetched++ }
                 } catch (t: Throwable) {
-                    if (!usedHomeFallback && cursor == null && fetched == 1 &&
-                        homeUrl != null && !samePageUrl(currentUrl, homeUrl)
-                    ) {
-                        usedHomeFallback = true
+                    // A failed *page* fetch (the first one) is a real failure and
+                    // stays visible to the caller. A failed *pagination* fetch is
+                    // not: sources with a stale/dead `ruleNextPage` (「秀人集」的
+                    // 规则会拼出 `new_1.html`，站点回 502) would otherwise get
+                    // 「刷新失败」and an empty list even though page 1 was fine.
+                    // 阅读 stops at the last page it could read, and so do we.
+                    if (collected.isNotEmpty()) {
                         AppLog.w(
                             TAG,
-                            "category '${sortName}' failed " +
-                                "(${t.message?.take(60).orEmpty()}); using $homeUrl",
+                            "next page failed (${t.javaClass.simpleName}); " +
+                                "keeping ${collected.size} item(s)",
                         )
-                        currentUrl = homeUrl
-                        continue
+                        nextCursor = null
+                        break
+                    }
+                    // 阅读 runs `loginCheckJs` again on the *failure* response:
+                    // a script that stands by its 500 means the session is gone
+                    // (report `auth` so the UI offers a fresh login); a silent
+                    // script lets the original error propagate.
+                    val onError = checkLoginScriptOnError(source, rules, t, currentUrl)
+                    if (onError != null && onError.value?.trim() == "500") {
+                        throw FetchException("auth", cause = t)
                     }
                     throw t
                 }
                 checkLoginScript(source, rules, body, currentUrl)
+                // The fallback fetch already happened; the page budget applies
+                // again from here on.
+                fetchingHomeFallback = false
                 val engine = LegadoRuleEngine(
                     baseUrl = currentUrl,
                     variables = rules.variables + mapOf("page" to page.toString()),
@@ -403,15 +424,16 @@ internal object LegadoRss {
                     AppLog.w(TAG, "rule issue: ${error.reason} (${error.rule.take(80)})")
                 }
                 if (items.isEmpty()) {
-                    if (!usedHomeFallback && cursor == null && fetched == 1 &&
-                        homeUrl != null && !samePageUrl(currentUrl, homeUrl)
-                    ) {
+                    if (canUseHomeFallback()) {
                         usedHomeFallback = true
+                        fetchingHomeFallback = true
+                        nextCursor = null
                         AppLog.w(
                             TAG,
                             "category '${sortName}' parsed empty; using $homeUrl",
                         )
-                        currentUrl = homeUrl
+                        currentUrl = homeUrl.orEmpty()
+                        page = 1
                         continue
                     }
                     nextCursor = null
@@ -421,7 +443,7 @@ internal object LegadoRss {
                 for (item in items) {
                     val itemEngine = LegadoRuleEngine(
                         baseUrl = currentUrl,
-                        variables = engineVariables(rules),
+                        variables = engineVariables(rules, page),
                         sourceId = source.id,
                         jsLib = rules.jsLib,
                     )
@@ -431,31 +453,60 @@ internal object LegadoRss {
                 if (reverse) pageArticles.reverse()
                 for (article in pageArticles) collected[article.guid] = article
 
-                // Next page: the category's `|rule`, else ruleNextPage; "PAGE"
-                // means "increment {{page}} / the <a,b,c> list".
-                val nextRule = category?.nextPageRule?.takeIf { it.isNotBlank() }
-                    ?: rules.ruleNextPage
-                nextCursor = when {
-                    nextRule.isNullOrBlank() -> null
-                    nextRule.equals("PAGE", ignoreCase = true) -> "page:${page + 1}"
-                    else -> firstValue(engine, nextRule, body, isUrl = true)
-                        .takeIf { it.isNotBlank() }
-                }
-                if (nextCursor == null) break
-                val nextUrl = cursorUrl(nextCursor)
-                    ?: pageUrl(rules, category, page + 1, source.id)
-                if (nextUrl.isBlank() || nextUrl == currentUrl) {
+                // A rescued read is terminal: the home feed stands in for a dead
+                // category, so continuing from it would mix the home page's own
+                // pages into a list the user sees as that category — and the
+                // cursor would point back at the dead category URL anyway.
+                if (usedHomeFallback) {
                     nextCursor = null
                     break
                 }
+
+                // Next page: the category's `|rule`, else ruleNextPage. 阅读's
+                // `PAGE` sentinel means "same URL, next {{page}}" — it is *not*
+                // a new address, so the next request repeats the current URL
+                // with the page counter of the next request.
+                val nextRule = category?.nextPageRule?.takeIf { it.isNotBlank() }
+                    ?: rules.ruleNextPage
+                val pageRule = nextRule.equals("PAGE", ignoreCase = true)
+                val nextPage = page + 1
+                // `nextUrl` is the address of the next request: `PAGE` renders
+                // the source's own page template for the next page, a link rule
+                // extracted the address from this page.
+                val nextUrl = when {
+                    nextRule.isNullOrBlank() -> null
+                    pageRule -> pageUrl(rules, category, nextPage, source.id)
+                        .takeIf { it.isNotBlank() }
+                    else -> firstValue(engine, nextRule, body, isUrl = true)
+                        .takeIf { it.isNotBlank() }
+                }
+                if (nextUrl == null) {
+                    nextCursor = null
+                    break
+                }
+                // A rule that keeps pointing at the page we just parsed can
+                // never make progress, so the list ends there.
+                if (nextUrl == currentUrl && !pageRule) {
+                    nextCursor = null
+                    break
+                }
+                // The cursor names the page the next request has to use: the
+                // template of a `PAGE` source renders it, and a link remembers
+                // it so `{{page}}` inside that link's options still resolves.
+                nextCursor = if (pageRule) {
+                    pageCursor(nextPage)
+                } else {
+                    urlCursor(nextUrl, nextPage)
+                }
                 currentUrl = nextUrl
-                page++
+                page = nextPage
             }
+            // Never fetched anything (e.g. the caller's cursor was already dead):
+            // report a parse failure instead of an empty list. A page that
+            // answers 200 without items is not an error — the list just ends.
             if (collected.isEmpty() && fetched == 0) {
-                prefetched?.cancel()
                 throw FetchException("parse")
             }
-            prefetched?.cancel()
             PageResult(collected.values.toList(), nextCursor)
         }
 
@@ -466,25 +517,55 @@ internal object LegadoRss {
         val nextCursor: String?,
     )
 
+    /**
+     * What a stored next-page cursor points at. 阅读 keeps the *page number* in
+     * the source URL template and the next *address* in `ruleNextPage`, so the
+     * two are independent and a cursor has to carry both.
+     */
+    data class CursorRef(val page: Int?, val url: String?)
+
+    /**
+     * Parses a stored cursor:
+     *  - `page:<n>` — an index-based source (`PAGE` / `{{page}}` / `<1,2,3>`):
+     *    the address is the source's own page template, rendered with page `n`.
+     *  - `<url>|page:<n>` — a link the page's `ruleNextPage` extracted, plus the
+     *    page number that link stands for.
+     *  - a bare `http(s)://…` — an older cursor written before the page was
+     *    stored with the link (treated as page 1).
+     */
+    fun parseCursor(cursor: String?): CursorRef {
+        val text = cursor?.trim().orEmpty()
+        if (text.isEmpty()) return CursorRef(null, null)
+        if (text.startsWith(PAGE_CURSOR, ignoreCase = true)) {
+            val page = text.substringAfter(':').toIntOrNull()?.coerceAtLeast(1)
+            return CursorRef(page, null)
+        }
+        val (address, pageText) = if (CURSOR_PAGE_SEPARATOR in text) {
+            text.substringBeforeLast(CURSOR_PAGE_SEPARATOR) to
+                text.substringAfterLast(CURSOR_PAGE_SEPARATOR)
+        } else {
+            text to ""
+        }
+        val page = pageText.removePrefix(PAGE_CURSOR).toIntOrNull()?.coerceAtLeast(1)
+        val url = address.trim().takeIf {
+            it.startsWith("http://", ignoreCase = true) ||
+                it.startsWith("https://", ignoreCase = true)
+        }
+        return CursorRef(page, url)
+    }
+
+    /** `page:<n>` — an index-based cursor (see [parseCursor]). */
+    fun pageCursor(page: Int): String = "$PAGE_CURSOR${page.coerceAtLeast(1)}"
+
+    /** `<url>|page:<n>` — a link cursor that remembers its page (see [parseCursor]). */
+    fun urlCursor(url: String, page: Int): String =
+        // `CURSOR_PAGE_SEPARATOR` already ends in `page:`，所以这里只拼页码，
+        // 不能再走 pageCursor（那会拼出 `|page:page:3`，存一次多一层）。
+        "${url.trim()}$CURSOR_PAGE_SEPARATOR${page.coerceAtLeast(1)}"
+
     /** Same page ignoring a trailing slash / a bare "#". */
     private fun samePageUrl(a: String, b: String): Boolean =
         a.trim().trimEnd('/').equals(b.trim().trimEnd('/'), ignoreCase = true)
-
-    /** `page:<n>` cursors carry the 1-based page index. */
-    private fun cursorPage(cursor: String?): Int? {
-        val text = cursor?.takeIf { it.startsWith("page:", ignoreCase = true) } ?: return null
-        return text.substringAfter(':').toIntOrNull()?.coerceAtLeast(1)
-    }
-
-    /** URL cursors carry an absolute page URL. */
-    private fun cursorUrl(cursor: String?): String? {
-        val text = cursor?.trim().orEmpty()
-        if (text.isEmpty()) return null
-        if (text.startsWith("page:", ignoreCase = true)) return null
-        return text.takeIf {
-            it.startsWith("http://", ignoreCase = true) || it.startsWith("https://", ignoreCase = true)
-        }
-    }
 
     private fun articleFrom(
         engine: LegadoRuleEngine,
@@ -517,7 +598,9 @@ internal object LegadoRss {
             }
         }
         val date = firstValue(engine, rules.rulePubDate, item)
-        if (title.isBlank() && link.isBlank()) return null
+        // 阅读's item filter: `if (rssArticle.title.isBlank()) return null` — an
+        // entry without a title is dropped (it renders as an empty row here).
+        if (title.isBlank()) return null
         // 文章页 / 封面需要自定义请求头时存下来：阅读是把选项带在链接上，
         // 我们的链接要落库、要在 WebView 里打开，所以拆出来单独存。
         val requestHeaders = LinkedHashMap<String, String>()
@@ -593,8 +676,15 @@ internal object LegadoRss {
         return ""
     }
 
-    private fun engineVariables(rules: Rules): Map<String, String> =
-        rules.variables + mapOf("page" to "1")
+    /**
+     * Source variables for an item rule, with `page` bound to the page the item
+     * came from. 阅读 binds `page` in `AnalyzeUrl` (the address template), not in
+     * `AnalyzeRule`, so this is an addition: a source that puts `{{page}}` inside
+     * `ruleLink` would otherwise resolve it to the wrong page (and its `guid`
+     * would then differ per page).
+     */
+    private fun engineVariables(rules: Rules, page: Int = 1): Map<String, String> =
+        rules.variables + mapOf("page" to page.toString())
 
     /** Parse the `名称::路径[|下一页规则]` lines of `sortUrl`. */
     fun parseCategories(sortUrl: String?): List<Category> {
@@ -768,10 +858,12 @@ internal object LegadoRss {
         } ?: false
 
     /**
-     * 阅读 evaluates `loginCheckJs` on every fetched response (list and
-     * content): the script sees the body as `result` and either throws or
-     * returns false when the session is no longer valid. That turns into an
-     * `auth` failure so the UI can prompt for a fresh login.
+     * 阅读 runs `loginCheckJs` on every fetched response (list and content) with
+     * the body bound to `result`. The script is a *detector*: it either throws or
+     * turns the response into a 500 when the session is gone. A plain `false`
+     * return is not a failure — `阅读` only re-throws what the script threw, so a
+     * source whose check script returns a boolean would otherwise be reported as
+     * 「需要登录」 on perfectly good pages.
      */
     fun checkLoginScript(source: RssSource, rules: Rules?, body: String, url: String) {
         val check = rules?.loginCheckJs ?: loginCheckJs(source) ?: return
@@ -783,12 +875,42 @@ internal object LegadoRss {
             jsLib = rules?.jsLib,
         )
         val value = outcome.value?.trim()
-        if (outcome.error != null || value == "false" || value == "0" ||
-            value == "null" || value == "undefined"
-        ) {
+        // 阅读-compatible trigger: the script itself failed, or it replaced the
+        // response with a 500 (its documented way of saying "not logged in").
+        val failed = outcome.error != null || value == "500"
+        if (failed) {
             AppLog.w(TAG, "login check failed: ${outcome.error ?: value}")
             throw FetchException("auth")
         }
+    }
+
+    /**
+     * 阅读 re-runs `loginCheckJs` on the *failed* request too: the check script
+     * gets the error as `result` and can turn it into a response — only a `500`
+     * of its own means 「登录失效」 and keeps the original error; a script that
+     * stays silent lets the real (network/HTTP) error surface. Returns the
+     * script outcome, or null when the source has no check script.
+     */
+    private fun checkLoginScriptOnError(
+        source: RssSource,
+        rules: Rules?,
+        error: Throwable,
+        url: String,
+    ): LegadoJs.Result? {
+        val check = rules?.loginCheckJs ?: loginCheckJs(source) ?: return null
+        val outcome = LegadoJs.run(
+            script = check,
+            bindings = mapOf("result" to error.message.orEmpty()),
+            baseUrl = url,
+            sourceId = source.id,
+            jsLib = rules?.jsLib,
+        )
+        AppLog.d(
+            TAG,
+            "login check on error(${error.javaClass.simpleName}) -> " +
+                "${outcome.value?.take(40) ?: outcome.error}",
+        )
+        return outcome
     }
 
     /** The JS body of a `@js:` / `<js>` login script. */
@@ -1067,6 +1189,53 @@ internal object LegadoRss {
     /** Synchronous GET for `java.ajax(...)` inside JS rules. */
     fun fetchTextSync(url: String): String {
         val (plainUrl, option) = UrlOptions.split(url)
+        return try {
+            fetchTextSyncOnce(com.wallpaperswitcher.engine.RssHttp.client, plainUrl, option)
+        } catch (t: Throwable) {
+            // 只有**传输层**失败才值得换一条连接重试 —— 典型就是
+            // `StreamResetException: stream was reset: CANCEL`：HTTP/2 的流被复位，
+            // 阻塞路径取不到正文（列表用 suspend 路径却没事），rou.video 的
+            // `ruleContent` 就是这么"点开没内容"的。
+            //
+            // **HTTP 状态码不重试**：图集规则会故意往后多探几页，站点对"超出图集末尾"
+            // 的 `_N.html` 一律回 502 —— 那是规则的一部分。给 502 再发一次请求既没用
+            // 又白刷一行日志（实测秀人集每次抓取都会走一次）。
+            val transportFailure = t !is com.wallpaperswitcher.engine.FetchException ||
+                t.httpStatus == 0
+            if (!transportFailure) throw t
+            // 独立连接 + 只跑 HTTP/1.1：单连接没有多路复用，也就没有会被复位的"流"。
+            AppLog.w(
+                TAG,
+                "java.ajax failed on the shared client (${t.javaClass.simpleName}); " +
+                    "retrying over a dedicated HTTP/1.1 connection url=${plainUrl.take(110)}",
+            )
+            try {
+                val body = fetchTextSyncOnce(syncClient, plainUrl, option)
+                // 兜底成功：说明"共享 client + 阻塞调用"这条路确实有问题，而
+                // 独立 HTTP/1.1 连接能救回来。带上字节数便于判断正文是否完整。
+                AppLog.d(
+                    TAG,
+                    "java.ajax retry OK over HTTP/1.1: ${body.length}B url=${plainUrl.take(110)}",
+                )
+                body
+            } catch (retry: Throwable) {
+                // 兜底也失败：把两次的原因都记下来，避免又变成"只有一句失败"。
+                AppLog.w(
+                    TAG,
+                    "java.ajax retry FAILED (${retry.javaClass.simpleName}: " +
+                        "${retry.message?.take(80)}) url=${plainUrl.take(110)}",
+                )
+                throw retry
+            }
+        }
+    }
+
+    /** 单次阻塞 GET。[client] 由调用方决定（共享 client / 独立 HTTP/1.1 client）。 */
+    private fun fetchTextSyncOnce(
+        client: OkHttpClient,
+        plainUrl: String,
+        option: UrlOption,
+    ): String {
         val request = try {
             Request.Builder().url(plainUrl).header("User-Agent", USER_AGENT)
         } catch (t: Throwable) {

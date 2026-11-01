@@ -92,7 +92,20 @@ class RssSourceEditorTest {
              "enabledCookieJar":false,"sourceGroup":"g","ruleArticles":"x",
              "enableJs":true,"preload":false,"style":"body{}","sourceIcon":"i.png"}
         """.trimIndent()
+        // enableJs / style / sourceIcon 现在有了自己的页签字段（阅读也是这样分组），
+        // 所以它们不再出现在「其余字段」兜底区；preload 仍然只有兜底区能改到。
+        // 这条断言守的是：**没被编辑器标名的键必须仍然被兜底区列出来**。
         val keys = RssSourceEditor.remainingKeys(json)
-        assertEquals(listOf("enableJs", "preload", "style", "sourceIcon"), keys)
+        assertEquals(listOf("preload"), keys)
+    }
+
+    @Test
+    fun everyLabelledTabFieldIsActuallyCoveredByTheFallbackRule() {
+        // 四个页签里的字段不该重复出现在兜底区（否则同一个键会有两个输入框）。
+        val all = RssSourceEditor.TAB_BASE_FIELDS + RssSourceEditor.TAB_START_FIELDS +
+            RssSourceEditor.TAB_LIST_FIELDS + RssSourceEditor.TAB_WEB_FIELDS +
+            RssSourceEditor.WEB_BOOL_FIELDS
+        val json = "{" + all.joinToString(",") { """"$it":"v"""" } + "}"
+        assertEquals(emptyList<String>(), RssSourceEditor.remainingKeys(json))
     }
 }

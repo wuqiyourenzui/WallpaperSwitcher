@@ -70,8 +70,6 @@ class LiveWallpaperService : WallpaperService() {
         const val SOURCE_UNLOCK = "unlock"
         /** 视频播完再切: the held timed switch, run when the clip ends. */
         const val SOURCE_VIDEO_END = "video-end"
-        /** 顺序=新的在前 (see WallpaperGroup.sortOrder). */
-        private const val SORT_NEWEST = "NEWEST"
         const val SOURCE_MANUAL = "manual"
         const val SOURCE_DOUBLE_TAP = "double-tap"
         /** User tapped 下一张 on the foreground notification. */
@@ -210,6 +208,16 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile private var previewPickHomeId = -1L
         @Volatile private var previewPickAtMs = 0L
         /**
+         * 同一次「设为动态壁纸」里**分组游标**的旧值，用于取消时回滚：
+         * 顺序模式取的是 `group_schedule.lastMediaId`，那次点击也把它写成了被选的
+         * 那张。用户在系统预览页按取消时，必须连这个游标一起还原 —— 否则顺序会
+         * 从"用户其实没确认的那张"往下走，白白跳过一张。
+         *
+         * -1 = 这次没有写过分组游标（非顺序模式 / 没有分组），不需要回滚。
+         */
+        @Volatile private var previewPickGroupId = -1L
+        @Volatile private var previewPickPreviousGroupMediaId = -1L
+        /**
          * True when a REAL (non-preview) engine was created after the current
          * pick - i.e. the user confirmed the system dialog. Decided by the engine
          * creation itself, not by the delayed cancel heuristic, so it is correct
@@ -234,6 +242,16 @@ class LiveWallpaperService : WallpaperService() {
         }
 
         /**
+         * 记下这次「设为动态壁纸」写掉的分组游标旧值，供取消时回滚
+         * （见 [previewPickGroupId] 与 [restoreHomeCursorAfterCancelledPick]）。
+         * 没写分组游标时传 -1。
+         */
+        fun notePreviewPickGroupCursor(groupId: Long, previousMediaId: Long) {
+            previewPickGroupId = groupId
+            previewPickPreviousGroupMediaId = previousMediaId
+        }
+
+        /**
          * True while a tap-to-set may still be cancelled: the engine must not
          * apply the cursor the picker's preview moved (see notePreviewPick).
          */
@@ -248,6 +266,8 @@ class LiveWallpaperService : WallpaperService() {
             previewPickHomeId = -1L
             previewPickAtMs = 0L
             realApplySincePick = false
+            previewPickGroupId = -1L
+            previewPickPreviousGroupMediaId = -1L
         }
 
         /**
@@ -287,6 +307,9 @@ class LiveWallpaperService : WallpaperService() {
             val previous = previewPickPreviousHomeId
             val picked = previewPickHomeId
             val confirmed = realApplySincePick
+            // 分组游标也要回滚：顺序模式读的是它，不回滚就等于用户"确认"了那张。
+            val groupId = previewPickGroupId
+            val previousGroupMedia = previewPickPreviousGroupMediaId
             clearPendingPreviewPick()
             // A real engine appeared since the pick: the user confirmed, the
             // cursor is exactly where it belongs.
@@ -294,10 +317,35 @@ class LiveWallpaperService : WallpaperService() {
             val appContext = context.applicationContext
             ioScope.launch {
                 try {
-                    val dao = AppDatabase.getInstance(appContext).settingsDao()
+                    val db = AppDatabase.getInstance(appContext)
+                    val dao = db.settingsDao()
                     val current = dao.getLong(SettingsKeys.LAST_IMAGE_ID, 0L)
                     if (current != picked) return@launch
                     dao.setLong(SettingsKeys.LAST_IMAGE_ID, previous.coerceAtLeast(0L))
+                    // 分组游标：只在它还是被取消的那张时才还原（期间可能已经有
+                    // 定时切换把它往前推过，那就不要再动它）。
+                    if (groupId > 0L) {
+                        try {
+                            val scheduleDao = db.groupScheduleDao()
+                            val slot = WallpaperTarget.SLOT_HOME
+                            val row = scheduleDao.get(groupId, slot)
+                            if (row?.lastMediaId == picked) {
+                                scheduleDao.ensureRow(groupId, slot)
+                                scheduleDao.updateLastMedia(
+                                    groupId,
+                                    slot,
+                                    if (previousGroupMedia >= 0L) previousGroupMedia else 0L,
+                                    System.currentTimeMillis(),
+                                )
+                                AppLog.d(
+                                    TAG,
+                                    "Pick cancelled: group $groupId cursor rolled back to " +
+                                        "${if (previousGroupMedia >= 0L) previousGroupMedia else 0L}",
+                                )
+                            }
+                        } catch (_: Throwable) {
+                        }
+                    }
                     AppLog.d(
                         TAG,
                         "Pick cancelled: HOME cursor restored to ${previous.coerceAtLeast(0L)}"
@@ -725,6 +773,44 @@ class LiveWallpaperService : WallpaperService() {
             host = object : SwitchQueue.Host {
                 override fun isUserTapSource(source: String): Boolean =
                     this@LiveWallpaperEngine.isUserTapSource(source)
+                /**
+                 * 视频播完再切：定时 tick 撞上视频时整次丢弃（连"Switch start"
+                 * 都不打），视频的切换只由播完计数触发。图片照常按定时切。
+                 */
+                override suspend fun skipTimedSwitchForVideo(source: String): Boolean {
+                    if (source != SOURCE_TIMER) return false
+                    if (!::db.isInitialized) return false
+                    val dao = try {
+                        db.settingsDao()
+                    } catch (_: Exception) {
+                        return false
+                    }
+                    val optionOn = try {
+                        dao.getBool(SettingsKeys.VIDEO_PLAY_TO_END, false)
+                    } catch (_: Exception) {
+                        false
+                    }
+                    val decision = SwitchPicking.timerWithVideo(
+                        optionEnabled = optionOn,
+                        videoActive = switchExec.isVideoActive(),
+                        consecutiveDrops = timerDropCount,
+                        dropLimit = switchExec.timerDropLimit,
+                    )
+                    if (decision == SwitchPicking.TimerWithVideo.DROP) {
+                        timerDropCount += 1
+                        AppLog.d(
+                            TAG,
+                            "Timed switch skipped: the video switches after its own passes" +
+                                " (drops=$timerDropCount)"
+                        )
+                        return true
+                    }
+                    if (timerDropCount > 0) {
+                        AppLog.d(TAG, "Timed switch allowed after $timerDropCount skipped ticks")
+                        timerDropCount = 0
+                    }
+                    return false
+                }
                 override fun isSwitchInProgress(): Boolean = switchInProgress
                 override fun switchStartedAt(): Long = switchStartedAt
                 override fun markSwitchStarted() {
@@ -795,18 +881,17 @@ class LiveWallpaperService : WallpaperService() {
         @Volatile private var switchStartedAt = 0L
     @Volatile private var lastSwitchCompletedAt = 0L
     /**
-     * 视频播完再切: a timed switch that arrived while a video was playing is
-     * held here and executed by [onVideoPassCompleted] instead of cutting the
-     * clip off. Manual switches never set it - a tap must act immediately.
+     * 视频播完再切: 连续被丢弃的定时 tick 数（视频正在播时定时不做切换）。
+     * 每完成一次视频 pass 清零；超过上限放行一次，见
+     * [SwitchPicking.timerWithVideo]。
      */
-    @Volatile private var pendingVideoEndSwitch = false
+    @Volatile private var timerDropCount = 0
     /**
-     * The group the held timed switch belongs to: when the clip finally ends,
-     * the switch must continue that group's rotation instead of falling back
-     * to the screen-wide media pool (which knows nothing about the group's
-     * 仅图片 / 仅视频 filter).
+     * 视频播完再切（与定时切换解耦）: 当前这段视频已经完整播完的次数，以及
+     * 它是哪一条媒体。换到别的视频时计数清零（见 [maybeSwitchAfterVideoPass]）。
      */
-    @Volatile private var pendingVideoEndGroupId = 0L
+    @Volatile private var videoPassCount = 0
+    @Volatile private var videoPassMediaId = -1L
     /**
      * Media id + position (µs) to resume at, remembered when the video session is
      * released while the device is locked (see `scheduleMediaReleaseWhileLocked`).
@@ -897,6 +982,8 @@ class LiveWallpaperService : WallpaperService() {
          * first surface event, which can happen after the settings flow emitted.
          */
         @Volatile private var videoSoundSetting = false
+    /** 视频循环播放（默认开）：关掉后视频只播一遍停在最后一帧，播完再切也失效。 */
+    @Volatile private var videoLoopSetting = true
         @Volatile private var lastDisplayedId = 0L
 
         private var cachedScreenW = 0f
@@ -1238,15 +1325,10 @@ class LiveWallpaperService : WallpaperService() {
                     override fun setFadePendingForFirstFrame(value: Boolean) {
                         this@LiveWallpaperEngine.fadePendingForFirstFrame = value
                     }
-                    override fun pendingVideoEndSwitch(): Boolean =
-                        this@LiveWallpaperEngine.pendingVideoEndSwitch
-                    override fun setPendingVideoEndSwitch(value: Boolean) {
-                        this@LiveWallpaperEngine.pendingVideoEndSwitch = value
-                    }
-                    override fun pendingVideoEndGroupId(): Long =
-                        this@LiveWallpaperEngine.pendingVideoEndGroupId
-                    override fun setPendingVideoEndGroupId(value: Long) {
-                        this@LiveWallpaperEngine.pendingVideoEndGroupId = value
+                    override fun timerDropCount(): Int =
+                        this@LiveWallpaperEngine.timerDropCount
+                    override fun setTimerDropCount(value: Int) {
+                        this@LiveWallpaperEngine.timerDropCount = value
                     }
                     override suspend fun applyClarityMode() =
                         this@LiveWallpaperEngine.applyClarityMode()
@@ -1349,6 +1431,16 @@ class LiveWallpaperService : WallpaperService() {
                         val enabled = value?.toBooleanStrictOrNull() == true && !isPreview
                         videoSoundSetting = enabled
                         renderer?.applyVideoSound(enabled)
+                    }
+                } catch (_: Exception) {}
+            }
+            // 视频循环播放（默认开）：关掉后视频播完一遍就停在最后一帧。
+            scope.launch {
+                try {
+                    db.settingsDao().getValueFlow(SettingsKeys.VIDEO_LOOP_ENABLED).collect { value ->
+                        val loop = value?.toBooleanStrictOrNull() ?: true
+                        videoLoopSetting = loop
+                        renderer?.videoLoopEnabled = loop
                     }
                 } catch (_: Exception) {}
             }
@@ -1486,6 +1578,7 @@ class LiveWallpaperService : WallpaperService() {
                         // Sound only for the real wallpaper (never for the
                         // picker's preview engine), and only when enabled.
                         it.videoSoundEnabled = videoSoundSetting && !isPreview
+                        it.videoLoopEnabled = videoLoopSetting
                         // The engine may be (re)created while our own UI is
                         // already in the foreground - MIUI tears the wallpaper
                         // down and instantiates it again all the time, and the
@@ -1509,37 +1602,18 @@ class LiveWallpaperService : WallpaperService() {
                             AppLog.d(TAG, "Preview engine: sharpening off (picker composition)")
                         }
                         it.onVideoStartFailed = {
-                            // A clip that never started (or whose decode gave
-                            // up / stalled) can never complete a pass, so a
-                            // held timed switch waiting on it must be cleared
-                            // here. Otherwise the hold leaked and every later
-                            // timed tick was dropped forever ("still held"
-                            // spam with the wallpaper frozen on a fallback
-                            // frame); the next tick switches normally again.
-                            if (pendingVideoEndSwitch) {
-                                pendingVideoEndSwitch = false
-                                pendingVideoEndGroupId = 0L
-                                AppLog.d(
-                                    TAG,
-                                    "Held timed switch released: the video failed to start"
-                                )
-                            }
+                            // 视频起不来就永远播不完：把「定时被丢弃」的计数清零，
+                            // 下一次定时 tick 就能正常切走，不会被这个坏片段永久挡住。
+                            timerDropCount = 0
                             recovery.onVideoStartFailed()
                         }
-                        // 视频播完再切: a timed switch that arrived while the
-                        // clip was playing runs here, at the end of the pass.
+                        // 视频播完再切：每段播完都交给计数判断，定时切换不再参与
+                        // 视频的切换（见 maybeSwitchAfterVideoPass）。
                         it.onVideoPassCompleted = {
-                            if (pendingVideoEndSwitch) {
-                                pendingVideoEndSwitch = false
-                                val heldGroupId = pendingVideoEndGroupId
-                                pendingVideoEndGroupId = 0L
-                                AppLog.d(
-                                    TAG,
-                                    "Video pass finished: running the held timed switch" +
-                                        if (heldGroupId > 0L) " (group=$heldGroupId)" else ""
-                                )
-                                switchQueue.request(SOURCE_VIDEO_END, null, heldGroupId)
-                            }
+                            // 能播完一整个 pass = 视频是健康的：把因"定时撞上视频"
+                            // 而丢弃的 tick 计数清零。
+                            timerDropCount = 0
+                            scope.launch { maybeSwitchAfterVideoPass() }
                         }
                         // Fade in when the video's first frame is really on
                         // screen, not when the decode thread merely started.
@@ -1819,6 +1893,77 @@ class LiveWallpaperService : WallpaperService() {
 
         internal fun refreshFloatingButtonNow() {
             floating.update()
+        }
+
+        /**
+         * 视频播完再切（独立于定时切换）: 这一段播完后决定要不要换一张。
+         *
+         * 与 [SwitchExecutor] 里的定时 hold 分开：那条只解决"定时 tick 别把
+         * 视频切断"，这条解决"视频自己播完就该换"，所以**不看定时开关**——
+         * 定时关着也照切。计数按「当前媒体」分组：换到别的视频就从头数。
+         */
+        private suspend fun maybeSwitchAfterVideoPass() {
+            if (!::db.isInitialized || isPreview) return
+            // 循环播放关掉时视频不会再有下一遍：播完就停帧，这条切换不生效。
+            if (!videoLoopSetting) {
+                AppLog.d(TAG, "Video pass finished: loop playback is off, not switching")
+                return
+            }
+            val dao = try {
+                db.settingsDao()
+            } catch (_: Exception) {
+                return
+            }
+            val enabled = try {
+                dao.getBool(SettingsKeys.VIDEO_PLAY_TO_END, false)
+            } catch (_: Exception) {
+                false
+            }
+            if (!enabled) {
+                videoPassCount = 0
+                return
+            }
+            val repeats = try {
+                // 用户可填任意正整数；Long 转 Int 时先夹到 Int 范围，避免溢出成负数。
+                dao.getLong(
+                    SettingsKeys.VIDEO_PLAY_TO_END_REPEATS,
+                    SettingsKeys.VIDEO_PLAY_TO_END_REPEATS_DEFAULT.toLong(),
+                ).coerceIn(1L, Int.MAX_VALUE.toLong()).toInt()
+            } catch (_: Exception) {
+                SettingsKeys.VIDEO_PLAY_TO_END_REPEATS_DEFAULT
+            }
+            val shownId = lastDisplayedId
+            if (shownId != videoPassMediaId) {
+                videoPassMediaId = shownId
+                videoPassCount = 0
+            }
+            val due = SwitchPicking.videoEndSwitchDue(
+                optionEnabled = true,
+                repeats = repeats,
+                passesThisClip = videoPassCount,
+            )
+            if (!due) {
+                videoPassCount += 1
+                AppLog.d(
+                    TAG,
+                    "Video pass finished: ${videoPassCount}/${repeats.coerceAtLeast(1)}, keep playing"
+                )
+                return
+            }
+            videoPassCount = 0
+            // 切回这段视频所属的分组：分组取片要更新该组的游标（group_schedule
+            // 的 lastMediaId），传 0 会绕过这份记账，导致同一个分组反复给出同一
+            // 张（实测：连点/连续切换都落在同一个 id 上，看起来"没换"）。
+            val groupId = try {
+                db.wallpaperImageDao().getImageById(shownId)?.groupId ?: 0L
+            } catch (_: Exception) {
+                0L
+            }
+            AppLog.d(
+                TAG,
+                "Video pass finished: switching (repeats=$repeats group=$groupId)"
+            )
+            switchQueue.request(SOURCE_VIDEO_END, null, groupId)
         }
 
         override fun onVisibilityChanged(visible: Boolean) {
@@ -2304,12 +2449,33 @@ class LiveWallpaperService : WallpaperService() {
         private suspend fun resolveUserTapGroup(req: SwitchRequest): Long {
             if (req.targetId != null || req.groupId > 0L) return req.groupId
             if (!isUserTapSource(req.source)) return 0L
-            // 手动触发跟随全局切换模式，不再先挑一个分组：
-            //  - 随机 / 洗牌：在所有启用分组（时间规则允许的）的媒体池里取；
-            //  - 顺序：从当前图片开始，本组走完 → 下一个分组。
-            // 以前这里按「等得最久」挑一个分组再切，结果随机/洗牌退化成按分组
-            // 轮转（用户看到的 28→29→32 循环），顺序模式也永远走不到逐组推进。
-            return 0L
+            // 手动触发**跟随分组调度**（用户决定），但**只有顺序模式**这样做：
+            // 点「换一张」/ 悬浮按钮 / 双击时用的就是下一次定时切换会用的那个分组，
+            // 于是分组自己的 仅图片 / 仅视频 过滤和它自己的媒体游标也对手动切换生效，
+            // 「下一张预览」和这一下点击指向同一张。
+            //
+            // 随机 / 洗牌必须留在屏幕级池（返回 0）：按分组解析会把它们变成严格
+            // 的分组轮转（用户看到的 28→29→32 循环），这正是当初删掉分组级 tick
+            // 的原因，也和 WallpaperSwitchService.nextScreenTick 的分流保持一致。
+            val sequential = try {
+                val settingsDao = com.wallpaperswitcher.data.AppDatabase
+                    .getInstance(this@LiveWallpaperService).settingsDao()
+                com.wallpaperswitcher.data.SwitchMode.valueOf(
+                    settingsDao.getString(
+                        com.wallpaperswitcher.data.SettingsKeys.GLOBAL_SWITCH_MODE,
+                        com.wallpaperswitcher.data.SwitchMode.RANDOM.name,
+                    )
+                ) == com.wallpaperswitcher.data.SwitchMode.SEQUENTIAL
+            } catch (_: Throwable) {
+                false
+            }
+            if (!sequential) return 0L
+            return try {
+                com.wallpaperswitcher.engine.GroupSchedulePlan
+                    .nextHomeGroupId(this@LiveWallpaperService)
+            } catch (_: Throwable) {
+                0L
+            }
         }
 
         // 一次切换的完整流程见 [SwitchExecutor]；引擎只提供渲染状态与三个渲染动作。

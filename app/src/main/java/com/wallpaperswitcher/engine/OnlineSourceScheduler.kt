@@ -31,6 +31,11 @@ object OnlineSourceScheduler {
     fun uniqueName(id: Long): String = "$PREFIX$id"
 
     fun schedule(context: Context, source: OnlineSource) {
+        // 只调度 WebDAV：内置「在线壁纸源」已下线，别再定时下载图片。
+        if (source.type != OnlineSource.TYPE_WEBDAV) {
+            cancel(context, source.id)
+            return
+        }
         if (!source.enabled) {
             cancel(context, source.id)
             return
@@ -92,16 +97,20 @@ object OnlineSourceScheduler {
      * right constraints.
      */
     suspend fun ensureScheduled(context: Context) {
-        OnlineBuiltins.ensureSources(context)
+        // 不再重建内置源行：它们已由 MIGRATION_16_17 从库里删除，也不该再出现。
         val sources = try {
             AppDatabase.getInstance(context).onlineSourceDao().getAll()
         } catch (_: Throwable) {
             return
         }
-        val scheduledIds = OnlineBuiltins.builtinEnabled(sources).map { it.id }.toHashSet()
+        // 只认 WebDAV（内置源已下线；旧行只取消排期，不删已下载内容）。
+        val scheduledIds = sources
+            .filter { it.enabled && it.type == OnlineSource.TYPE_WEBDAV }
+            .map { it.id }
+            .toHashSet()
         for (source in sources) {
-            // 只调度「设置 → 在线壁纸源」里的内置源；旧版遗留的 URL/WebDAV/
-            // 美人图行保持原样（不排期，也不删除已下载的内容）。
+            // 只调度 WebDAV 源；其它旧行（内置源/URL/美人图）一律取消排期，
+            // 但不删除它们已经下载的内容。
             if (source.id in scheduledIds) {
                 schedule(context, source)
             } else {

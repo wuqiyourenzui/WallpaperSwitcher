@@ -58,4 +58,22 @@ object HiMotion {
     /** 按压反馈：快速、有回弹。 */
     fun <T> press(): FiniteAnimationSpec<T> =
         spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessHigh)
+
+    // --- Material 3 Expressive 风格的空间动效（弹簧令牌）----------------------------
+    // 参考 M3 2024/2025 的 motion 规范：空间（位置/尺寸/缩放）用弹簧而不是 tween，
+    // 因为弹簧在被打断（快速连点、切 Tab）时天然连续，不会出现"重头再来"的顿挫。
+    // 这里的 damping/stiffness 取规范里 fast/default/slow 三档的近似值。
+    // https://m3.material.io/styles/motion/overview/specs
+
+    /** 空间·快（小面积位移、按压回弹、Tab 内元素）。 */
+    fun <T> spatialFast(): FiniteAnimationSpec<T> =
+        spring(dampingRatio = 0.9f, stiffness = 800f)
+
+    /** 空间·默认（页面位移、卡片展开）。 */
+    fun <T> spatial(): FiniteAnimationSpec<T> =
+        spring(dampingRatio = 0.9f, stiffness = 600f)
+
+    /** 空间·慢（大面积/整页）。 */
+    fun <T> spatialSlow(): FiniteAnimationSpec<T> =
+        spring(dampingRatio = 0.85f, stiffness = 320f)
 }

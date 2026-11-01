@@ -6,50 +6,58 @@ package com.wallpaperswitcher.engine
  */
 object SwitchPicking {
 
-    /** 视频播完再切: what a TIMED tick must do while the option is on. */
-    enum class VideoEndHold {
-        /** No hold needed (option off, or no video on screen): switch now. */
+    /** 视频播完再切: 定时 tick 撞上视频时只能二选一。 */
+    enum class TimerWithVideo {
+        /** 照常切换（选项关着，或屏幕上不是视频，或是兜底放行）。 */
         SWITCH_NOW,
-        /** First tick of this clip: remember it and wait for the pass to end. */
-        HOLD_PENDING,
-        /** A hold is already waiting: drop every later tick until the pass ends. */
-        DROP_TICK,
+        /** 丢掉这次 tick：视频的切换交给播完计数。 */
+        DROP,
     }
 
     /**
-     * 视频播完再切: decide what a timed tick does while [videoPlaying].
+     * 视频播完再切: 定时 tick 撞上视频时怎么办。
      *
-     * [holdPending] must *drop* the tick rather than let it through while the
-     * clip is genuinely on screen. The first implementation returned early only
-     * while no hold was pending, so the SECOND interval fell through and cut
-     * the clip off mid-pass - exactly the "视频播完再切还是会被定时切换" report.
-     * Manual / unlock switches never call this (they must act immediately).
+     * 规则（用户要求）：选项开着时**视频的切换只由"播完 N 次"决定**，定时切换
+     * 不得插手——不是"等这一段播完再切"（那会让视频只播一遍就被换掉，次数
+     * 设置等于失效），而是整次 tick 丢掉；切到图片之后，图片照常按定时切。
      *
-     * A pending hold is only meaningful while a video is actually playing: it
-     * is released by the engine's onVideoPassCompleted when the pass ends. If the clip
-     * left the screen without completing a pass - it failed to start, the
-     * decode thread gave up, or a manual switch replaced it - no completion
-     * will ever arrive, so this tick must *release* the stale hold and switch
-     * normally instead of dropping every future tick forever (the emulator
-     * deadlock where timed switching stopped until the option was toggled).
-     * The "isVideoPlaying blinks between passes" case is not lost: the
-     * completion callback clears the hold at the pass boundary before the
-     * next pass starts, so a blink can only be seen here when the pass really
-     * never completed.
+     * [consecutiveDrops] 是连续被丢掉的 tick 数，每完成一个 pass 由引擎清零。
+     * 超过 [dropLimit] 时放行一次：视频起不来/一直播不完时不能把定时切换
+     * 永久挡住（旧实现里"hold 泄漏"正是这么卡死的）。
+     *
+     * 手动 / 解锁 / 双击 / 悬浮按钮切换从不调用这里，始终立即生效。
      */
-    fun videoEndHold(
+    fun timerWithVideo(
         optionEnabled: Boolean,
-        videoPlaying: Boolean,
-        holdPending: Boolean,
-    ): VideoEndHold = when {
-        // Turning the option off releases a hold that was already waiting.
-        !optionEnabled -> VideoEndHold.SWITCH_NOW
-        // A hold waits for the pass to end only while the video is on screen;
-        // a hold with no video playing is stale (failed / superseded clip) and
-        // must be released, or timed switching stops for good.
-        holdPending && videoPlaying -> VideoEndHold.DROP_TICK
-        videoPlaying -> VideoEndHold.HOLD_PENDING
-        else -> VideoEndHold.SWITCH_NOW
+        videoActive: Boolean,
+        consecutiveDrops: Int,
+        dropLimit: Int,
+    ): TimerWithVideo = when {
+        !optionEnabled -> TimerWithVideo.SWITCH_NOW
+        !videoActive -> TimerWithVideo.SWITCH_NOW
+        consecutiveDrops >= dropLimit.coerceAtLeast(1) -> TimerWithVideo.SWITCH_NOW
+        else -> TimerWithVideo.DROP
+    }
+
+    /**
+     * 视频播完再切（与定时切换解耦）: 这一段播完之后要不要换一张。
+     *
+     * 与 [timerWithVideo] 的分工：那个只管「定时 tick 要不要丢掉」，
+     * 这个管「视频自己播完就切」——所以**不看定时开关**，只要求选项开着且
+     * 这一段已经播够 [repeats] 遍。手动/解锁/双击等其它切换方式不经过这里，
+     * 依旧立即生效。
+     *
+     * @param passesThisClip 当前这段视频已经完整播完的次数（不含本次）。
+     */
+    fun videoEndSwitchDue(
+        optionEnabled: Boolean,
+        repeats: Int,
+        passesThisClip: Int,
+    ): Boolean {
+        if (!optionEnabled) return false
+        // 次数由用户自定义，没有上限：只把「0 / 负数」夹回 1（那等于每段都切）。
+        val target = repeats.coerceAtLeast(1)
+        return passesThisClip + 1 >= target
     }
 
     /**
@@ -67,6 +75,52 @@ object SwitchPicking {
      */
     fun shouldResetShuffleDeck(shownSize: Int, totalCount: Int): Boolean =
         shownSize >= totalCount
+
+    /**
+     * 顺序模式「本组走完」判据: the sequential walk fell back to the group's edge
+     * (its first media when ascending, its newest when descending), i.e. the
+     * picked id did not advance strictly past the cursor. Only meaningful for
+     * cursor > 0 (a group that never switched has no "walk" to exhaust).
+     *
+     * The comparison must follow the walk direction: the old `picked.id <=
+     * cursor` test only held for id-ascending groups, so a NEWEST group would
+     * look "exhausted" on its second media and jump to the next group.
+     */
+    fun sequentialWrapped(
+        pickedId: Long,
+        cursorId: Long,
+        newestFirst: Boolean,
+    ): Boolean = if (newestFirst) pickedId >= cursorId else pickedId <= cursorId
+
+    /**
+     * 顺序模式的参考点该用哪个 id：**接着屏幕上那张往下走**。
+     *
+     * 分组游标 `group_schedule.lastMediaId` 只在**分组级 tick**里推进 —— 也就是顺序
+     * 模式。随机 / 洗牌的 tick 是屏幕级（`groupId = 0`，见
+     * `WallpaperSwitchService.nextScreenTick`），期间游标原地不动。于是从随机 / 洗牌
+     * 切回顺序时，游标还停在**上一次顺序模式的旧位置**：取到的是那张的下一张，
+     * 而不是屏幕上这张的下一张（用户反馈：切换后应该接当前这张）。
+     *
+     * 屏幕上的那张属于这次要走的分组时，以它为准 —— 无论游标落后多少，顺序都从
+     * 眼睛看到的那张继续（自愈）。不属于时保留游标：本组已经走完、推进到下一个分组，
+     * 或者屏幕上那张根本是别组的图，这时游标才是唯一有意义的参考。
+     *
+     * @param displayedId 屏幕上正在显示的那张 id（0 = 未知 / 没有）
+     * @param displayedGroupId 那张图所属的分组（[displayedId] 查不到时为 0）
+     * @param walkGroupId 这一次要走的分组
+     * @param cursor 分组游标（`group_schedule.lastMediaId`）
+     */
+    fun sequentialAnchor(
+        displayedId: Long,
+        displayedGroupId: Long,
+        walkGroupId: Long,
+        cursor: Long,
+    ): Long =
+        if (displayedId > 0L && walkGroupId > 0L && displayedGroupId == walkGroupId) {
+            displayedId
+        } else {
+            cursor
+        }
 
     /**
      * 64-bit mix (splitmix64 finalizer), then modulo: a **deterministic**

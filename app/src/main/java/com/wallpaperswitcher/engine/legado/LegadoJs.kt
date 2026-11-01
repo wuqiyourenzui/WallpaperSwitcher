@@ -41,8 +41,17 @@ internal object LegadoJs {
         jsLib: String? = null,
     ): String? = run(script, bindings, baseUrl, sourceId, textProvider, elementsProvider, jsLib).value
 
-    /** Outcome of a script: the value, or the error a login script threw. */
-    data class Result(val value: String?, val error: String?)
+    /**
+     * Outcome of a script: the value, or the error a login script threw.
+     *
+     * [value] 是 `toString()` 之后的文本（老的调用方都按字符串用）；
+     * [raw] 保留**未字符串化**的原始值。区别很重要：`ruleArticles` 写成
+     * `@js:(function(){… return out;})()` 时 `out` 是一个**数组**，
+     * `toString()` 会把它压成一条逗号拼接的字符串 —— 列表于是只剩 1 条，
+     * 后续逐项的 `@json:$.t` 全部取不到东西，整个源看起来"打开无内容"
+     * （91porn 源就是这个形态）。数组必须交给 `getElements` 去摊平。
+     */
+    data class Result(val value: String?, val error: String?, val raw: Any? = null)
 
     fun run(
         script: String,
@@ -90,15 +99,18 @@ internal object LegadoJs {
                     // without the trailing ".0" ({{Math.floor(…)+1}}).
                     val number = completion as? Number
                     if (number != null && number.toDouble() % 1.0 == 0.0) {
-                        return Result(number.toLong().toString(), null)
+                        return Result(number.toLong().toString(), null, completion)
                     }
-                    return Result(completion.toString(), null)
+                    // 原始值一起带上：数组必须留给 getElements 摊平，不能被
+                    // toString() 压成一条字符串（见 Result.raw 的注释）。
+                    return Result(completion.toString(), null, completion)
                 }
                 val fromScope = scope.get("result", scope)
                 if (fromScope == Scriptable.NOT_FOUND || fromScope == null) {
                     Result(null, null)
                 } else {
-                    Result(Context.jsToJava(fromScope, Any::class.java)?.toString(), null)
+                    val raw = contextRawValue(context, fromScope)
+                    Result(raw?.toString(), null, raw)
                 }
             } finally {
                 Context.exit()
@@ -113,6 +125,24 @@ internal object LegadoJs {
             }
             Result(null, cleanError(t))
         }
+    }
+
+    /**
+     * Rhino 值 → Java 值，**保住数组**。
+     *
+     * `Context.jsToJava(value, Any::class.java)` 对 `NativeArray` 会退化成
+     * `NativeJavaObject`（它自己也实现 `List`），于是调用方只看到"一个对象"。
+     * 这里显式识别 `NativeArray` 并逐项转换，`ruleArticles` 这类返回数组的规则
+     * 才能被摊平成 N 个条目。
+     */
+    private fun contextRawValue(context: Context, value: Any?): Any? = when (value) {
+        null -> null
+        is org.mozilla.javascript.NativeArray ->
+            (0 until value.length).map { i ->
+                // `NativeArray.get` 要的是属性名（字符串下标），不是 Int。
+                Context.jsToJava(value.get(i.toString(), value), Any::class.java)
+            }
+        else -> Context.jsToJava(value, Any::class.java)
     }
 
     /**

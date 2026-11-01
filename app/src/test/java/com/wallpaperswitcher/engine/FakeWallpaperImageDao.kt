@@ -25,6 +25,17 @@ class FakeWallpaperImageDao(
     private val disabledGroups: Set<Long> = emptySet()
 ) : WallpaperImageDao {
 
+    /** 只改 uri（网盘下载挪进 SAF 目录后，测试里也要能跟上）。 */
+    override suspend fun updateThumbPath(id: Long, thumbPath: String) {
+        val index = images.indexOfFirst { it.id == id }
+        if (index >= 0) images[index] = images[index].copy(thumbPath = thumbPath)
+    }
+
+    override suspend fun updateUri(id: Long, uri: String) {
+        val index = images.indexOfFirst { it.id == id }
+        if (index >= 0) images[index] = images[index].copy(uri = uri)
+    }
+
     /**
      * How many times [getEnabledIds] was served - the SHUFFLE deck's id-list
      * cache (see MediaPick) is asserted through this counter.
@@ -94,21 +105,6 @@ class FakeWallpaperImageDao(
 
     override suspend fun getImageById(id: Long): WallpaperImage? =
         images.firstOrNull { it.id == id }
-
-    override suspend fun setFavorite(id: Long, favorite: Boolean) {
-        val index = images.indexOfFirst { it.id == id }
-        if (index >= 0) images[index] = images[index].copy(isFavorite = favorite)
-    }
-
-    /**
-     * 按 uri 批量改收藏（真实 DAO 的 `WHERE uri = :uri`）：同一个文件在多个分组里
-     * 各有一行是预期情况，界面按 uri 判断星标，所以这里所有同 uri 的行一起改。
-     */
-    override suspend fun setFavoriteByUri(uri: String, favorite: Boolean) {
-        for (i in images.indices) {
-            if (images[i].uri == uri) images[i] = images[i].copy(isFavorite = favorite)
-        }
-    }
 
     override suspend fun weightsForSlot(slot: String, favoriteWeight: Int): List<MediaWeight> =
         forSlot(slot).map {
@@ -194,13 +190,4 @@ class FakeWallpaperImageDao(
     override fun getMediaStoreRowCount(): Flow<Int> =
         flowOf(images.count { it.uri.startsWith("content://media/") })
 
-    /**
-     * 收藏聚合（跨分组，按 uri 去重）。fake 里就按同样的语义实时算：
-     * 收藏页渲染靠它，`setFavorite` 改完后再 collect 就能看到新值。
-     */
-    override fun observeFavorites(): Flow<List<WallpaperImage>> = flowOf(
-        images.filter { it.isFavorite }
-            .distinctBy { it.uri }
-            .sortedWith(compareByDescending<WallpaperImage> { it.addedAt }.thenByDescending { it.id })
-    )
 }

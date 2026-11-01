@@ -187,30 +187,93 @@ internal fun playerPageHtml(urls: List<String>): String {
 html,body{height:100%;margin:0;padding:0;background:#000;overflow:hidden}
 #player{position:absolute;inset:0;width:100%;height:100%;background:#000}
 #player video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
+/* 加载提示：视频出画前显示一句话，出画即隐藏（不再是纯黑一片）。
+   诊断文本仍然照常生成，只是改成只往 console 输出（见 say），
+   需要排查时读 cache/logs/runtime.log 即可，界面上不再挡画面。 */
+#diag{position:absolute;left:0;right:0;top:0;padding:6px 8px;
+  font:12px/1.4 monospace;color:#9fe;background:rgba(0,0,0,.72);
+  white-space:pre-wrap;word-break:break-all;max-height:45%;overflow:auto;z-index:9}
+#diag.error{color:#fbb;background:rgba(60,0,0,.85)}
 </style>
 </head><body>
+<div id="diag">加载中…</div>
 <div id="player"><video id="video" controls autoplay loop playsinline></video></div>
 <script>
 var v = document.getElementById('video');
+var diag = document.getElementById('diag');
 var s = [$playlist];
 var c = 0;
+function say(text, isError) {
+  diag.textContent = text;
+  diag.className = isError ? 'error' : '';
+  // 同时抛到控制台：页面在 WebView 里没有别的可观测出口，而
+  // `WebChromeClient.onConsoleMessage` 会把这里的内容写进应用日志，
+  // 于是"黑屏到底卡在哪一步"不用靠截图认字。
+  if (window.console && console.log) console.log('[player] ' + text);
+}
+function describe() {
+  var e = v.error;
+  return 'readyState=' + v.readyState + '/4 networkState=' + v.networkState +
+         ' paused=' + v.paused + ' duration=' + (isNaN(v.duration) ? '?' : v.duration.toFixed(1)) +
+         ' errCode=' + (e ? e.code : '-') + ' errMsg=' + (e && e.message ? e.message : '-') +
+         ' src=' + String(v.currentSrc || v.src || '').slice(0, 120);
+}
 function next() {
   if (!s.length) return;
   c >= s.length && (c = 0);
   var u = s[c++];
-  if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+  say('加载 ' + u.slice(0, 140));
+  // 按类型分流：**只有 m3u8 才用 hls.js**。hls.js 走 XHR 取流，会触发 CORS
+  // 检查；普通 mp4 交给 <video src> 是普通媒体请求，不受 CORS 限制。
+  // 以前无条件走 hls.js，于是 91porn 的 mp4 被
+  // 「origin 'null' has been blocked by CORS policy」挡掉，
+  // hls 报 manifestLoadError，页面永远黑屏（真机日志实证）。
+  var isHls = /\.m3u8(\?|$)/i.test(u);
+  if (isHls && typeof Hls !== 'undefined' && Hls.isSupported()) {
     var h = new Hls({ enableSoftwareAES: true, forceKeyFrameOnDiscontinuity: true });
     h.loadSource(u);
     h.attachMedia(v);
     h.on(Hls.Events.MANIFEST_PARSED, function () { v.play().catch(function () {}); });
-    h.on(Hls.Events.ERROR, function (_, d) { d && d.fatal && next(); });
+    h.on(Hls.Events.ERROR, function (_, d) {
+      if (d && d.fatal) {
+        say('HLS 致命错误: ' + (d.details || '?') + ' type=' + (d.type || '?') +
+            '\n' + describe(), true);
+        next();
+      }
+    });
   } else {
     v.src = u;
-    v.play().catch(function () {});
-    v.onerror = next;
+    v.play().catch(function (e) {
+      // 自动播放被策略挡住是常见的：留一句提示，用户点播放键即可。
+      say('自动播放被阻止(' + (e && e.name ? e.name : '?') + ')，请点播放键\n' + describe());
+    });
+    // 原生 <video> 的错误码：1 中止 / 2 网络 / 3 解码 / 4 地址不支持。
+    v.onerror = function () {
+      var e = v.error;
+      say('播放错误 code=' + (e ? e.code : '?') +
+          ' message=' + (e && e.message ? e.message : '') +
+          '\n' + describe(), true);
+      next();
+    };
   }
 }
+function tick() {
+  if (v.readyState >= 2) {
+    // 已经能出画：把诊断收起来，别挡着画面。
+    say('');
+    diag.style.display = 'none';
+    return;
+  }
+  if (!diag.textContent || diag.className !== 'error') {
+    say(describe());
+  }
+}
+v.addEventListener('loadeddata', tick);
+v.addEventListener('playing', tick);
+v.addEventListener('waiting', function () { say('缓冲中…\n' + describe()); });
+v.addEventListener('stalled', function () { say('停滞(stalled)\n' + describe(), true); });
 next();
+setInterval(tick, 1200);
 </script>
 </body></html>
 """.trimIndent()
