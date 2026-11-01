@@ -113,11 +113,14 @@ fun HomeScreen(
     // 引擎运行状态要早于卡片用，所以提到 Column 之前（卡片里要显示"运行信息"）。
     var engineRunning by remember { mutableStateOf(LiveWallpaperService.engineRunning) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(16.dp)
+    // 整页一个 LazyColumn：页头一个 item，分组各自 lazy item（列表滚动时页头一起滚）。
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        contentPadding = PaddingValues(top = 16.dp, bottom = 96.dp)
     ) {
+        item(key = "home-header", contentType = "header") {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         // 服务总开关卡片
         ServiceControlCard(
             serviceEnabled = serviceEnabled,
@@ -383,14 +386,12 @@ fun HomeScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
+            }
+        }
         if (groups.isEmpty()) {
-            EmptyGroupsHint()
+            item { EmptyGroupsHint() }
         } else {
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                contentPadding = PaddingValues(bottom = 80.dp)
-            ) {
-                items(groups, key = { it.id }) { group ->
+            items(groups, key = { it.id }, contentType = { "group" }) { group ->
                     GroupCard(
                         // 分组增删/重排时旧卡片平移让位（1.6 的 animateItemPlacement）。
                         modifier = Modifier.animateItemPlacement(HiMotion.spatial()),
@@ -420,7 +421,6 @@ fun HomeScreen(
                         },
                         onToggle = { viewModel.toggleGroupEnabled(group.id, it) },
                     )
-                }
             }
         }
     }
@@ -1151,7 +1151,7 @@ private fun NextPreviewCard(image: com.wallpaperswitcher.data.WallpaperImage?) {
  */
 
 /** 首页「下一张」缩略图的高度与宽高比范围：竖图不至于撑爆卡片，横图不至于太扁。 */
-private val PREVIEW_MIN_H = 140.dp
-private val PREVIEW_MAX_H = 280.dp
+private val PREVIEW_MIN_H = 120.dp
+private val PREVIEW_MAX_H = 190.dp
 private const val PREVIEW_MIN_ASPECT = 0.5f   // 1:2 竖图
 private const val PREVIEW_MAX_ASPECT = 2.4f   // ~21:9 横图
